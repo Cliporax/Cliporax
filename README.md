@@ -2,19 +2,19 @@
 
 [English](README.md) | [Simplified Chinese](README.zh-CN.md)
 
-**Privacy-first clipboard history for people who copy, paste, and switch context all day.**
+**Local-first, searchable, extensible clipboard history for desktop.**
 
-Cliporax is a cross-platform desktop clipboard manager built with Tauri 2, React, TypeScript, Rust, and SQLite. It keeps clipboard history local by default, gives you fast search and tabbed organization, and leaves room for power-user workflows through plugins, shortcuts, a CLI, and optional cloud sync.
+Cliporax solves a small but constant problem: copied text, images, commands, links, and temporary notes should not disappear just because you switched windows or overwrote the clipboard. It stores clipboard history in a local SQLite database by default, then gives you fast search, tabs, pinning, multi-select, paste-back, plugins, shortcuts, a CLI, and optional cloud sync.
 
-This repository is also the public GitHub profile repository for Cliporax, so this README is written as both a project overview and a developer entry point.
+The app is built with Tauri 2, React, TypeScript, Rust, and SQLite. The goal is a practical desktop tool for daily use, not a cloud clipboard service.
 
-## What Cliporax Cares About
+## Design Choices
 
-- **Privacy by default**: clipboard history is stored locally; telemetry is not part of the default app.
-- **Fast daily use**: search, regex search, virtual scrolling, pinning, multi-select, delete, and drag reordering are built into the main workflow.
-- **Cross-platform behavior**: Linux, macOS, and Windows are all first-class targets, including window focus and paste-back handling.
-- **Extensibility**: local plugins can add actions, settings panels, previews, QR workflows, and sync UI.
-- **Honest roadmap**: AI OCR, semantic search, summaries, and SQLCipher full-database encryption are roadmap items, not shipped features.
+- **Local by default**: history, settings, and plugin state live on the user's machine first; telemetry is not part of the default app.
+- **Keyboard and search first**: optimized for frequent copy, search, and paste-back workflows, not just displaying a clipboard list.
+- **Real desktop behavior**: Linux, macOS, and Windows are all targets, including focus handling, tray behavior, and paste-back.
+- **Plugin-based extension**: QR workflows, image preview, sync UI, and other actions are added through local plugins.
+- **Clear feature boundaries**: general OCR, semantic search, summaries, and SQLCipher full-database encryption are roadmap items, not shipped features.
 
 ## Current Features
 
