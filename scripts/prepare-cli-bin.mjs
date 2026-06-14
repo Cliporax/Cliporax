@@ -48,19 +48,27 @@ if (release) {
 }
 
 const rustcVersion = output("rustc", ["-vV"]);
-const triple = rustcVersion
+const hostTriple = rustcVersion
   .split(/\r?\n/)
   .find((line) => line.startsWith("host: "))
   ?.slice("host: ".length)
   .trim();
+const requestedTriple = process.env.CLIPORAX_BUILD_TARGET?.trim();
+const triple = requestedTriple || hostTriple;
 
 if (!triple) {
   throw new Error("Unable to determine Rust host target triple from rustc -vV");
 }
 
+if (requestedTriple) {
+  cargoArgs.push("--target", requestedTriple);
+}
+
 const exe = process.platform === "win32" ? ".exe" : "";
 const profile = release ? "release" : "debug";
-const source = join(tauriDir, "target", profile, `cliporax-cli${exe}`);
+const source = requestedTriple
+  ? join(tauriDir, "target", requestedTriple, profile, `cliporax-cli${exe}`)
+  : join(tauriDir, "target", profile, `cliporax-cli${exe}`);
 const destinationDir = join(tauriDir, "bin");
 const destination = join(destinationDir, `cliporax-cli-${triple}${exe}`);
 
