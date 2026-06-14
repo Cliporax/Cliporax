@@ -2,9 +2,19 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Cliporax 是一个隐私优先的跨平台剪贴板管理器。它基于 Tauri 2、React、TypeScript、Rust 和 SQLite 构建，目标是在本地可靠保存剪贴板历史，并通过插件系统、快捷键、标签页和可选云同步扩展日常复制/粘贴工作流。
+**为每天大量复制、粘贴、切换上下文的人打造的隐私优先剪贴板历史工具。**
 
-当前代码已经实现了本地剪贴板历史、桌面窗口、插件运行时、设置页、CLI 和云同步基础；AI OCR、语义搜索、摘要、SQLCipher 全库加密等能力仍属于后续路线图，README 中不会把它们标为已完成。
+Cliporax 是一个跨平台桌面剪贴板管理器，基于 Tauri 2、React、TypeScript、Rust 和 SQLite 构建。它默认将剪贴板历史保存在本机，提供快速搜索和标签页组织能力，并通过插件、快捷键、CLI 和可选云同步支持更高级的工作流。
+
+这个仓库同时也是 Cliporax 的 GitHub public profile 仓库，因此这份 README 兼顾项目介绍和开发者入口。
+
+## Cliporax 关注什么
+
+- **默认隐私优先**：剪贴板历史保存在本地，默认不包含遥测逻辑。
+- **高频使用足够快**：搜索、正则搜索、虚拟滚动、置顶、多选、删除和拖拽排序都在主流程内。
+- **跨平台行为可靠**：Linux、macOS、Windows 都是一等目标，包括窗口聚焦和回粘处理。
+- **可扩展**：本地插件可以添加操作按钮、设置面板、预览、二维码流程和同步 UI。
+- **诚实路线图**：AI OCR、语义搜索、摘要和 SQLCipher 全库加密仍是路线图项目，不会被描述成已发布能力。
 
 ## 当前功能
 
@@ -95,7 +105,7 @@ cd src-tauri
 cargo test
 ```
 
-项目内也提供了面向协作代理的快速检查：
+项目内快速检查：
 
 ```bash
 scripts/agent/targeted-test.sh
@@ -144,7 +154,9 @@ npm run plugins:dev
 
 ## 云同步状态
 
-当前代码包含 Cloud Sync 的配置 UI、Provider 抽象、WebDAV/SFTP/Google Drive/OneDrive provider、同步 profile、后端凭据引用、加密/解锁模型、调度状态、运行报告、日志、冲突处理和插件配置同步入口。它已经不是单纯的设置壳，但仍建议视为“可用基础已实现，生产级体验继续打磨”的能力。
+当前代码包含 Cloud Sync 的配置 UI、Provider 抽象、WebDAV/SFTP/Google Drive/OneDrive provider、同步 profile、后端凭据引用、加密/解锁模型、调度状态、运行报告、日志、冲突处理和插件配置同步入口。
+
+它已经不是单纯的设置壳，但仍建议视为“可用基础已实现，生产级体验继续打磨”的能力。
 
 同步相关代码主要在：
 
@@ -152,13 +164,19 @@ npm run plugins:dev
 - `src/components/Settings/CloudSyncTab.tsx`
 - `plugins/com.cliporax.cloud-sync/`
 
-## 完成度与下一步
+## 路线图说明
 
 - 插件系统：已实现插件发现、加载、启用/停用、卸载运行态、权限授权、配置项、前端扩展点和内置插件构建/安装脚本。仍缺少真正的在线插件市场、远程下载安装、版本更新和删除插件包的完整产品流程。
 - AI 能力：当前没有实现通用图片 OCR、本地语义搜索或文本摘要。二维码扫描插件能识别二维码，但不等同于 OCR/AI 检索能力。
 - 本地加密：同步模块已有 Argon2id + authenticated encryption 的远端同步加密模型，provider 凭据也通过后端保存；主 SQLite 剪贴板数据库目前不是 SQLCipher 全库加密。
 - 云同步：已实现 Cloud Sync 设置 UI、同步 profile、WebDAV/SFTP/Google Drive/OneDrive provider、凭据引用、连接测试、调度、日志、冲突入口和可选加密模型。下一步重点是更多真实服务集成验证、冲突 UX、凭据存储硬化和跨平台运行测试。
 - 打包发布：已有 Tauri 构建脚本和 Linux `deb`/`rpm` bundle 配置。macOS/Windows 打包配置和发布流水线还需要补齐与验证。
+
+## 文档
+
+- [CLI 使用指南](docs/cli-usage.md)
+- [插件系统设计](docs/plugin-system-design.md)
+- [Cloud Sync 架构](docs/cloud-sync-architecture.md)
 
 ## 许可证
 

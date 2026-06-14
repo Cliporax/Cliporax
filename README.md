@@ -2,14 +2,24 @@
 
 [English](README.md) | [Simplified Chinese](README.zh-CN.md)
 
-Cliporax is a privacy-first cross-platform clipboard manager. It is built with Tauri 2, React, TypeScript, Rust, and SQLite, with a focus on storing clipboard history reliably on the local machine and extending everyday copy/paste workflows through plugins, shortcuts, tabs, and optional cloud sync.
+**Privacy-first clipboard history for people who copy, paste, and switch context all day.**
 
-The current codebase implements local clipboard history, desktop windows, the plugin runtime, settings, the CLI, and the Cloud Sync foundation. AI OCR, semantic search, summaries, and SQLCipher full-database encryption remain roadmap items, so this README does not present them as completed features.
+Cliporax is a cross-platform desktop clipboard manager built with Tauri 2, React, TypeScript, Rust, and SQLite. It keeps clipboard history local by default, gives you fast search and tabbed organization, and leaves room for power-user workflows through plugins, shortcuts, a CLI, and optional cloud sync.
+
+This repository is also the public GitHub profile repository for Cliporax, so this README is written as both a project overview and a developer entry point.
+
+## What Cliporax Cares About
+
+- **Privacy by default**: clipboard history is stored locally; telemetry is not part of the default app.
+- **Fast daily use**: search, regex search, virtual scrolling, pinning, multi-select, delete, and drag reordering are built into the main workflow.
+- **Cross-platform behavior**: Linux, macOS, and Windows are all first-class targets, including window focus and paste-back handling.
+- **Extensibility**: local plugins can add actions, settings panels, previews, QR workflows, and sync UI.
+- **Honest roadmap**: AI OCR, semantic search, summaries, and SQLCipher full-database encryption are roadmap items, not shipped features.
 
 ## Current Features
 
 - Text and image clipboard monitoring with automatic writes to a local SQLite database.
-- Clipboard history list, virtual scrolling, search, `regx:` regex search, pinning, deletion, multi-select, and drag reordering.
+- Clipboard history list with virtual scrolling, search, `regx:` regex search, pinning, deletion, multi-select, and drag reordering.
 - Multi-tab management, including moving or copying items between tabs.
 - Sensitive-content marking and clearing, with default keyword detection for `password`, `code`, `otp`, `verification code`, `secret`, `key`, and related terms.
 - Global shortcut for showing the main window. The default is `CmdOrControl+Shift+V` and can be changed in settings.
@@ -95,7 +105,7 @@ cd src-tauri
 cargo test
 ```
 
-The repository also provides fast checks for collaborating agents:
+Fast project checks:
 
 ```bash
 scripts/agent/targeted-test.sh
@@ -126,7 +136,7 @@ Current built-in/example plugins:
 - `com.cliporax.imagepreview`: previews images in a separate window with zoom configuration.
 - `com.cliporax.cloud-sync`: provides the settings panel and status UI for sync.
 
-Common plugin development commands:
+Plugin development commands:
 
 ```bash
 npm run plugins:build
@@ -134,7 +144,7 @@ npm run plugins:install
 npm run plugins:dev
 ```
 
-## Data and Privacy
+## Data And Privacy
 
 - Clipboard history is stored by default in `cliporax.db` under the local app data directory.
 - Settings are stored in `cliporax/settings.json` under the user configuration directory.
@@ -144,7 +154,9 @@ npm run plugins:dev
 
 ## Cloud Sync Status
 
-The codebase includes Cloud Sync configuration UI, provider abstractions, WebDAV/SFTP/Google Drive/OneDrive providers, sync profiles, backend credential references, encryption and unlock models, scheduler state, run reports, logs, conflict handling, and plugin configuration sync entry points. It is no longer only a settings shell, but it should still be treated as "usable foundation implemented; production experience still needs refinement."
+The codebase includes Cloud Sync configuration UI, provider abstractions, WebDAV/SFTP/Google Drive/OneDrive providers, sync profiles, backend credential references, encryption and unlock models, scheduler state, run reports, logs, conflict handling, and plugin configuration sync entry points.
+
+It is no longer only a settings shell, but it should still be treated as a usable foundation that needs more production refinement.
 
 Sync-related code is mainly located in:
 
@@ -152,13 +164,19 @@ Sync-related code is mainly located in:
 - `src/components/Settings/CloudSyncTab.tsx`
 - `plugins/com.cliporax.cloud-sync/`
 
-## Completion Status and Next Steps
+## Roadmap Notes
 
-- Plugin system: plugin discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.
+- Plugin system: discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.
 - AI features: general image OCR, local semantic search, and text summaries are not implemented. The QR scanner plugin can recognize QR codes, but that is not equivalent to OCR or AI retrieval.
 - Local encryption: the sync module has a remote-sync encryption model based on Argon2id and authenticated encryption, and provider credentials are saved through the backend. The main SQLite clipboard database is not currently encrypted with SQLCipher.
-- Cloud Sync: the settings UI, sync profiles, WebDAV/SFTP/Google Drive/OneDrive providers, credential references, connection tests, scheduling, logs, conflict entry points, and optional encryption model are implemented. Next steps should focus on verification with real services, conflict UX, credential storage hardening, and cross-platform runtime testing.
-- Packaging and release: Tauri build scripts and Linux `deb`/`rpm` bundle configuration exist. macOS/Windows packaging configuration and release pipelines still need to be completed and verified.
+- Cloud Sync: settings UI, sync profiles, WebDAV/SFTP/Google Drive/OneDrive providers, credential references, connection tests, scheduling, logs, conflict entry points, and optional encryption model are implemented. Next steps should focus on verification with real services, conflict UX, credential storage hardening, and cross-platform runtime testing.
+- Packaging and release: Tauri build scripts and Linux `deb`/`rpm` bundle configuration exist. macOS/Windows packaging configuration and release pipelines still need completion and verification.
+
+## Documentation
+
+- [CLI Usage](docs/cli-usage.md)
+- [Plugin System Design](docs/plugin-system-design.md)
+- [Cloud Sync Architecture](docs/cloud-sync-architecture.md)
 
 ## License
 
