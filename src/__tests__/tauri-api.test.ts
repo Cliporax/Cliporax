@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(),
   listen: (event: string, callback: any) => {
     mockListen(event, callback);
     return Promise.resolve(() => {});

@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "plugins:build": "node scripts/build-plugins.mjs",
+    "plugins:build:release": "node scripts/build-plugins.mjs --release",
+    "plugins:bundle": "npm run plugins:build:release && node scripts/bundle-plugins.mjs",
     "plugins:install": "node scripts/install-plugins.mjs",
     "plugins:dev": "npm run plugins:build && npm run plugins:install",
     "cli:prepare": "node scripts/prepare-cli-bin.mjs",

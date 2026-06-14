@@ -7,7 +7,6 @@ import {
   Moon,
   Monitor,
   Download,
-  Package,
   Keyboard,
   Info,
   Puzzle,
@@ -1193,9 +1192,12 @@ const Settings: React.FC<SettingsProps> = ({
   const renderAboutSettings = () => (
     <div className="space-y-6">
       <div className="text-center py-6">
-        <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <Package size={36} className="text-white" />
-        </div>
+        <img
+          src="/icon.png"
+          alt=""
+          className="w-20 h-20 mx-auto mb-5 rounded-2xl shadow-lg shadow-blue-500/20"
+          draggable={false}
+        />
         <h2
           className="text-xl font-bold"
           style={{ color: isDark ? "#e2e8f0" : "#4a4a48" }}

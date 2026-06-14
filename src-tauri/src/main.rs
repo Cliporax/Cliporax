@@ -6,7 +6,9 @@ use cliporax_lib::{
     db::init_database,
     dev_log::{install_logger, DevLogFileBackend},
     init_settings,
-    plugin::{commands::*, get_plugin_dir, lifecycle::registry::PluginRegistry},
+    plugin::{
+        commands::*, get_plugin_dir, lifecycle::registry::PluginRegistry, seed_builtin_plugins,
+    },
     show_main_window, show_or_hide_main_window,
     state::WindowState,
     sync::commands::*,
@@ -183,6 +185,10 @@ fn main() {
                 log::info!("Initializing plugin system...");
                 let plugin_dir = get_plugin_dir(&app_handle).map_err(|e| {
                     log::error!("[Main] ERROR: Failed to get plugin directory: {}", e);
+                    Box::<dyn std::error::Error>::from(e.to_string())
+                })?;
+                seed_builtin_plugins(&app_handle, &plugin_dir).await.map_err(|e| {
+                    log::error!("[Main] ERROR: Failed to seed bundled plugins: {}", e);
                     Box::<dyn std::error::Error>::from(e.to_string())
                 })?;
                 let plugin_registry = Arc::new(RwLock::new(PluginRegistry::new(plugin_dir)));

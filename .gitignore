@@ -77,6 +77,8 @@ src-tauri/target/
 src-tauri/*.log
 src-tauri/bin/*
 !src-tauri/bin/.gitkeep
+src-tauri/builtin-plugins/*
+!src-tauri/builtin-plugins/.gitkeep
 
 # Rust
 Cargo.lock

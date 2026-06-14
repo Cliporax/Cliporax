@@ -295,9 +295,6 @@ export const PluginProvider: React.FC<PluginProviderProps> = ({ children }) => {
         ),
       );
 
-      // Dispatch event to notify extension manager
-      window.dispatchEvent(new CustomEvent("cliporax:plugin-changed"));
-
       // Refresh plugin list from backend
       await refresh();
 

@@ -3,6 +3,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { createLogger } from "../../utils/logger";
 import type {
   PluginInfo,
@@ -13,9 +14,20 @@ import type {
 } from "../types";
 
 const logger = createLogger("PluginAPI");
+const PLUGIN_CHANGED_EVENT = "cliporax:plugin-changed";
 
-function dispatchPluginChanged() {
-  window.dispatchEvent(new CustomEvent("cliporax:plugin-changed"));
+async function notifyPluginChanged(pluginId: string, action: string) {
+  window.dispatchEvent(
+    new CustomEvent(PLUGIN_CHANGED_EVENT, {
+      detail: { pluginId, action },
+    }),
+  );
+
+  try {
+    await emit(PLUGIN_CHANGED_EVENT, { pluginId, action });
+  } catch (error) {
+    logger.warn("Failed to emit plugin change event:", error);
+  }
 }
 
 function toTauriShortcut(shortcut: string): string {
@@ -87,7 +99,7 @@ export const pluginApi = {
     try {
       await invoke("plugin_activate", { pluginId });
       logger.info("activate() success:", pluginId);
-      dispatchPluginChanged();
+      await notifyPluginChanged(pluginId, "activate");
     } catch (error) {
       logger.error("activate() failed:", error);
       throw error;
@@ -102,7 +114,7 @@ export const pluginApi = {
     try {
       await invoke("plugin_deactivate", { pluginId });
       logger.info("deactivate() success:", pluginId);
-      dispatchPluginChanged();
+      await notifyPluginChanged(pluginId, "deactivate");
     } catch (error) {
       logger.error("deactivate() failed:", error);
       throw error;
@@ -117,7 +129,7 @@ export const pluginApi = {
     try {
       await invoke("plugin_unload", { pluginId });
       logger.info("unload() success:", pluginId);
-      dispatchPluginChanged();
+      await notifyPluginChanged(pluginId, "unload");
     } catch (error) {
       logger.error("unload() failed:", error);
       throw error;
@@ -163,7 +175,7 @@ export const pluginApi = {
     try {
       await invoke("plugin_update_config", { pluginId, config });
       logger.info("updateConfig() success:", pluginId);
-      dispatchPluginChanged();
+      await notifyPluginChanged(pluginId, "update-config");
     } catch (error) {
       logger.error("updateConfig() failed:", error);
       throw error;

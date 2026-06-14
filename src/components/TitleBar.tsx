@@ -191,9 +191,12 @@ const TitleBar: React.FC = () => {
       }}
     >
       <div className="flex items-center px-3 gap-2">
-        <div className="w-3.5 h-3.5 rounded-md bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-          <span className="text-[7px] font-bold text-white">C</span>
-        </div>
+        <img
+          src="/icon.png"
+          alt=""
+          className="w-3.5 h-3.5 rounded-md shadow-lg shadow-blue-500/20"
+          draggable={false}
+        />
         <span
           className="text-xs font-medium tracking-wide transition-colors duration-300"
           style={{ color: isDark ? "#94a3b8" : "#8a8a88" }}

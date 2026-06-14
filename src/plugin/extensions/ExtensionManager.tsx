@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const logger = createLogger("ExtensionManager");
+const PLUGIN_CHANGED_EVENT = "cliporax:plugin-changed";
 
 /**
  * Extension point types
@@ -568,7 +569,16 @@ export const ExtensionManagerProvider: React.FC<{
       loadExtensions();
     };
 
-    window.addEventListener("cliporax:plugin-changed", handlePluginChange);
+    window.addEventListener(PLUGIN_CHANGED_EVENT, handlePluginChange);
+
+    let unlistenPluginChange: (() => void) | undefined;
+    listen(PLUGIN_CHANGED_EVENT, handlePluginChange)
+      .then((cleanup) => {
+        unlistenPluginChange = cleanup;
+      })
+      .catch((error) => {
+        logger.error("Failed to listen for plugin changes:", error);
+      });
 
     // REMOVED: Periodic polling was causing performance issues and window freezing
     // Extensions are now refreshed only on explicit plugin state changes
@@ -577,10 +587,8 @@ export const ExtensionManagerProvider: React.FC<{
     // }, 2000);
 
     return () => {
-      window.removeEventListener(
-        "cliporax:plugin-changed",
-        handlePluginChange,
-      );
+      window.removeEventListener(PLUGIN_CHANGED_EVENT, handlePluginChange);
+      unlistenPluginChange?.();
       // clearInterval(interval);
     };
   }, [loadExtensions]);

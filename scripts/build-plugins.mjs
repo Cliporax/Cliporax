@@ -6,6 +6,24 @@ import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 const PLUGINS_DIR = fileURLToPath(new URL('../plugins/', import.meta.url));
+const isRelease = process.argv.includes('--release');
+
+async function pathExists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runPackageCommand(pluginPath, command) {
+  const hasYarnLock = await pathExists(join(pluginPath, 'yarn.lock'));
+  const runner = hasYarnLock ? 'yarn' : 'npm';
+  const scriptCommand = runner === 'yarn' ? `yarn ${command}` : `npm run ${command}`;
+
+  await execAsync(scriptCommand, { cwd: pluginPath });
+}
 
 async function buildPlugins() {
   const entries = await readdir(PLUGINS_DIR);
@@ -30,18 +48,19 @@ async function buildPlugins() {
     const pluginPath = join(PLUGINS_DIR, id);
     console.log(`[Plugins] Building ${id}...`);
 
-    try {
-      await stat(join(pluginPath, 'node_modules'));
-    } catch {
-      await execAsync('npm install', { cwd: pluginPath });
+    if (!(await pathExists(join(pluginPath, 'node_modules')))) {
+      const hasYarnLock = await pathExists(join(pluginPath, 'yarn.lock'));
+      await execAsync(hasYarnLock ? 'yarn install --frozen-lockfile' : 'npm install', {
+        cwd: pluginPath,
+      });
     }
 
-    await execAsync('npm run build:dev', { cwd: pluginPath });
+    await runPackageCommand(pluginPath, isRelease ? 'build' : 'build:dev');
     console.log(`[Plugins] Built ${id}`);
   });
 
   await Promise.all(builds);
-  console.log('[Plugins] All plugins built successfully');
+  console.log(`[Plugins] All ${isRelease ? 'release' : 'dev'} plugins built successfully`);
 }
 
 buildPlugins().catch((error) => {

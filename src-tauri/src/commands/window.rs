@@ -650,9 +650,9 @@ pub async fn window_open_settings(app: tauri::AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("/settings".into()),
     )
     .title("Cliporax Settings")
-    .inner_size(800.0, 600.0)
+    .inner_size(1040.0, 760.0)
     // Minimum size must not be smaller than PluginDetailModal minimum (500x400)
-    .min_inner_size(500.0, 400.0)
+    .min_inner_size(760.0, 560.0)
     .resizable(true)
     .decorations(false)
     .transparent(false)
