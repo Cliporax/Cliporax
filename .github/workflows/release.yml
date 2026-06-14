@@ -33,19 +33,19 @@ jobs:
           - name: macOS Apple Silicon
             platform: macos-15
             target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
           - name: macOS Intel
             platform: macos-15-intel
             target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
           - name: Linux x64
             platform: ubuntu-22.04
             target: ""
-            args: ""
+            args: --bundles deb rpm appimage
           - name: Windows x64
             platform: windows-latest
             target: ""
-            args: ""
+            args: --bundles nsis
 
     steps:
       - name: Checkout
@@ -84,7 +84,7 @@ jobs:
         run: npm ci
 
       - name: Build and upload Tauri bundles
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLIPORAX_BUILD_TARGET: ${{ matrix.target }}
@@ -98,3 +98,19 @@ jobs:
           generateReleaseNotes: true
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
           args: ${{ matrix.args }}
+
+      - name: Package Windows portable app
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $portableDir = "src-tauri/target/release/portable"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item "src-tauri/target/release/cliporax.exe" "$portableDir/Cliporax.exe"
+          Copy-Item "src-tauri/bin/cliporax-cli-x86_64-pc-windows-msvc.exe" "$portableDir/cliporax-cli-x86_64-pc-windows-msvc.exe"
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "src-tauri/target/release/Cliporax_${{ github.ref_name }}_windows_x64_portable.zip" -Force
+
+      - name: Upload Windows portable app
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/Cliporax_${{ github.ref_name }}_windows_x64_portable.zip

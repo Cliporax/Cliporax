@@ -74,13 +74,13 @@ Thumbs.db
 
 # Tauri
 src-tauri/target/
-src-tauri/Cargo.lock
 src-tauri/*.log
 src-tauri/bin/*
 !src-tauri/bin/.gitkeep
 
 # Rust
 Cargo.lock
+!src-tauri/Cargo.lock
 target/
 **/*.rs.bk
 *.pdb
