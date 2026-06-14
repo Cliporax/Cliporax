@@ -1,0 +1,111 @@
+[package]
+name = "cliporax"
+version = "1.0.0"
+description = "A modern clipboard manager with privacy-first AI"
+authors = ["Cliporax Team"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "cliporax"
+
+[lib]
+name = "cliporax_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "cliporax"
+path = "src/main.rs"
+
+[[bin]]
+name = "cliporax-cli"
+path = "src/cli.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "protocol-asset", "tray-icon", "image-png", "webview-data-url"] }
+tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-window-state = "2"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+# Clipboard
+arboard = "3"
+# Base64 encoding
+base64 = "0.22"
+# Lazy static
+lazy_static = "1"
+# Window info
+active-win-pos-rs = "0.9"
+# Async trait
+async-trait = "0.1"
+# Regex
+regex = "1"
+# Logging
+log = "0.4"
+env_logger = "0.11"
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Hash for image dedup
+sha2 = "0.10"
+# Error handling
+thiserror = "1"
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+# Home directory detection for CLI
+dirs = "5"
+# Semantic versioning
+semver = "1"
+# URL encoding for data URLs
+urlencoding = "2.1"
+# TypeScript type generation (optional, only for export-types feature)
+ts-rs = { version = "8.0", features = ["serde-compat"], optional = true }
+# Cloud sync - WebDAV (reqwest with rustls)
+# Cloud sync - Secret management
+secrecy = "0.8"
+# Cloud sync - Encryption
+crypto_secretbox = "0.1"
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8"
+# Cloud sync - UUID for device IDs
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "multipart", "query", "rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+ssh2 = "0.9"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+# Cloud sync - SFTP
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.24", features = ["elcapitan"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+
+[profile.dev]
+incremental = true
+
+[features]
+default = []
+export-types = ["ts-rs"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,90 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Dependency directories
+node_modules/
+jspm_packages/
+.qoder/repowiki/
+
+# TypeScript v1 declaration files
+typings/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Output directory
+dist
+release
+*.zip
+*.dmg
+*.msi
+*.AppImage
+*.deb
+*.rpm
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# stores test coverage
+coverage
+.nyc_output
+
+# IDE - VSCode
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+
+# IDE - IntelliJ
+.idea/
+.qoder/skills/ui-ux*
+.qoder/skills/planning*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/*.log
+src-tauri/bin/*
+!src-tauri/bin/.gitkeep
+
+# Rust
+Cargo.lock
+target/
+**/*.rs.bk
+*.pdb
+
+# Tauri gen files (keep the file but ignore generated content)
+src-tauri/gen/
+plugins/**/main.js

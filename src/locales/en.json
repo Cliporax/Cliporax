@@ -1,0 +1,332 @@
+{
+  "app": {
+    "name": "Cliporax",
+    "searchPlaceholder": "Search clipboard history... (Esc to close, regx: regex search)",
+    "searchMode": {
+      "regex": "REGEX",
+      "fuzzy": "FUZZY"
+    },
+    "footer": {
+      "clearSensitive": "Clear sensitive content",
+      "settings": "Settings",
+      "multiSelectHint": "Ctrl+Click to select, Esc to exit",
+      "searchHint": "Ctrl+F to search"
+    }
+  },
+  "titleBar": {
+    "toggleTheme": "Switch to {{mode}} mode",
+    "lightMode": "light",
+    "darkMode": "dark",
+    "pinWindow": "Pin window",
+    "unpinWindow": "Unpin window",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close"
+  },
+  "clipboardCard": {
+    "editContent": "Edit content",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "imageLoadError": "Failed to load image"
+  },
+  "contentEditor": {
+    "title": "Edit Content",
+    "subtitle": "Modify clipboard content · Ctrl+Enter to save · Esc to cancel",
+    "cannotEdit": "Cannot Edit",
+    "imageCannotEdit": "Image content cannot be edited",
+    "placeholder": "Enter content here...",
+    "unsavedChanges": "Unsaved changes",
+    "characters": "characters",
+    "reset": "Reset",
+    "save": "Save",
+    "saving": "Saving..."
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Customize your experience",
+    "tabs": {
+      "general": "General",
+      "shortcuts": "Shortcuts",
+      "plugins": "Plugins",
+      "sync": "Sync",
+      "about": "About"
+    },
+    "tabDescriptions": {
+      "general": "App appearance and behavior",
+      "shortcuts": "Keyboard shortcuts",
+      "plugins": "Extension management",
+      "sync": "Cloud sync settings",
+      "about": "App info and updates"
+    },
+    "general": {
+      "theme": "Theme",
+      "themeOptions": {
+        "light": "Light",
+        "dark": "Dark",
+        "system": "System"
+      },
+      "maxTextItems": "Max text items",
+      "maxImageItems": "Max image items",
+      "limitHint": "Old items will be auto-deleted when limit exceeded",
+      "cardSize": "Card size",
+      "cardSizeHint": "Adjust card font size. All sizes display single-line text.",
+      "cardSizeOptions": {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large"
+      },
+      "autoStart": "Start on login",
+      "autoStartDesc": "Automatically launch Cliporax on login",
+      "autoHide": "Auto-hide on focus loss",
+      "autoHideDesc": "Automatically hide window when it loses focus"
+    },
+    "shortcuts": {
+      "instruction": "Click a shortcut to modify, then press the new key combination.",
+      "toggleWindow": "Toggle main window",
+      "toggleWindowDesc": "Show/hide the Cliporax window",
+      "search": "Search",
+      "searchDesc": "Open the search bar",
+      "togglePin": "Toggle pin",
+      "togglePinDesc": "Pin/unpin selected item",
+      "deleteItem": "Delete item",
+      "deleteItemDesc": "Delete selected item",
+      "global": "Global",
+      "pressKeys": "Press keys...",
+      "conflict": "Conflicts with \"{{label}}\"",
+      "pluginShortcuts": "Plugin shortcuts (Coming soon)",
+      "ocrExtract": "OCR Extract",
+      "ocrDesc": "Extract text from clipboard images",
+      "semanticSearch": "Semantic Search",
+      "semanticDesc": "AI-powered content search",
+      "notSet": "Not set"
+    },
+    "about": {
+      "version": "Version 1.0.0-mvp",
+      "checkUpdate": "Check for updates",
+      "lastChecked": "Last checked: Never",
+      "checkNow": "Check now",
+      "changelog": "Changelog",
+      "documentation": "Documentation",
+      "reportIssue": "Report issue",
+      "copyright": "© 2024 Cliporax Team",
+      "license": "MIT License",
+      "devTest": "Developer test",
+      "insertTestData": "Insert 10,000 test items",
+      "inserting": "Inserting...",
+      "clear": "Clear",
+      "insertSuccess": "Successfully inserted {{count}} items in {{elapsed}}ms",
+      "insertError": "Insert failed: {{error}}",
+      "clearSuccess": "All data cleared",
+      "clearError": "Clear failed: {{error}}"
+    },
+    "language": {
+      "label": "Language",
+      "en": "English",
+      "zh": "简体中文"
+    }
+  },
+  "clipboardList": {
+    "loading": "Loading...",
+    "empty": "No clipboard items yet",
+    "emptyHint": "Copy something to get started",
+    "error": "Error loading items",
+    "dragMultiple": "items selected",
+    "exitMultiSelect": "Exit",
+    "searching": "Searching...",
+    "noResults": "No results found",
+    "noResultsRegexHint": "Please check your regular expression",
+    "noResultsFuzzyHint": "Try a different search term",
+    "clipboardEmpty": "Clipboard is empty",
+    "clipboardEmptyHint": "Copied content will appear here",
+    "totalRecords": "Total {{count}} records",
+    "scrollbarPosition": "{{current}} / {{total}}"
+  },
+  "plugins": {
+    "loading": "Loading plugins...",
+    "error": "Failed to load plugins: {{message}}",
+    "noPlugins": "No plugins installed",
+    "noPluginsHint": "Explore the plugin marketplace to extend Cliporax",
+    "installPlugin": "Install Plugin",
+    "uninstall": "Uninstall",
+    "enable": "Enable",
+    "disable": "Disable",
+    "settings": "Settings",
+    "version": "Version",
+    "author": "Author",
+    "description": "Description",
+    "permissions": "Permissions",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "refresh": "Refresh",
+    "count": "{{count}} plugins",
+    "load": "Load",
+    "activate": "Activate",
+    "deactivate": "Deactivate",
+    "grantPermission": "Grant Permission",
+    "state": {
+      "discovered": "Discovered",
+      "validated": "Validated",
+      "loaded": "Loaded",
+      "pendingPermission": "Pending Permission",
+      "active": "Active",
+      "inactive": "Inactive",
+      "unloaded": "Unloaded",
+      "unknown": "Unknown"
+    },
+    "detail": {
+      "information": "Information",
+      "id": "ID",
+      "type": "Type",
+      "state": "State",
+      "homepage": "Homepage",
+      "repository": "Repository",
+      "noPermissions": "No permissions required",
+      "granted": "Granted",
+      "notGranted": "Not Granted",
+      "statistics": "Statistics",
+      "activations": "Activations",
+      "runtime": "Runtime",
+      "errors": "Errors",
+      "lastActivated": "Last activated",
+      "configuration": "Configuration",
+      "noConfig": "No configuration available",
+      "saveError": "Failed to save configuration: {{error}}",
+      "global": "Global",
+      "local": "App-level"
+    }
+  },
+  "cloudSync": {
+    "header": {
+      "subtitle": "Builtin sync service · UI plugin shell · credentials stay backend-owned",
+      "ready": "Ready",
+      "paused": "Paused"
+    },
+    "sections": {
+      "setup": "Connection",
+      "setupDesc": "Provider and secret refs",
+      "scope": "Scope",
+      "scopeDesc": "Tabs and plugin config",
+      "security": "Security",
+      "securityDesc": "Encryption and sensitive items",
+      "status": "Status",
+      "statusDesc": "Schedule and manual sync",
+      "conflicts": "Conflicts",
+      "conflictsDesc": "Choose merge direction",
+      "logs": "Logs",
+      "logsDesc": "Recent sync events"
+    },
+    "setup": {
+      "title": "Provider configuration",
+      "description": "Choose WebDAV, SFTP, Google Drive, or OneDrive. The frontend only owns the configuration draft; connection tests, credentials, and remote IO go through sync_* IPC commands handled by Rust.",
+      "profileName": "Profile name",
+      "provider": "Provider",
+      "serverUrl": "WebDAV URL",
+      "host": "SFTP host",
+      "port": "Port",
+      "username": "Username",
+      "remoteRoot": "Remote root",
+      "appFolder": "App folder path",
+      "authMethod": "Auth method",
+      "password": "Password",
+      "accessToken": "Access token",
+      "accessTokenPlaceholder": "Paste an OAuth access token with drive app-folder access",
+      "privateKey": "Private key path or PEM",
+      "passphrase": "Passphrase",
+      "webdavHint": "URL + username",
+      "sftpHint": "Host + SSH auth",
+      "googleDriveHint": "appDataFolder",
+      "oneDriveHint": "Graph app folder",
+      "webdavAuthNote": "WebDAV uses username and password or app password.",
+      "oauthTokenNote": "Google Drive and OneDrive use a backend-stored OAuth access token.",
+      "connection": "Connection test",
+      "connectionDesc": "Save the profile and test it through sync_test_connection without exposing credentials to plugin JavaScript."
+    },
+    "scope": {
+      "title": "Sync scope",
+      "description": "Clipboard upload is filtered by selected tabs; remote downloads map by tabName. Plugin sync covers config and active state only, never code bundles or granted permissions.",
+      "tabs": "Tabs",
+      "tabsDesc": "Choose which clipboard spaces are included.",
+      "plugins": "Plugin config",
+      "pluginsDesc": "Only selected plugin config and state are synchronized.",
+      "all": "All",
+      "selected": "Selected",
+      "itemCount": "{{count}} items"
+    },
+    "security": {
+      "title": "Privacy and encryption",
+      "description": "Encryption material should be managed by backend key services. Sync passwords, derived keys, and raw credentials must never enter plugin config.",
+      "encryption": "End-to-end encryption",
+      "encryptionDesc": "Uses xchacha20poly1305 + argon2id when enabled; locked profiles do not auto-sync.",
+      "sensitive": "Allow sensitive uploads",
+      "sensitiveDesc": "When off, items flagged as password, code, secret, or key are not uploaded as plaintext.",
+      "encryptedState": "Remote content will be encrypted",
+      "encryptedStateDesc": "The remote can still see required sync metadata, while clipboard bodies and large image blobs are encrypted first.",
+      "plainState": "This profile may write plaintext",
+      "plainStateDesc": "Use only with fully trusted private storage, and keep sensitive uploads disabled."
+    },
+    "status": {
+      "lastSuccess": "Last success",
+      "nextRun": "Next run",
+      "pending": "Pending",
+      "paused": "Paused",
+      "startup": "Sync on startup",
+      "startupDesc": "Runs after startup once the database and plugin discovery have settled.",
+      "localChange": "Sync on local change",
+      "localChangeDesc": "Clipboard changes schedule a debounced sync instead of a network run per item.",
+      "interval": "Periodic sync interval",
+      "intervalValue": "{{count}} minutes"
+    },
+    "conflicts": {
+      "title": "Conflict resolution",
+      "description": "When the same itemKey has different content or metadata, the user explicitly chooses local, remote, or both.",
+      "local": "Local",
+      "remote": "Remote",
+      "keepLocal": "Keep local",
+      "keepRemote": "Keep remote",
+      "keepBoth": "Keep both"
+    },
+    "logs": {
+      "title": "Sync log",
+      "description": "This previews the sync_get_log_entries shape. Log formatting stays [Module] LEVEL: Message."
+    },
+    "actions": {
+      "test": "Test",
+      "testing": "Testing",
+      "syncNow": "Sync now",
+      "syncing": "Syncing",
+      "pause": "Pause",
+      "resume": "Resume",
+      "resetDraft": "Reset draft"
+    }
+  },
+  "permissions": {
+    "title": "Plugin Permission Request",
+    "description": "{{pluginName}} is requesting the following permissions:",
+    "allow": "Allow",
+    "deny": "Deny",
+    "dataRead": "Read clipboard data",
+    "dataWrite": "Write to clipboard",
+    "settingsRead": "Read app settings",
+    "settingsWrite": "Modify app settings",
+    "network": "Network access",
+    "granted": "Granted",
+    "granting": "Granting...",
+    "allowAll": "Grant All",
+    "allGranted": "All Granted"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "ok": "OK",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "retry": "Retry",
+    "back": "Back",
+    "required": "Required"
+  }
+}

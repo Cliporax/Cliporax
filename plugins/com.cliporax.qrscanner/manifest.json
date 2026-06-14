@@ -1,0 +1,54 @@
+{
+  "id": "com.cliporax.qrscanner",
+  "name": "QR Code Scanner",
+  "version": "1.0.0",
+  "description": "Scan QR codes from screen capture and copy results to clipboard",
+  "author": {
+    "name": "Cliporax",
+    "email": "support@cliporax.app"
+  },
+  "main": "main.js",
+  "type": "transform",
+  "permissions": [
+    {
+      "permission": "data:read",
+      "reason": "Read clipboard content",
+      "required": false
+    },
+    {
+      "permission": "clipboard:write",
+      "reason": "Write scanned QR code content to clipboard",
+      "required": true
+    },
+    {
+      "permission": "data:write",
+      "reason": "Save scanned QR code content into Cliporax history",
+      "required": true
+    }
+  ],
+  "extensions": [
+    {
+      "point": "sidebar",
+      "component": "QRScannerPanel",
+      "priority": 5
+    }
+  ],
+  "configSchema": {
+    "fields": [
+      {
+        "key": "scannerShortcut",
+        "type": "shortcut",
+        "label": "QR scanner shortcut",
+        "description": "Open the QR scanner globally",
+        "default": "Ctrl+Shift+Q",
+        "global": true
+      }
+    ],
+    "default": {
+      "scannerShortcut": "Ctrl+Shift+Q"
+    }
+  },
+  "isBuiltin": true,
+  "keywords": ["qrcode", "scanner", "screen", "capture", "ocr"],
+  "license": "MIT"
+}

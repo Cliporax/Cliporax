@@ -1,0 +1,331 @@
+@import "tailwindcss/theme" layer(theme);
+@import "tailwindcss/preflight" layer(base);
+@import "tailwindcss/utilities" layer(utilities);
+
+/* Tailwind CSS v4: Enable dark mode with class strategy */
+@variant dark (&:where(.dark, .dark *));
+
+/* =====================
+   THEME VARIABLES
+   ===================== */
+:root {
+  /* Light Mode Colors */
+  --bg-primary: #fafafa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f5f5;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #a1a1aa;
+  --border-color: rgba(0, 0, 0, 0.08);
+  --card-bg: rgba(255, 255, 255, 0.85);
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --card-shadow-hover:
+    0 8px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --accent-color: #3b82f6;
+  --accent-bg: rgba(59, 130, 246, 0.1);
+  --button-bg: rgba(0, 0, 0, 0.05);
+  --button-bg-hover: rgba(0, 0, 0, 0.08);
+  --scrollbar-track: #f5f5f5;
+  --scrollbar-thumb: #d4d4d8;
+  --scrollbar-thumb-hover: #a1a1aa;
+}
+
+/* =====================
+   MACOS WINDOW DRAGGING
+   ===================== */
+/* Transparent frameless windows must define draggable regions or they cannot respond to mouse events */
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Ensure the whole app window is not draggable by default; only the title bar is draggable */
+/* Note: this disables HTML5 drag, so draggable elements must opt in explicitly */
+* {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Enable dragging for HTML5 draggable elements, required by macOS WKWebView */
+[draggable="true"] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  /* Ensure draggable elements can receive mouse events */
+  -webkit-user-drag: element;
+  -khtml-user-drag: element;
+  -moz-user-drag: element;
+  user-drag: element;
+  /* Show grab cursor while dragging */
+  cursor: grab;
+}
+
+[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* Show move cursor on the target element during dragging */
+.drag-over-target {
+  cursor: move !important;
+}
+
+.dark {
+  /* Dark Mode Colors */
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #020617;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --card-bg: rgba(255, 255, 255, 0.04);
+  --card-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --card-shadow-hover:
+    0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --accent-color: #60a5fa;
+  --accent-bg: rgba(59, 130, 246, 0.15);
+  --button-bg: rgba(255, 255, 255, 0.1);
+  --button-bg-hover: rgba(255, 255, 255, 0.15);
+  --scrollbar-track: #0f172a;
+  --scrollbar-thumb: #334155;
+  --scrollbar-thumb-hover: #475569;
+}
+
+/* =====================
+   Base Layout
+   ===================== */
+body {
+  margin: 0 !important;
+  padding: 0 !important;
+  background-color: transparent !important;
+  color: var(--text-primary) !important;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif !important;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* =====================
+   Card List Container
+   ===================== */
+.card-list {
+  max-width: 760px !important;
+  margin: 0 auto !important;
+  padding: 20px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+/* =====================
+   Card Styling
+   ===================== */
+.card {
+  position: relative !important;
+  padding: 16px 18px 22px !important;
+  border-radius: 16px !important;
+  box-shadow: var(--card-shadow) !important;
+  cursor: default !important;
+  border: 1px solid var(--border-color) !important;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Unified card background */
+.card {
+  background-color: var(--card-bg) !important;
+}
+
+/* Hover */
+.card:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: var(--card-shadow-hover) !important;
+}
+
+/* Selected state */
+.card.selected {
+  background-color: var(--accent-bg) !important;
+  border-color: var(--accent-color) !important;
+}
+
+/* =====================
+   Card Content
+   ===================== */
+.card-content h3 {
+  margin: 0 0 6px !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  color: var(--text-primary) !important;
+}
+
+.card-content p {
+  margin: 0 !important;
+  font-size: 13px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.5 !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+/* =====================
+   Card Actions
+   ===================== */
+.card-actions {
+  position: absolute !important;
+  right: 14px !important;
+  bottom: 14px !important;
+  display: flex !important;
+  gap: 6px !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: translateY(6px) !important;
+  pointer-events: none !important;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    visibility 0.2s ease !important;
+}
+
+.card:hover .card-actions {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: translateY(0) !important;
+  pointer-events: auto !important;
+}
+
+.card-actions button {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 8px !important;
+  border: none !important;
+  background: var(--button-bg) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  cursor: pointer !important;
+  font-size: 13px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+  transition: all 0.15s ease !important;
+  color: var(--text-secondary) !important;
+}
+
+.card-actions button:hover {
+  transform: scale(1.05) !important;
+  background: var(--button-bg-hover) !important;
+}
+
+.card-actions button.pinned {
+  color: var(--accent-color) !important;
+  background: var(--accent-bg) !important;
+}
+
+/* =====================
+   Custom Scrollbar
+   Note: ::-webkit-scrollbar is WebKit-specific, but this pseudo-element is supported on all target platforms
+   macOS: WKWebView ✅
+   Linux: WebKitGTK ✅
+   Windows: WebView2 (Chromium) ✅
+   ===================== */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Settings content area scrollbar - thin and subtle */
+.settings-scroll-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-scroll-area::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 3px;
+}
+
+.settings-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+.settings-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.3) transparent;
+}
+
+/* =====================
+   Drag Region (for frameless window)
+   Note: -webkit-app-region is required for Tauri window controls and has no standard replacement
+   macOS: WKWebView ✅
+   Linux: WebKitGTK ✅
+   Windows: WebView2 ✅
+   ===================== */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* =====================
+   Shake Animation for Shortcut Conflict
+   ===================== */
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  10%,
+  30%,
+  50%,
+  70%,
+  90% {
+    transform: translateX(-3px);
+  }
+  20%,
+  40%,
+  60%,
+  80% {
+    transform: translateX(3px);
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "com.cliporax.imagepreview",
+  "name": "Image Preview",
+  "version": "1.0.0",
+  "description": "Preview images in a separate resizable window with zoom controls",
+  "author": {
+    "name": "Cliporax",
+    "email": "support@cliporax.app"
+  },
+  "main": "main.js",
+  "type": "transform",
+  "permissions": [
+    {
+      "permission": "data:read",
+      "reason": "Need to read image content for preview",
+      "required": true
+    }
+  ],
+  "extensions": [
+    {
+      "point": "card",
+      "component": "PreviewButton",
+      "condition": "item.type === 'image'",
+      "priority": 20
+    }
+  ],
+  "configSchema": {
+    "fields": [
+      {
+        "key": "maxZoomLevel",
+        "type": "number",
+        "label": "Maximum zoom level",
+        "description": "Set the maximum zoom multiplier for image preview",
+        "default": 5,
+        "min": 1,
+        "max": 10
+      },
+      {
+        "key": "theme",
+        "type": "select",
+        "label": "Preview theme",
+        "description": "Choose the theme style for the image preview window",
+        "default": "dark",
+        "options": [
+          { "value": "light", "label": "Light" },
+          { "value": "dark", "label": "Dark" },
+          { "value": "auto", "label": "Follow system" }
+        ]
+      },
+      {
+        "key": "autoClose",
+        "type": "boolean",
+        "label": "Auto close",
+        "description": "Automatically close the preview window when clicking the backdrop",
+        "default": true
+      },
+      {
+        "key": "previewShortcut",
+        "type": "shortcut",
+        "label": "Preview shortcut",
+        "description": "Shortcut for quickly opening image preview",
+        "default": "Ctrl+Shift+P",
+        "global": false
+      },
+      {
+        "key": "exportShortcut",
+        "type": "shortcut",
+        "label": "Export shortcut",
+        "description": "Shortcut for quickly exporting images",
+        "default": "Ctrl+Shift+E",
+        "global": true
+      }
+    ]
+  },
+  "keywords": ["image", "preview", "viewer", "zoom"],
+  "license": "MIT"
+}

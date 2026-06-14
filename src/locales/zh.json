@@ -1,0 +1,332 @@
+{
+  "app": {
+    "name": "Cliporax",
+    "searchPlaceholder": "搜索剪贴板历史... (Esc 关闭, regx: 正则搜索)",
+    "searchMode": {
+      "regex": "REGEX",
+      "fuzzy": "模糊"
+    },
+    "footer": {
+      "clearSensitive": "清除敏感内容",
+      "settings": "设置",
+      "multiSelectHint": "Ctrl+点击选择, Esc 退出",
+      "searchHint": "Ctrl+F 搜索"
+    }
+  },
+  "titleBar": {
+    "toggleTheme": "切换到{{mode}}模式",
+    "lightMode": "浅色",
+    "darkMode": "深色",
+    "pinWindow": "固定窗口",
+    "unpinWindow": "取消固定窗口",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭"
+  },
+  "clipboardCard": {
+    "editContent": "编辑内容",
+    "pin": "固定",
+    "unpin": "取消固定",
+    "imageLoadError": "图片加载失败"
+  },
+  "contentEditor": {
+    "title": "编辑内容",
+    "subtitle": "修改剪贴板内容 · Ctrl+Enter 保存 · Esc 取消",
+    "cannotEdit": "无法编辑",
+    "imageCannotEdit": "图片类型的内容无法编辑",
+    "placeholder": "在此输入内容...",
+    "unsavedChanges": "有未保存的更改",
+    "characters": "字符",
+    "reset": "重置",
+    "save": "保存",
+    "saving": "保存中..."
+  },
+  "settings": {
+    "title": "设置",
+    "subtitle": "自定义您的体验",
+    "tabs": {
+      "general": "通用",
+      "shortcuts": "快捷键",
+      "plugins": "插件",
+      "sync": "同步",
+      "about": "关于"
+    },
+    "tabDescriptions": {
+      "general": "应用外观和行为设置",
+      "shortcuts": "键盘快捷键配置",
+      "plugins": "扩展功能管理",
+      "sync": "云同步配置",
+      "about": "应用信息和更新"
+    },
+    "general": {
+      "theme": "主题",
+      "themeOptions": {
+        "light": "浅色",
+        "dark": "深色",
+        "system": "跟随系统"
+      },
+      "maxTextItems": "最大文本条目数",
+      "maxImageItems": "最大图片条目数",
+      "limitHint": "超出限制时旧条目将自动删除",
+      "cardSize": "卡片大小",
+      "cardSizeHint": "调整卡片字体大小，所有尺寸均为单行显示。",
+      "cardSizeOptions": {
+        "small": "小",
+        "medium": "中",
+        "large": "大"
+      },
+      "autoStart": "开机自启动",
+      "autoStartDesc": "登录时自动启动 Cliporax",
+      "autoHide": "失去焦点时自动隐藏",
+      "autoHideDesc": "窗口失去焦点时自动隐藏"
+    },
+    "shortcuts": {
+      "instruction": "点击快捷键进行修改，按下新的按键组合来设置。",
+      "toggleWindow": "切换主窗口",
+      "toggleWindowDesc": "显示/隐藏 Cliporax 窗口",
+      "search": "搜索",
+      "searchDesc": "打开搜索栏",
+      "togglePin": "切换固定",
+      "togglePinDesc": "固定/取消固定选中项",
+      "deleteItem": "删除项目",
+      "deleteItemDesc": "删除选中项目",
+      "global": "全局",
+      "pressKeys": "按下按键...",
+      "conflict": "与 \"{{label}}\" 冲突",
+      "pluginShortcuts": "插件快捷键 (即将推出)",
+      "ocrExtract": "OCR 提取",
+      "ocrDesc": "从剪贴板图片提取文字",
+      "semanticSearch": "语义搜索",
+      "semanticDesc": "AI 驱动的内容搜索",
+      "notSet": "未设置"
+    },
+    "about": {
+      "version": "版本 1.0.0-mvp",
+      "checkUpdate": "检查更新",
+      "lastChecked": "上次检查：从未",
+      "checkNow": "立即检查",
+      "changelog": "更新日志",
+      "documentation": "使用文档",
+      "reportIssue": "反馈问题",
+      "copyright": "© 2024 Cliporax Team",
+      "license": "MIT 许可证",
+      "devTest": "开发者测试",
+      "insertTestData": "插入 10000 条测试数据",
+      "inserting": "插入中...",
+      "clear": "清空",
+      "insertSuccess": "成功插入 {{count}} 条数据，耗时 {{elapsed}}ms",
+      "insertError": "插入失败: {{error}}",
+      "clearSuccess": "已清空所有数据",
+      "clearError": "清空失败: {{error}}"
+    },
+    "language": {
+      "label": "语言",
+      "en": "English",
+      "zh": "简体中文"
+    }
+  },
+  "clipboardList": {
+    "loading": "加载中...",
+    "empty": "暂无剪贴板记录",
+    "emptyHint": "复制内容开始使用",
+    "error": "加载项目时出错",
+    "dragMultiple": "个项目已选中",
+    "exitMultiSelect": "退出",
+    "searching": "搜索中...",
+    "noResults": "未找到匹配项",
+    "noResultsRegexHint": "请检查正则表达式",
+    "noResultsFuzzyHint": "尝试其他搜索词",
+    "clipboardEmpty": "剪贴板为空",
+    "clipboardEmptyHint": "复制内容后会显示在这里",
+    "totalRecords": "共 {{count}} 条记录",
+    "scrollbarPosition": "第 {{current}} / {{total}} 条"
+  },
+  "plugins": {
+    "loading": "加载插件中...",
+    "error": "加载插件失败: {{message}}",
+    "noPlugins": "未安装任何插件",
+    "noPluginsHint": "探索插件市场以扩展 Cliporax 功能",
+    "installPlugin": "安装插件",
+    "uninstall": "卸载",
+    "enable": "启用",
+    "disable": "禁用",
+    "settings": "设置",
+    "version": "版本",
+    "author": "作者",
+    "description": "描述",
+    "permissions": "权限",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "refresh": "刷新",
+    "count": "{{count}} 个插件",
+    "load": "加载",
+    "activate": "激活",
+    "deactivate": "停用",
+    "grantPermission": "授予权限",
+    "state": {
+      "discovered": "已发现",
+      "validated": "已验证",
+      "loaded": "已加载",
+      "pendingPermission": "等待权限",
+      "active": "运行中",
+      "inactive": "未激活",
+      "unloaded": "已卸载",
+      "unknown": "未知"
+    },
+    "detail": {
+      "information": "基本信息",
+      "id": "ID",
+      "type": "类型",
+      "state": "状态",
+      "homepage": "主页",
+      "repository": "仓库",
+      "noPermissions": "无需权限",
+      "granted": "已授予",
+      "notGranted": "未授予",
+      "statistics": "统计信息",
+      "activations": "激活次数",
+      "runtime": "运行时间",
+      "errors": "错误次数",
+      "lastActivated": "最后激活时间",
+      "configuration": "配置",
+      "noConfig": "暂无配置项",
+      "saveError": "保存配置失败: {{error}}",
+      "global": "全局",
+      "local": "应用内"
+    }
+  },
+  "cloudSync": {
+    "header": {
+      "subtitle": "内建同步服务 · UI 插件壳 · 凭据只由后端保存",
+      "ready": "就绪",
+      "paused": "已暂停"
+    },
+    "sections": {
+      "setup": "连接",
+      "setupDesc": "Provider 和凭据引用",
+      "scope": "范围",
+      "scopeDesc": "标签页和插件配置",
+      "security": "安全",
+      "securityDesc": "加密和敏感内容",
+      "status": "状态",
+      "statusDesc": "计划、手动同步",
+      "conflicts": "冲突",
+      "conflictsDesc": "手动选择合并方向",
+      "logs": "日志",
+      "logsDesc": "最近同步事件"
+    },
+    "setup": {
+      "title": "Provider 配置",
+      "description": "可选择 WebDAV、SFTP、Google Drive 或 OneDrive。前端只保存配置草稿，连接测试、凭据和远程 IO 都通过 Rust 后端的 sync_* IPC 处理。",
+      "profileName": "配置名称",
+      "provider": "Provider",
+      "serverUrl": "WebDAV 地址",
+      "host": "SFTP 主机",
+      "port": "端口",
+      "username": "用户名",
+      "remoteRoot": "远程目录",
+      "appFolder": "应用目录",
+      "authMethod": "认证方式",
+      "password": "密码",
+      "accessToken": "访问令牌",
+      "accessTokenPlaceholder": "粘贴具备应用目录访问权限的 OAuth access token",
+      "privateKey": "私钥路径或 PEM 内容",
+      "passphrase": "私钥密码",
+      "webdavHint": "地址 + 用户名",
+      "sftpHint": "主机 + SSH 认证",
+      "googleDriveHint": "appDataFolder",
+      "oneDriveHint": "Graph 应用目录",
+      "webdavAuthNote": "WebDAV 使用用户名和密码，或服务商提供的应用密码。",
+      "oauthTokenNote": "Google Drive 和 OneDrive 使用后端保存的 OAuth access token。",
+      "connection": "连接测试",
+      "connectionDesc": "保存配置后通过 sync_test_connection 测试连接，凭据不会暴露给插件 JavaScript。"
+    },
+    "scope": {
+      "title": "同步范围",
+      "description": "剪贴板按标签页过滤上传，远端下载按 tabName 映射。插件只同步配置和启用状态，不同步代码包或已授予权限。",
+      "tabs": "标签页",
+      "tabsDesc": "选择需要同步的剪贴板空间。",
+      "plugins": "插件配置",
+      "pluginsDesc": "只同步已选择插件的配置和状态。",
+      "all": "全部",
+      "selected": "选择",
+      "itemCount": "{{count}} 项"
+    },
+    "security": {
+      "title": "隐私和加密",
+      "description": "加密资料应由后端密钥服务管理。同步密码、派生密钥和原始凭据不能进入插件配置。",
+      "encryption": "端到端加密",
+      "encryptionDesc": "启用后使用 xchacha20poly1305 + argon2id；未解锁时不自动同步。",
+      "sensitive": "允许上传敏感项",
+      "sensitiveDesc": "关闭时，标记为密码、验证码、secret 或 key 的内容不会以明文上传。",
+      "encryptedState": "当前配置会加密远端内容",
+      "encryptedStateDesc": "远端仍可看到必要的同步元数据，但剪贴板正文和大图片 blob 会先加密。",
+      "plainState": "当前配置可能写入明文",
+      "plainStateDesc": "建议仅用于完全可信的私有存储，并保持敏感项上传关闭。"
+    },
+    "status": {
+      "lastSuccess": "上次成功",
+      "nextRun": "下次运行",
+      "pending": "待处理",
+      "paused": "已暂停",
+      "startup": "启动后同步",
+      "startupDesc": "应用启动、数据库和插件发现完成后延迟执行。",
+      "localChange": "本地变化触发",
+      "localChangeDesc": "剪贴板变更后进行防抖调度，不为每条记录立即发起网络请求。",
+      "interval": "周期同步间隔",
+      "intervalValue": "{{count}} 分钟"
+    },
+    "conflicts": {
+      "title": "冲突处理",
+      "description": "同一 itemKey 的内容或元数据不一致时，由用户明确选择保留本地、远端或两者。",
+      "local": "本地",
+      "remote": "远端",
+      "keepLocal": "保留本地",
+      "keepRemote": "保留远端",
+      "keepBoth": "保留两者"
+    },
+    "logs": {
+      "title": "同步日志",
+      "description": "这里展示后端 sync_get_log_entries 的目标形态，日志格式保持 [Module] LEVEL: Message。"
+    },
+    "actions": {
+      "test": "测试",
+      "testing": "测试中",
+      "syncNow": "立即同步",
+      "syncing": "同步中",
+      "pause": "暂停",
+      "resume": "恢复",
+      "resetDraft": "重置草稿"
+    }
+  },
+  "permissions": {
+    "title": "插件权限请求",
+    "description": "{{pluginName}} 正在请求以下权限：",
+    "allow": "允许",
+    "deny": "拒绝",
+    "dataRead": "读取剪贴板数据",
+    "dataWrite": "写入剪贴板",
+    "settingsRead": "读取应用设置",
+    "settingsWrite": "修改应用设置",
+    "network": "网络访问",
+    "granted": "已授予",
+    "granting": "授予中...",
+    "allowAll": "全部允许",
+    "allGranted": "已全部授予"
+  },
+  "common": {
+    "cancel": "取消",
+    "ok": "确定",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "close": "关闭",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "retry": "重试",
+    "back": "返回",
+    "required": "必需"
+  }
+}

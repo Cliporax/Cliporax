@@ -1,0 +1,165 @@
+# Cliporax
+
+[English](README.md) | [Simplified Chinese](README.zh-CN.md)
+
+Cliporax is a privacy-first cross-platform clipboard manager. It is built with Tauri 2, React, TypeScript, Rust, and SQLite, with a focus on storing clipboard history reliably on the local machine and extending everyday copy/paste workflows through plugins, shortcuts, tabs, and optional cloud sync.
+
+The current codebase implements local clipboard history, desktop windows, the plugin runtime, settings, the CLI, and the Cloud Sync foundation. AI OCR, semantic search, summaries, and SQLCipher full-database encryption remain roadmap items, so this README does not present them as completed features.
+
+## Current Features
+
+- Text and image clipboard monitoring with automatic writes to a local SQLite database.
+- Clipboard history list, virtual scrolling, search, `regx:` regex search, pinning, deletion, multi-select, and drag reordering.
+- Multi-tab management, including moving or copying items between tabs.
+- Sensitive-content marking and clearing, with default keyword detection for `password`, `code`, `otp`, `verification code`, `secret`, `key`, and related terms.
+- Global shortcut for showing the main window. The default is `CmdOrControl+Shift+V` and can be changed in settings.
+- Copying history items and pasting them back into the previous window, including Linux/macOS/Windows window and focus handling.
+- System tray integration, frameless window, pin/unpin, auto-hide, and saved window size and position.
+- Settings window for theme, list density, shortcuts, plugins, and sync configuration.
+- Plugin system with discovery, loading, enable/disable, permission grants, configuration fields, and UI extension points.
+- Built-in plugin examples: QR code generation, QR code scanning, image preview, and the Cloud Sync settings panel.
+- Cloud Sync backend foundation with configuration models, credential storage, sync status, logs, and conflict handling entry points for WebDAV, SFTP, Google Drive, and OneDrive.
+- `cliporax-cli` command-line tool for reading, searching, copying, and saving clipboard history.
+- English and Chinese UI strings.
+
+## Tech Stack
+
+- Desktop framework: Tauri 2
+- Frontend: React 19, TypeScript, Vite, Tailwind CSS v4
+- State management: Zustand
+- Backend: Rust, Tokio, SQLx
+- Database: SQLite
+- Plugins: local plugin packages, manifest permission declarations, frontend extension points, and backend lifecycle management
+- Tests: Vitest and Rust unit tests
+
+## Project Structure
+
+```text
+.
+├── src/                    # React frontend, state, components, and plugin frontend runtime
+├── src-tauri/              # Rust/Tauri backend, database, IPC, sync, and plugin lifecycle
+├── plugins/                # Built-in/example plugin packages
+├── scripts/                # Plugin builds, CLI preparation, and agent check scripts
+├── docs/                   # Public technical documentation
+├── agent/skills/           # Project collaboration and check workflows
+└── package.json            # Frontend and Tauri development commands
+```
+
+## Quick Start
+
+### Requirements
+
+- Node.js and npm
+- Rust stable. The project requires Rust `1.77.2+`.
+- System dependencies required by Tauri 2
+- For Linux packaging and clipboard support, `xclip` and `x11-utils` are recommended.
+
+### Install Dependencies
+
+```bash
+npm install
+```
+
+Some built-in plugin directories have their own lockfiles. `plugins/com.cliporax.cloud-sync` uses `yarn.lock`; do not introduce `package-lock.json` there unless intentionally migrating package managers.
+
+### Start Development
+
+```bash
+npm run tauri:dev
+```
+
+This command prepares the CLI, builds and installs the built-in plugins, then starts Vite and the Tauri application.
+
+You can also start only the frontend:
+
+```bash
+npm run dev
+```
+
+## Common Scripts
+
+```bash
+npm run build              # Type-check and build the frontend
+npm run tauri:build        # Build desktop application bundles
+npm run test:run           # Run frontend tests
+npm run plugins:dev        # Build and install built-in plugins
+npm run codegen:types      # Export TypeScript types from Rust
+npm run cli:build          # Build cliporax-cli
+npm run cli -- list        # Run a CLI example
+```
+
+Rust tests:
+
+```bash
+cd src-tauri
+cargo test
+```
+
+The repository also provides fast checks for collaborating agents:
+
+```bash
+scripts/agent/targeted-test.sh
+scripts/agent/cross-platform-check.sh
+scripts/agent/git-hygiene-check.sh
+```
+
+## CLI Examples
+
+```bash
+npm run cli -- list --limit 10
+npm run cli -- get latest --raw
+npm run cli -- search "token"
+npm run cli -- copy "hello from Cliporax" --save
+npm run cli -- save --file ./notes.txt
+```
+
+The CLI connects to the local SQLite database created by Cliporax, so the desktop app must have been run at least once to initialize the app data directory.
+
+## Plugin System
+
+Plugins live under `plugins/`. Each plugin contains a `manifest.json` and an entry script. The manifest describes the plugin ID, name, version, type, permissions, extension points, and configuration fields.
+
+Current built-in/example plugins:
+
+- `com.cliporax.qrcode`: generates QR codes for text clipboard items.
+- `com.cliporax.qrscanner`: scans QR codes from a screen region and can write results into clipboard history.
+- `com.cliporax.imagepreview`: previews images in a separate window with zoom configuration.
+- `com.cliporax.cloud-sync`: provides the settings panel and status UI for sync.
+
+Common plugin development commands:
+
+```bash
+npm run plugins:build
+npm run plugins:install
+npm run plugins:dev
+```
+
+## Data and Privacy
+
+- Clipboard history is stored by default in `cliporax.db` under the local app data directory.
+- Settings are stored in `cliporax/settings.json` under the user configuration directory.
+- The project does not include telemetry by default.
+- Backend logs should avoid full clipboard content, keys, tokens, and decrypted sensitive data.
+- Sync credentials are saved by the backend. The sync module includes encryption and unlock models, but the main SQLite clipboard database is not currently encrypted with SQLCipher.
+
+## Cloud Sync Status
+
+The codebase includes Cloud Sync configuration UI, provider abstractions, WebDAV/SFTP/Google Drive/OneDrive providers, sync profiles, backend credential references, encryption and unlock models, scheduler state, run reports, logs, conflict handling, and plugin configuration sync entry points. It is no longer only a settings shell, but it should still be treated as "usable foundation implemented; production experience still needs refinement."
+
+Sync-related code is mainly located in:
+
+- `src-tauri/src/sync/`
+- `src/components/Settings/CloudSyncTab.tsx`
+- `plugins/com.cliporax.cloud-sync/`
+
+## Completion Status and Next Steps
+
+- Plugin system: plugin discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.
+- AI features: general image OCR, local semantic search, and text summaries are not implemented. The QR scanner plugin can recognize QR codes, but that is not equivalent to OCR or AI retrieval.
+- Local encryption: the sync module has a remote-sync encryption model based on Argon2id and authenticated encryption, and provider credentials are saved through the backend. The main SQLite clipboard database is not currently encrypted with SQLCipher.
+- Cloud Sync: the settings UI, sync profiles, WebDAV/SFTP/Google Drive/OneDrive providers, credential references, connection tests, scheduling, logs, conflict entry points, and optional encryption model are implemented. Next steps should focus on verification with real services, conflict UX, credential storage hardening, and cross-platform runtime testing.
+- Packaging and release: Tauri build scripts and Linux `deb`/`rpm` bundle configuration exist. macOS/Windows packaging configuration and release pipelines still need to be completed and verified.
+
+## License
+
+Cliporax is licensed under the [MIT License](LICENSE).
