@@ -9,21 +9,27 @@ This file is the agent entry point. Keep detailed procedures in `agent/skills/` 
 - Read the codebase before changing it; prefer existing patterns over new abstractions.
 - Implement the requested change unless the user explicitly asks for planning or review only.
 - Keep changes scoped. Do not refactor unrelated code.
+- After completing code changes, run the post-change review flow to verify the requested behavior, diff scope, and regression risk before the final response.
 - Never revert user changes or untracked work unless explicitly asked.
 - Stage explicit paths only. Do not commit build artifacts, experimental bridge code, or unrelated untracked files.
 
 ## Skill Routing
 
-Use the smallest relevant skill set:
+Use the smallest relevant skill set. Skills are grouped by task phase:
 
-- `agent/skills/auto-plan.md`: medium/large work, cross frontend/backend changes, schema/data-flow changes.
-- `agent/skills/targeted-test.md`: choose fast verification after changes.
-- `agent/skills/cross-platform-check.md`: system APIs, windowing, clipboard, files, shortcuts, CSS/WebView/browser API changes, and before commits.
-- `agent/skills/code-review.md`: review requests, risky changes, or pre-commit review.
-- `agent/skills/git-hygiene.md`: staging, committing, pushing, artifact/lockfile checks.
-- `agent/skills/tauri-ipc-contract.md`: adding/changing Tauri commands, events, invoke wrappers, or shared TS/Rust contracts.
-- `agent/skills/sync-engine.md`: cloud sync, profiles, cursors, item maps, tombstones, conflicts, encryption, scheduler.
-- `agent/skills/dev-log.md`: debugging runtime logs, IPC traces, lock contention, clipboard/window behavior.
+- Workflow:
+  - `agent/skills/workflow/auto-plan.md`: medium/large work, cross frontend/backend changes, schema/data-flow changes.
+  - `agent/skills/workflow/post-change-review.md`: after implementing any requested code change; verify logic correctness and unchanged behavior outside the intended scope.
+- Quality gates:
+  - `agent/skills/quality/targeted-test.md`: choose fast verification after changes.
+  - `agent/skills/quality/cross-platform-check.md`: system APIs, windowing, clipboard, files, shortcuts, CSS/WebView/browser API changes, and before commits.
+  - `agent/skills/quality/code-review.md`: review requests, risky changes, or pre-commit review.
+  - `agent/skills/quality/git-hygiene.md`: staging, committing, pushing, artifact/lockfile checks.
+- Domain contracts:
+  - `agent/skills/domain/tauri-ipc-contract.md`: adding/changing Tauri commands, events, invoke wrappers, or shared TS/Rust contracts.
+  - `agent/skills/domain/sync-engine.md`: cloud sync, profiles, cursors, item maps, tombstones, conflicts, encryption, scheduler.
+- Debugging:
+  - `agent/skills/debug/dev-log.md`: debugging runtime logs, IPC traces, lock contention, clipboard/window behavior.
 
 Do not produce long template reports for small tasks. Use compact plans and targeted verification.
 
@@ -114,7 +120,7 @@ Use structured, contextual logs. Avoid clipboard content and secrets.
 
 - Format convention: `[Component/Module] Level: Message`
 - Development log files are date-rotated under app data: `logs/dev-YYYY-MM-DD.log`
-- See `agent/skills/dev-log.md` for exact platform paths and grep/jq commands.
+- See `agent/skills/debug/dev-log.md` for exact platform paths and grep/jq commands.
 
 ## IPC Contract
 
@@ -124,7 +130,7 @@ When adding or changing commands:
 - Add/update typed wrapper and types in `src/lib/tauri-api.ts`.
 - Handle frontend errors with state-level error handling or `try/catch`.
 - Add focused tests for important success/failure behavior.
-- Use `agent/skills/tauri-ipc-contract.md` for the full checklist.
+- Use `agent/skills/domain/tauri-ipc-contract.md` for the full checklist.
 
 ## Sync Engine Invariants
 
@@ -135,7 +141,7 @@ For `src-tauri/src/sync/` changes:
 - Do not advance a remote cursor when a remote change failed to download, decode, or apply.
 - Partial success must preserve error details in run report/status.
 - Conflict resolution must be explicit and auditable.
-- Use `agent/skills/sync-engine.md` before editing sync behavior.
+- Use `agent/skills/domain/sync-engine.md` before editing sync behavior.
 
 ## Frontend Guidance
 

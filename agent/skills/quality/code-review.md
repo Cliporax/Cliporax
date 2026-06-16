@@ -1,6 +1,6 @@
 # Code Review Skill
 
-Use this when the user asks for review, before committing risky changes, or after completing a medium/large feature.
+Use this when the user asks for review, before committing risky changes, or when `agent/skills/workflow/post-change-review.md` finds non-trivial risk.
 
 ## Review Stance
 
@@ -33,6 +33,8 @@ Find bugs, regressions, missing tests, security risks, deadlocks, and cross-plat
 5. Tests:
    - run `scripts/agent/targeted-test.sh`, or `--cached` for staged-only review
    - add focused tests for changed behavior when practical
+
+For routine "I just changed code" validation, use `agent/skills/workflow/post-change-review.md` first. Escalate to this skill when findings need a code-review style report or the change is broad/risky.
 
 ## Output Format
 
