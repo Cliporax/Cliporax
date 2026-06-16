@@ -596,6 +596,20 @@ pub async fn clipboard_copy(
                 }
             }
         }
+        "file" => {
+            log::debug!("[Command] Attempting to copy file list to clipboard");
+            match monitor.write_files(&content).await {
+                Ok(_) => {
+                    log::info!("[Command] clipboard_copy file success");
+                    Ok(())
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to write file list: {}", e);
+                    log::error!("[Command] clipboard_copy file failed: {}", error_msg);
+                    Err(error_msg)
+                }
+            }
+        }
         _ => {
             let error_msg = format!("Invalid type: {}", itemType);
             log::error!("[Command] clipboard_copy invalid type: {}", error_msg);

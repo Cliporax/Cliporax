@@ -2,13 +2,11 @@
 //! Enabled only in debug_assertions mode; writes frontend and backend logs to files
 //! Supports JSON format, daily rotation, trace ID tracking, and async batched writes
 
+use crate::async_log_writer::{AsyncBatchWriter, BatchWriterConfig};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
-
-use crate::async_log_writer::{AsyncBatchWriter, BatchWriterConfig};
 
 /// Log entry structure passed from the frontend
 #[derive(Debug, Deserialize)]
@@ -59,10 +57,7 @@ pub struct DevLogFileBackend {
 impl DevLogFileBackend {
     /// Initialize log files with daily rotation
     pub fn init(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let app_data = app_handle
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        let app_data = crate::portable::app_data_dir(app_handle)?;
 
         let logs_dir = app_data.join("logs");
         std::fs::create_dir_all(&logs_dir)

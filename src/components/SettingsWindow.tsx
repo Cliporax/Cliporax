@@ -3,12 +3,14 @@
  * Used to display the settings page in a standalone window
  */
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import Settings, {
+  backendToFrontendSettings,
   loadSettings,
   GeneralSettings,
   ShortcutSettings,
 } from "./Settings";
+import { settings as settingsApi } from "../lib/tauri-api";
 import { PluginProvider } from "../plugin";
 import { createLogger } from "../utils/logger";
 import { useSettingsSync } from "../hooks/useSettingsSync";
@@ -17,6 +19,24 @@ const logger = createLogger("SettingsWindow");
 
 const SettingsWindow: React.FC = () => {
   const [settings, setSettings] = useState(loadSettings());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    settingsApi
+      .getAll()
+      .then((backendSettings) => {
+        if (cancelled) return;
+        setSettings(backendToFrontendSettings(backendSettings));
+      })
+      .catch((error) => {
+        logger.error("[SettingsWindow] Failed to load backend settings:", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Local settings change callback triggered by Settings component actions
   // The button onClick already calls both syncSettingsToBackend and onSettingsChange

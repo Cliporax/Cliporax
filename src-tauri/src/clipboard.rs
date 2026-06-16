@@ -8,6 +8,7 @@ use image::{
 use regex::Regex;
 use serde_json;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,6 +18,45 @@ use tokio::time::interval;
 
 lazy_static::lazy_static! {
     static ref SENSITIVE_REGEX: Regex = Regex::new(r"(?i)(password|code|otp|验证码|secret|key)").unwrap();
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ClipboardChangedPayload {
+    #[serde(rename = "tabIds")]
+    tab_ids: Vec<i64>,
+    #[serde(rename = "itemIds")]
+    item_ids: Vec<i64>,
+    reason: &'static str,
+}
+
+fn emit_clipboard_changed(
+    app_handle: &tauri::AppHandle,
+    tab_ids: Vec<i64>,
+    item_ids: Vec<i64>,
+    reason: &'static str,
+) {
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        let payload = ClipboardChangedPayload {
+            tab_ids,
+            item_ids,
+            reason,
+        };
+        match app_handle_clone.emit("clipboard:changed", payload) {
+            Ok(_) => log::info!("[Clipboard] Event emitted successfully"),
+            Err(e) => log::error!("[Clipboard] Failed to emit event: {}", e),
+        }
+    });
+}
+
+async fn item_tab_id(db: &Db, item_id: i64) -> Option<i64> {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT tab_id FROM clipboard_items WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
 }
 
 /// Convert RGBA bytes to PNG format (CPU intensive)
@@ -83,6 +123,46 @@ fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<(usize, usize, Vec<
             .ok()
             .map(|image| (image.width, image.height, image.bytes.to_vec()))
     }
+}
+
+fn parse_file_list(content: &str) -> Vec<PathBuf> {
+    if let Ok(paths) = serde_json::from_str::<Vec<String>>(content) {
+        return paths
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .collect();
+    }
+
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+}
+
+fn file_uri_from_path(path: &Path) -> String {
+    format!("file://{}", path.to_string_lossy().replace('\\', "/"))
+}
+
+fn paths_from_uri_list(uri_list: &str) -> Vec<String> {
+    uri_list
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            if let Some(path) = line.strip_prefix("file://") {
+                urlencoding::decode(path)
+                    .ok()
+                    .map(|decoded| decoded.into_owned())
+            } else {
+                None
+            }
+        })
+        .filter(|path| PathBuf::from(path).exists())
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -287,8 +367,24 @@ impl ClipboardMonitor {
                 None
             };
 
+            let mut current_file_content = String::new();
+
             #[cfg(target_os = "linux")]
             if current_text.is_empty() {
+                if let Some(paths) = self
+                    .try_get_linux_file_list_with_targets(linux_targets.as_deref())
+                    .await
+                {
+                    current_file_content = paths.join("\n");
+                    log::info!(
+                        "[Clipboard] Linux file list detected, files: {}",
+                        paths.len()
+                    );
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            if current_text.is_empty() && current_file_content.is_empty() {
                 let should_try_text_fallback = linux_targets
                     .as_deref()
                     .map(|targets| {
@@ -333,7 +429,7 @@ impl ClipboardMonitor {
             let mut current_image_hash = String::new();
 
             #[cfg(target_os = "linux")]
-            if current_text.is_empty() {
+            if current_text.is_empty() && current_file_content.is_empty() {
                 if let Some(image_read) = self
                     .try_get_linux_image_with_targets(linux_targets.as_deref())
                     .await
@@ -377,16 +473,21 @@ impl ClipboardMonitor {
                             *last_linux_clipboard_timestamp.lock().await = timestamp.to_string();
                         }
 
-                        let app_handle_clone = app_handle.clone();
-                        tokio::spawn(async move {
-                            let _ = app_handle_clone.emit("clipboard:changed", ());
-                        });
+                        if let Some(tab_id) = item_tab_id(&db, existing_id).await {
+                            emit_clipboard_changed(
+                                &app_handle,
+                                vec![tab_id],
+                                vec![existing_id],
+                                "duplicate-image",
+                            );
+                        }
                         continue;
                     }
                 }
             }
 
             if current_image_data.is_empty()
+                && current_file_content.is_empty()
                 && (current_text.is_empty() || cfg!(not(target_os = "linux")))
             {
                 // Get raw image data from clipboard
@@ -461,11 +562,14 @@ impl ClipboardMonitor {
                             *last_linux_clipboard_timestamp.lock().await = timestamp.to_string();
                         }
 
-                        // Emit event immediately
-                        let app_handle_clone = app_handle.clone();
-                        tokio::spawn(async move {
-                            let _ = app_handle_clone.emit("clipboard:changed", ());
-                        });
+                        if let Some(tab_id) = item_tab_id(&db, existing_id).await {
+                            emit_clipboard_changed(
+                                &app_handle,
+                                vec![tab_id],
+                                vec![existing_id],
+                                "duplicate-image",
+                            );
+                        }
                         continue; // Skip to next iteration
                     }
 
@@ -499,10 +603,53 @@ impl ClipboardMonitor {
                 }
             }
 
-            let mut changed = false;
+            let mut changed_tab_ids: Vec<i64> = Vec::new();
+            let mut changed_item_ids: Vec<i64> = Vec::new();
+
+            // Handle file list change
+            if !current_file_content.is_empty() {
+                let file_hash = format!("{:x}", Sha256::digest(current_file_content.as_bytes()));
+                let last = last_text.lock().await.clone();
+
+                if current_file_content != last {
+                    let metadata = self.get_metadata().await;
+                    let item = ClipboardItemInput {
+                        item_type: "file".to_string(),
+                        content: current_file_content.clone(),
+                        content_hash: Some(file_hash),
+                        metadata: Some(serde_json::to_string(&metadata).unwrap_or_default()),
+                        tags: Some("[]".to_string()),
+                        tab_id: None,
+                        is_sensitive: Some(0),
+                        is_pinned: Some(0),
+                    };
+
+                    match ClipboardRepository::create_for_auto_capture_tabs(&db, item).await {
+                        Ok(ids) => {
+                            if !ids.is_empty() {
+                                *last_text.lock().await = current_file_content.clone();
+                                changed_item_ids.extend(ids.iter().copied());
+                                for id in ids {
+                                    if let Some(tab_id) = item_tab_id(&db, id).await {
+                                        changed_tab_ids.push(tab_id);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[Clipboard] Failed to save file list: {}", e);
+                        }
+                    }
+                }
+
+                #[cfg(target_os = "linux")]
+                if let Some(timestamp) = linux_clipboard_timestamp.as_deref() {
+                    *last_linux_clipboard_timestamp.lock().await = timestamp.to_string();
+                }
+            }
 
             // Handle text change
-            if !current_text.is_empty() {
+            if current_file_content.is_empty() && !current_text.is_empty() {
                 let last = last_text.lock().await.clone();
                 if current_text != last {
                     log::debug!(
@@ -551,10 +698,14 @@ impl ClipboardMonitor {
                         if let Err(e) = ClipboardRepository::move_to_top(&db, existing_id).await {
                             log::error!("[Clipboard] Failed to move existing text to top: {}", e);
                         }
-                        let app_handle_clone = app_handle.clone();
-                        tokio::spawn(async move {
-                            let _ = app_handle_clone.emit("clipboard:changed", ());
-                        });
+                        if let Some(tab_id) = item_tab_id(&db, existing_id).await {
+                            emit_clipboard_changed(
+                                &app_handle,
+                                vec![tab_id],
+                                vec![existing_id],
+                                "duplicate-text",
+                            );
+                        }
                         continue; // Skip to next iteration
                     }
 
@@ -586,7 +737,12 @@ impl ClipboardMonitor {
                                     ids.len(),
                                     ids
                                 );
-                                changed = true;
+                                changed_item_ids.extend(ids.iter().copied());
+                                for id in ids {
+                                    if let Some(tab_id) = item_tab_id(&db, id).await {
+                                        changed_tab_ids.push(tab_id);
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -644,7 +800,12 @@ impl ClipboardMonitor {
                                     ids.len(),
                                     ids
                                 );
-                                changed = true;
+                                changed_item_ids.extend(ids.iter().copied());
+                                for id in ids {
+                                    if let Some(tab_id) = item_tab_id(&db, id).await {
+                                        changed_tab_ids.push(tab_id);
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -655,16 +816,16 @@ impl ClipboardMonitor {
             }
 
             // Notify frontend of change immediately for better responsiveness
-            if changed {
+            if !changed_tab_ids.is_empty() {
                 log::info!("[Clipboard] Notifying frontend of clipboard change");
-                let app_handle_clone = app_handle.clone();
-                // Emit event in a separate task to not block the monitoring loop
-                tokio::spawn(async move {
-                    match app_handle_clone.emit("clipboard:changed", ()) {
-                        Ok(_) => log::info!("[Clipboard] Event emitted successfully"),
-                        Err(e) => log::error!("[Clipboard] Failed to emit event: {}", e),
-                    }
-                });
+                changed_tab_ids.sort_unstable();
+                changed_tab_ids.dedup();
+                emit_clipboard_changed(
+                    &app_handle,
+                    changed_tab_ids,
+                    changed_item_ids,
+                    "create",
+                );
             }
         }
     }
@@ -694,6 +855,46 @@ impl ClipboardMonitor {
         }
 
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn try_get_linux_file_list_with_targets(
+        &self,
+        targets: Option<&str>,
+    ) -> Option<Vec<String>> {
+        let owned_targets;
+        let targets = match targets {
+            Some(targets) => targets,
+            None => {
+                owned_targets = self.get_linux_clipboard_targets().await?;
+                &owned_targets
+            }
+        };
+
+        if !targets
+            .lines()
+            .any(|target| target.trim() == "text/uri-list")
+        {
+            return None;
+        }
+
+        let output = run_xclip_with_timeout(
+            &["-o", "-selection", "clipboard", "-t", "text/uri-list"],
+            500,
+        )
+        .await?;
+
+        if !output.status.success() || output.stdout.is_empty() {
+            return None;
+        }
+
+        let uri_list = String::from_utf8_lossy(&output.stdout);
+        let paths = paths_from_uri_list(&uri_list);
+        if paths.is_empty() {
+            None
+        } else {
+            Some(paths)
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -990,6 +1191,100 @@ impl ClipboardMonitor {
                 log::error!("[Clipboard] Failed to write image: {}", e);
                 Err(e.into())
             }
+        }
+    }
+
+    pub async fn write_files(&self, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let paths = parse_file_list(content);
+        if paths.is_empty() {
+            return Err("No existing files to copy".into());
+        }
+
+        log::info!(
+            "[Clipboard] write_files called with {} file(s)",
+            paths.len()
+        );
+        self.mark_internal_change().await;
+
+        #[cfg(target_os = "windows")]
+        {
+            let quoted_paths = paths
+                .iter()
+                .map(|path| format!("'{}'", path.display().to_string().replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",");
+            let script = format!("Set-Clipboard -LiteralPath @({})", quoted_paths);
+            let status = Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg(script)
+                .status()?;
+            if status.success() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                return Ok(());
+            }
+            return Err(format!("PowerShell Set-Clipboard failed: {}", status).into());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let file_refs = paths
+                .iter()
+                .map(|path| {
+                    format!(
+                        "POSIX file \"{}\"",
+                        path.display()
+                            .to_string()
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let script = format!("set the clipboard to {{{}}}", file_refs);
+            let status = Command::new("osascript").arg("-e").arg(script).status()?;
+            if status.success() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                return Ok(());
+            }
+            return Err(format!("osascript clipboard file write failed: {}", status).into());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write;
+            use std::process::Stdio;
+
+            let uri_list = paths
+                .iter()
+                .map(|path| file_uri_from_path(path.as_path()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut child = Command::new("xclip")
+                .arg("-selection")
+                .arg("clipboard")
+                .arg("-t")
+                .arg("text/uri-list")
+                .arg("-in")
+                .stdin(Stdio::piped())
+                .spawn()?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(uri_list.as_bytes())?;
+            }
+
+            let status = child.wait()?;
+            if status.success() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                Ok(())
+            } else {
+                Err(format!("xclip file write failed: {}", status).into())
+            }
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            Err("File clipboard is not supported on this platform".into())
         }
     }
 

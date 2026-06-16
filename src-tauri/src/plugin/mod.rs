@@ -19,7 +19,7 @@ pub use manifest::{PermissionRequest, PluginManifest, PluginType};
 pub use permission::checker::PermissionChecker;
 pub use types::{ClipPacket, ClipPacketType, PacketMetadata, PipelineTrace};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 /// Default plugin directory name
@@ -28,12 +28,25 @@ pub const BUILTIN_PLUGIN_RESOURCE_DIR: &str = "builtin-plugins";
 
 /// Get the plugin directory path
 pub fn get_plugin_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-
+    let data_dir = crate::portable::app_data_dir(app_handle)?;
     Ok(data_dir.join(PLUGIN_DIR_NAME))
+}
+
+async fn copy_if_changed(source: &Path, target: PathBuf) -> Result<bool, String> {
+    let source_meta = tokio::fs::metadata(source)
+        .await
+        .map_err(|e| format!("Failed to stat bundled plugin file: {}", e))?;
+
+    if let Ok(target_meta) = tokio::fs::metadata(&target).await {
+        if target_meta.len() == source_meta.len() {
+            return Ok(false);
+        }
+    }
+
+    tokio::fs::copy(source, target)
+        .await
+        .map_err(|e| format!("Failed to seed bundled plugin file: {}", e))?;
+    Ok(true)
 }
 
 /// Copy bundled plugins into the runtime plugin directory.
@@ -96,13 +109,15 @@ pub async fn seed_builtin_plugins(
         tokio::fs::create_dir_all(&target_dir)
             .await
             .map_err(|e| format!("Failed to create seeded plugin directory: {}", e))?;
-        tokio::fs::copy(&manifest_path, target_dir.join("manifest.json"))
+        let manifest_copied = copy_if_changed(&manifest_path, target_dir.join("manifest.json"))
             .await
             .map_err(|e| format!("Failed to seed bundled plugin manifest: {}", e))?;
-        tokio::fs::copy(&main_path, target_dir.join("main.js"))
+        let main_copied = copy_if_changed(&main_path, target_dir.join("main.js"))
             .await
             .map_err(|e| format!("Failed to seed bundled plugin script: {}", e))?;
-        seeded += 1;
+        if manifest_copied || main_copied {
+            seeded += 1;
+        }
     }
 
     log::info!("[Plugin] Seeded {} bundled plugins", seeded);

@@ -18,6 +18,27 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process;
 
+const PORTABLE_MARKERS: &[&str] = &["portable", "cliporax.portable"];
+const PORTABLE_DATA_DIR: &str = "data";
+
+fn portable_data_dir() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))?;
+    let data_dir = exe_dir.join(PORTABLE_DATA_DIR);
+
+    let has_marker = PORTABLE_MARKERS
+        .iter()
+        .any(|marker| exe_dir.join(marker).exists());
+    let has_existing_db = data_dir.join("cliporax.db").exists();
+
+    if has_marker || has_existing_db {
+        Some(data_dir)
+    } else {
+        None
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "cliporax-cli")]
 #[command(about = "Cliporax CLI - Access clipboard history from command line", long_about = None)]
@@ -145,6 +166,10 @@ struct ClipboardItem {
 
 /// Get the database path from the app data directory
 fn get_db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(data_dir) = portable_data_dir() {
+        return Ok(data_dir.join("cliporax.db"));
+    }
+
     let data_dir = dirs::data_local_dir().ok_or("Failed to get local data directory")?;
 
     // Try common Cliporax data directories
@@ -181,8 +206,8 @@ async fn init_db(db_path: &Path) -> Result<sqlx::SqlitePool, Box<dyn std::error:
         return Err(format!("Database not found at: {}", db_path.display()).into());
     }
 
-    let db_url = format!("sqlite:{}", db_path.to_string_lossy());
-    let pool = sqlx::SqlitePool::connect(&db_url).await?;
+    let connect_options = sqlx::sqlite::SqliteConnectOptions::new().filename(db_path);
+    let pool = sqlx::SqlitePool::connect_with(connect_options).await?;
 
     Ok(pool)
 }

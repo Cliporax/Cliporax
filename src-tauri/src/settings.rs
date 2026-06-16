@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
 
 const SETTINGS_FILE: &str = "settings.json";
 
@@ -47,12 +46,7 @@ impl SettingsManager {
         // Linux: ~/.config/cliporax/settings.json
         // Windows: %APPDATA%/cliporax/settings.json
         // macOS: ~/Library/Application Support/cliporax/settings.json
-        let config_dir = app_handle
-            .path()
-            .config_dir()
-            .map_err(|e| format!("Failed to get config dir: {}", e))?;
-
-        let app_config_dir = config_dir.join("cliporax");
+        let app_config_dir = crate::portable::settings_dir(app_handle)?;
         let settings_path = app_config_dir.join(SETTINGS_FILE);
         log::info!("[SettingsManager] Settings file path: {:?}", settings_path);
 

@@ -13,6 +13,7 @@ interface LoadedRange {
 interface ClipboardState {
   items: ClipboardItem[];
   totalCount: number;
+  activeTabId: number | null;
   loadingCount: number; // Supports concurrent loading
   error: string | null;
   hasMore: boolean;
@@ -63,6 +64,7 @@ function mergeRanges(ranges: LoadedRange[]): LoadedRange[] {
 export const useClipboardStore = create<ClipboardState>()((set, get) => ({
   items: [],
   totalCount: 0,
+  activeTabId: null,
   loadingCount: 0,
   error: null,
   hasMore: true,
@@ -82,7 +84,7 @@ export const useClipboardStore = create<ClipboardState>()((set, get) => ({
   },
 
   fetchItems: async (tabId, limit = 100) => {
-    set({ loadingCount: 1, error: null, loadedRanges: [] });
+    set({ activeTabId: tabId, loadingCount: 1, error: null, loadedRanges: [] });
     try {
       const { clipboard } = await import("../lib/tauri-api");
       const [items, totalCount] = await Promise.all([
@@ -123,13 +125,15 @@ export const useClipboardStore = create<ClipboardState>()((set, get) => ({
   },
 
   loadMore: async () => {
-    const { items, cursor, hasMore, loadingCount, loadedRanges } = get();
+    const { items, cursor, hasMore, loadingCount, loadedRanges, activeTabId } =
+      get();
     if (!hasMore || loadingCount > 0) return;
+    if (activeTabId === null) return;
 
     set({ loadingCount: loadingCount + 1 });
     try {
       const { clipboard } = await import("../lib/tauri-api");
-      const newItems = await clipboard.getByTab(1, 100, cursor);
+      const newItems = await clipboard.getByTab(activeTabId, 100, cursor);
       const newLoadedRanges = mergeRanges([
         ...loadedRanges,
         { start: cursor, end: cursor + newItems.length },
@@ -148,7 +152,8 @@ export const useClipboardStore = create<ClipboardState>()((set, get) => ({
 
   // Load data by database OFFSET
   loadRange: async (start: number, count: number) => {
-    const { loadingCount, loadedRanges, totalCount } = get();
+    const { loadingCount, loadedRanges, totalCount, activeTabId } = get();
+    if (activeTabId === null) return;
 
     // Bounds check
     if (start < 0 || (totalCount > 0 && start >= totalCount)) {
@@ -177,7 +182,7 @@ export const useClipboardStore = create<ClipboardState>()((set, get) => ({
 
     try {
       const { clipboard } = await import("../lib/tauri-api");
-      const newItems = await clipboard.getByTab(1, count, start);
+      const newItems = await clipboard.getByTab(activeTabId, count, start);
       logger.debug(
         `[loadRange] Loaded ${newItems.length} items from offset ${start}`,
       );

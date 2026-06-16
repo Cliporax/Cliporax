@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod dev_log;
 pub mod plugin;
+pub mod portable;
 pub mod settings;
 pub mod state;
 pub mod sync;

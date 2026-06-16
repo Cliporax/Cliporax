@@ -12,6 +12,7 @@ import { createLogger } from "../../utils/logger";
 import { perfLog, perfMeasure } from "../../utils/perf";
 import { clipboard, window as windowApi, events } from "../../lib/tauri-api";
 import { useTheme } from "../../contexts/ThemeContext";
+import { useTabStore } from "../../stores/tabStore";
 
 // Import split modules
 import { ClipboardListRef, ClipboardListProps } from "./types";
@@ -34,6 +35,7 @@ import { SkeletonCard } from "./ui/SkeletonCard";
 import { DropIndicator } from "./DropIndicator";
 import { Scrollbar } from "./ui/Scrollbar";
 import { StatusOverlay } from "./ui/StatusOverlay";
+import { MultiSelectBar } from "./ui/MultiSelectBar";
 import {
   useDataLoading,
   useDeleteHandler,
@@ -74,6 +76,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     const mountStartRef = useRef(performance.now());
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
+    const tabs = useTabStore((state) => state.tabs);
 
     // Base state
     const [defaultTabId, setDefaultTabId] = useState<number | null>(null);
@@ -131,6 +134,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       tabId: number;
       scrollTop: number;
     } | null>(null);
+    const tabLoadSeqRef = useRef(0);
 
     // Custom scrollbar state
     const [isDraggingScrollbar, setIsDraggingScrollbar] = useState(false);
@@ -165,6 +169,8 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // Whether search mode is active
     const isSearchMode = !!(searchQuery && searchQuery.trim() !== "");
+    const currentTab = tabs.find((tab) => tab.id === defaultTabId);
+    const isAutoCaptureTab = Boolean(currentTab?.is_default);
 
     useEffect(() => {
       perfMeasure("ClipboardList", "mounted", mountStartRef.current, undefined, {
@@ -172,6 +178,95 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
         warnAtMs: 100,
       });
     }, []);
+
+    const loadTabData = useCallback(
+      async (
+        nextTabId: number,
+        savedScroll: number,
+        source: "init" | "switch" | "fallback",
+      ) => {
+        const seq = tabLoadSeqRef.current + 1;
+        tabLoadSeqRef.current = seq;
+
+        logger.info(`[TabLoad] ${source} loading tab ${nextTabId}`);
+
+        setDefaultTabId(nextTabId);
+        setLoadedTabId(null);
+        setTotalCount(0);
+        setIsLoading(true);
+        setSearchResults([]);
+        cacheManagerRef.current.clear();
+        typeCacheRef.current.clear();
+        setCacheVersion((prev) => prev + 1);
+
+        pendingScrollRestoreRef.current = { tabId: nextTabId, scrollTop: savedScroll };
+        if (containerRef.current) {
+          containerRef.current.scrollTop = savedScroll;
+        }
+        setScrollTop(savedScroll);
+
+        try {
+          const countStart = performance.now();
+          const count = await clipboard.getTotalCount(nextTabId);
+
+          if (tabLoadSeqRef.current !== seq) {
+            logger.debug(`[TabLoad] Ignoring stale count for tab ${nextTabId}`);
+            return;
+          }
+
+          perfMeasure("ClipboardList", `${source}-count-loaded`, countStart, {
+            tabId: nextTabId,
+            totalCount: count,
+          }, {
+            minIntervalMs: 0,
+            warnAtMs: 100,
+          });
+          logger.info(`Total count for tab ${nextTabId}:`, count);
+          setTotalCount(count);
+
+          if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
+            const typeStart = performance.now();
+            const types = await clipboard.getAllTypes(nextTabId);
+
+            if (tabLoadSeqRef.current !== seq) {
+              logger.debug(`[TabLoad] Ignoring stale types for tab ${nextTabId}`);
+              return;
+            }
+
+            typeCacheRef.current.setTypes(
+              types.map(([id, type]) => ({
+                id,
+                type: type as "text" | "image" | "file",
+              })),
+              0,
+            );
+            perfMeasure("ClipboardList", `${source}-types-loaded`, typeStart, {
+              tabId: nextTabId,
+              typeCount: types.length,
+            }, {
+              minIntervalMs: 0,
+              warnAtMs: 150,
+            });
+            setCacheVersion((prev) => prev + 1);
+          } else if (count > TYPE_PRELOAD_LIMIT) {
+            logger.info(`[TabLoad] Skipping full type preload for ${count} items`);
+          }
+
+          if (tabLoadSeqRef.current === seq) {
+            setLoadedTabId(nextTabId);
+          }
+        } catch (error) {
+          if (tabLoadSeqRef.current === seq) {
+            logger.error(`[TabLoad] Failed to load tab ${nextTabId}:`, error);
+          }
+        } finally {
+          if (tabLoadSeqRef.current === seq) {
+            setIsLoading(false);
+          }
+        }
+      },
+      [],
+    );
 
     // ========== Use split hooks ==========
 
@@ -186,6 +281,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     } = useDataLoading({
       defaultTabId,
       totalCount,
+      isAutoCaptureTab,
       isSearchMode,
       visibleStartIndex: 0, // Calculated later
       visibleEndIndex: 0, // Calculated later
@@ -197,6 +293,13 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       setIsLoading,
       setCacheVersion,
     });
+    const activeTabIdRef = useRef<number | null>(defaultTabId);
+    const incrementalUpdateRef = useRef(incrementalUpdate);
+
+    useEffect(() => {
+      activeTabIdRef.current = defaultTabId;
+      incrementalUpdateRef.current = incrementalUpdate;
+    }, [defaultTabId, incrementalUpdate]);
 
     // Multi-select hook
     const {
@@ -305,58 +408,17 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
         );
       }
 
-      setDefaultTabId(tabId);
-      setLoadedTabId(null);
-
-      // Restore scroll position for new tab
       const savedScroll = tabScrollPositionsRef.current.get(tabId) || 0;
-      pendingScrollRestoreRef.current = { tabId, scrollTop: savedScroll };
       logger.debug(
         `Restoring scroll position for tab ${tabId}: ${savedScroll}`,
       );
-      if (containerRef.current) {
-        containerRef.current.scrollTop = savedScroll;
-      }
-      setScrollTop(savedScroll);
-
-      // Reset cache and reload for new tab
-      cacheManagerRef.current.clear();
-      typeCacheRef.current.clear();
-      setCacheVersion((prev) => prev + 1);
-
-      // Initialize total count for new tab
-      clipboard
-        .getTotalCount(tabId)
-        .then((count) => {
-          logger.info(`Total count for tab ${tabId}:`, count);
-          setTotalCount(count);
-          setLoadedTabId(tabId);
-
-          if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
-            clipboard
-              .getAllTypes(tabId)
-              .then((types) => {
-                typeCacheRef.current.setTypes(
-                  types.map(([id, type]) => ({
-                    id,
-                    type: type as "text" | "image" | "file",
-                  })),
-                  0,
-                );
-                setCacheVersion((prev) => prev + 1);
-              })
-              .catch((err) => logger.error("Failed to get types:", err));
-          } else if (count > TYPE_PRELOAD_LIMIT) {
-            logger.info(
-              `[TabChange] Skipping full type preload for ${count} items`,
-            );
-          }
-        })
-        .catch((err) => logger.error("Failed to get total count:", err));
-    }, [tabId]);
+      loadTabData(tabId, savedScroll, "switch");
+    }, [defaultTabId, loadTabData, scrollTop, tabId]);
 
     // Initialize
     useEffect(() => {
+      if (defaultTabId !== null) return;
+
       const init = async () => {
         const initStart = performance.now();
         logger.info("Initializing...");
@@ -371,59 +433,19 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
           warnAtMs: 100,
         });
         const systemTab = allTabs.find((t) => t.is_default) || allTabs[0];
-        if (systemTab && systemTab.id) {
-          setDefaultTabId(systemTab.id);
-
-          try {
-            const countStart = performance.now();
-            const count = await clipboard.getTotalCount(systemTab.id);
-            perfMeasure("ClipboardList", "initial-count-loaded", countStart, {
-              totalCount: count,
-            }, {
-              minIntervalMs: 0,
-              warnAtMs: 100,
-            });
-            logger.info("Total count:", count);
-            setTotalCount(count);
-            setLoadedTabId(systemTab.id);
-
-            if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
-              const typeStart = performance.now();
-              logger.info("Preloading item types for height calculation...");
-              const types = await clipboard.getAllTypes(systemTab.id);
-              perfMeasure("ClipboardList", "initial-types-loaded", typeStart, {
-                typeCount: types.length,
-              }, {
-                minIntervalMs: 0,
-                warnAtMs: 150,
-              });
-              typeCacheRef.current.setTypes(
-                types.map(([id, type]) => ({
-                  id,
-                  type: type as "text" | "image" | "file",
-                })),
-                0,
-              );
-              logger.info(`Preloaded ${types.length} item types`);
-              setCacheVersion((prev) => prev + 1);
-            } else if (count > TYPE_PRELOAD_LIMIT) {
-              logger.info(
-                `[Init] Skipping full type preload for ${count} items`,
-              );
-            }
-            perfMeasure("ClipboardList", "init-complete", initStart, {
-              totalCount: count,
-            }, {
-              minIntervalMs: 0,
-              warnAtMs: 250,
-            });
-          } catch (error) {
-            logger.error("Failed to initialize:", error);
-          }
+        const initialTabId = tabId ?? systemTab?.id ?? null;
+        if (initialTabId) {
+          await loadTabData(initialTabId, 0, tabId ? "init" : "fallback");
+          perfMeasure("ClipboardList", "init-complete", initStart, {
+            tabId: initialTabId,
+          }, {
+            minIntervalMs: 0,
+            warnAtMs: 250,
+          });
         }
       };
       init();
-    }, []);
+    }, [defaultTabId, loadTabData, tabId]);
 
     // Listen for clipboard actions (move/copy) and refresh
     useEffect(() => {
@@ -459,13 +481,15 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
             }
           }
         }
-        // For "copy" action, the new item arrives via clipboard:changed → incrementalUpdate
+        if (action === "copy") {
+          refreshList();
+        }
       };
 
       window.addEventListener("clipboard:action", handleClipboardAction);
       return () =>
         window.removeEventListener("clipboard:action", handleClipboardAction);
-    }, [defaultTabId]);
+    }, [defaultTabId, refreshList]);
 
     // Listen for container size changes
     useEffect(() => {
@@ -644,6 +668,23 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     ]);
 
     const { items: visibleItems, missingCount } = getVisibleItems();
+
+    const selectedIdsForBatch = React.useMemo(() => {
+      if (selectionRange) {
+        const ids = new Set<number>();
+        const start = Math.min(selectionRange.start, selectionRange.end);
+        const end = Math.max(selectionRange.start, selectionRange.end);
+        for (let i = start; i <= end; i++) {
+          const item = cacheManagerRef.current.getItem(i);
+          if (typeof item?.id === "number") {
+            ids.add(item.id);
+          }
+        }
+        return ids;
+      }
+
+      return checkedIds;
+    }, [checkedIds, selectionRange, cacheVersion]);
 
     // ========== Overlap detection ==========
     const {
@@ -863,17 +904,40 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // Listen for clipboard changes
     useEffect(() => {
-      let unlisten: (() => void) | undefined;
+      let disposed = false;
+      let unlisten: (() => void) | null = null;
 
-      const setupListener = async () => {
-        unlisten = await events.onClipboardChanged(() => {
-          incrementalUpdate();
+      events
+        .onClipboardChanged((payload) => {
+          const currentTabId = activeTabIdRef.current;
+          if (
+            payload?.tabIds &&
+            currentTabId !== null &&
+            !payload.tabIds.includes(currentTabId)
+          ) {
+            logger.debug(
+              `[ClipboardList] Ignoring clipboard event for tabs ${payload.tabIds.join(",")}; current tab ${currentTabId}`,
+            );
+            return;
+          }
+          incrementalUpdateRef.current();
+        })
+        .then((nextUnlisten) => {
+          if (disposed) {
+            nextUnlisten();
+          } else {
+            unlisten = nextUnlisten;
+          }
+        })
+        .catch((error) => {
+          logger.error("[ClipboardList] Failed to register clipboard listener:", error);
         });
-      };
 
-      setupListener();
-      return () => unlisten?.();
-    }, [incrementalUpdate]);
+      return () => {
+        disposed = true;
+        unlisten?.();
+      };
+    }, []);
 
     // ========== Search ==========
 
@@ -1101,7 +1165,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // ========== Action handlers ==========
 
-    const handleCopy = (content: string, type: "text" | "image") => {
+    const handleCopy = (content: string, type: "text" | "image" | "file") => {
       clipboard.copy(content, type);
     };
 
@@ -1469,6 +1533,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
             {/* Initial loading skeleton */}
             {isLoading &&
+              totalCount > 0 &&
               visibleItems.length === 0 &&
               !isFastScrolling &&
               Array.from({ length: 5 }).map((_, i) => (
@@ -1517,6 +1582,17 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
           totalCount={totalCount}
           isLoading={isLoading}
           isDark={isDark}
+        />
+
+        <MultiSelectBar
+          selectedCount={selectedIdsForBatch.size}
+          selectedIds={selectedIdsForBatch}
+          currentTabId={defaultTabId}
+          onActionComplete={() => {
+            exitMultiSelectMode();
+            refreshList();
+          }}
+          onCancel={exitMultiSelectMode}
         />
       </div>
     );

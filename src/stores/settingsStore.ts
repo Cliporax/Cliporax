@@ -56,23 +56,26 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "cliporax-settings",
-      onRehydrateStorage: () => async () => {
-        try {
-          const data = await settings.getAll();
-          useSettingsStore.setState({
-            theme: (data.theme as "light" | "dark" | "system") || "dark",
-            max_items: data.max_items || 1000,
-            max_images: data.max_images || 500,
-            line_height:
-              (data.line_height as "small" | "medium" | "large") || "medium",
-            auto_start: data.auto_start || false,
-            auto_hide: data.auto_hide !== false,
-            shortcut_toggle_window:
-              data.shortcut_toggle_window || "Ctrl+Shift+V",
+      onRehydrateStorage: () => () => {
+        void settings
+          .getAll()
+          .then((data) => {
+            useSettingsStore.setState({
+              theme: (data.theme as "light" | "dark" | "system") || "dark",
+              max_items: data.max_items || 1000,
+              max_images: data.max_images || 500,
+              line_height:
+                (data.line_height as "small" | "medium" | "large") ||
+                "medium",
+              auto_start: data.auto_start || false,
+              auto_hide: data.auto_hide !== false,
+              shortcut_toggle_window:
+                data.shortcut_toggle_window || "Ctrl+Shift+V",
+            });
+          })
+          .catch((e) => {
+            console.error("Failed to load settings:", e);
           });
-        } catch (e) {
-          console.error("Failed to load settings:", e);
-        }
       },
     },
   ),

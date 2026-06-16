@@ -351,7 +351,10 @@ export const clipboard = {
       throw error;
     }
   },
-  copy: async (content: string, type: "text" | "image"): Promise<void> => {
+  copy: async (
+    content: string,
+    type: "text" | "image" | "file",
+  ): Promise<void> => {
     log(
       "info",
       "API",
@@ -798,12 +801,20 @@ export type WindowAction =
   | "simulatePaste";
 
 // Event listeners
+export interface ClipboardChangedPayload {
+  tabIds?: number[];
+  itemIds?: number[];
+  reason?: string;
+}
+
 export const events = {
-  onClipboardChanged: (callback: () => void): Promise<() => void> => {
+  onClipboardChanged: (
+    callback: (payload: ClipboardChangedPayload | null) => void,
+  ): Promise<() => void> => {
     log("info", "API", "events.onClipboardChanged() registering");
-    return listen("clipboard:changed", (_event: Event<unknown>) => {
-      log("info", "API", "clipboard:changed event received");
-      callback();
+    return listen<ClipboardChangedPayload>("clipboard:changed", (event) => {
+      log("info", "API", "clipboard:changed event received", event.payload);
+      callback(event.payload ?? null);
     }).then((unlisten) => {
       log("debug", "API", "clipboard:changed listener registered");
       return unlisten;

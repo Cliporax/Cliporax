@@ -1,26 +1,20 @@
-use sqlx::{migrate::MigrateDatabase, sqlite::SqlitePoolOptions, Pool, Sqlite};
-use tauri::Manager;
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Pool, Sqlite,
+};
 
 pub type Db = Pool<Sqlite>;
 
 pub async fn init_database(app_handle: &tauri::AppHandle) -> Result<Db, sqlx::Error> {
-    let app_data = app_handle.path().app_data_dir().map_err(|e| {
+    let app_data = crate::portable::app_data_dir(app_handle).map_err(|e| {
         sqlx::Error::Io(std::io::Error::other(format!(
             "Failed to get app data directory: {}",
             e
         )))
     })?;
     let db_path = app_data.join("cliporax.db");
-    let db_path_str = db_path.to_str().ok_or_else(|| {
-        sqlx::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Database path is not valid UTF-8: {:?}", db_path),
-        ))
-    })?;
-    let db_url = format!("sqlite://{}", db_path_str);
 
     log::info!("[Database] Initializing database at: {:?}", db_path);
-    log::info!("[Database] Database URL: {}", db_url);
 
     // Ensure directory exists
     if let Some(parent) = db_path.parent() {
@@ -33,20 +27,14 @@ pub async fn init_database(app_handle: &tauri::AppHandle) -> Result<Db, sqlx::Er
         log::debug!("[Database] Created directory: {:?}", parent);
     }
 
-    // Create database if it doesn't exist
-    if !Sqlite::database_exists(&db_url).await.unwrap_or(false) {
-        log::info!("[Database] Database does not exist, creating...");
-        Sqlite::create_database(&db_url).await?;
-        log::info!("[Database] Database created successfully");
-    } else {
-        log::info!("[Database] Database already exists");
-    }
-
     // Create connection pool
     log::debug!("[Database] Creating connection pool...");
+    let connect_options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect_with(connect_options)
         .await?;
     log::info!("[Database] Connection pool created");
 

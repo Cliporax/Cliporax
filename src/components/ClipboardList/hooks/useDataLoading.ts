@@ -10,6 +10,7 @@ const logger = createLogger("ClipboardList");
 export interface UseDataLoadingParams {
   defaultTabId: number | null;
   totalCount: number;
+  isAutoCaptureTab: boolean;
   isSearchMode: boolean;
   visibleStartIndex: number;
   visibleEndIndex: number;
@@ -34,6 +35,7 @@ export interface UseDataLoadingReturn {
 export function useDataLoading({
   defaultTabId,
   totalCount,
+  isAutoCaptureTab,
   isSearchMode,
   visibleStartIndex,
   visibleEndIndex,
@@ -279,6 +281,20 @@ export function useDataLoading({
     if (defaultTabId === null || isMultiDraggingRef.current) return;
 
     try {
+      if (!isAutoCaptureTab) {
+        const realCount = await clipboard.getTotalCount(defaultTabId);
+        setTotalCount(realCount);
+        if (realCount === 0) {
+          cacheManagerRef.current.clear();
+          typeCacheRef.current.clear();
+          setCacheVersion((prev) => prev + 1);
+        }
+        logger.debug(
+          `[ClipboardList] Ignoring system clipboard update for non-auto-capture tab ${defaultTabId}`,
+        );
+        return;
+      }
+
       const latestItem = await clipboard.getLatest(defaultTabId);
       if (latestItem && latestItem.id !== null && latestItem.id !== undefined) {
         // Check whether this item is already in cache; it may be a duplicate moved to the top
@@ -329,6 +345,7 @@ export function useDataLoading({
     }
   }, [
     defaultTabId,
+    isAutoCaptureTab,
     isMultiDraggingRef,
     cacheManagerRef,
     typeCacheRef,
