@@ -15,6 +15,10 @@ lazy_static::lazy_static! {
 pub struct WindowInfo {
     #[cfg(target_os = "linux")]
     pub window_id: String,
+    #[cfg(target_os = "macos")]
+    pub process_id: u64,
+    #[cfg(target_os = "macos")]
+    pub app_name: String,
     #[cfg(target_os = "windows")]
     pub hwnd: isize,
 }
@@ -203,6 +207,33 @@ pub fn record_focused_window() {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        match active_win_pos_rs::get_active_window() {
+            Ok(active_window) if active_window.process_id != u64::from(std::process::id()) => {
+                log::info!(
+                    "[WindowUtils] Recorded focused application (macOS): {} (pid {})",
+                    active_window.app_name,
+                    active_window.process_id
+                );
+                if let Ok(mut guard) = PREVIOUS_WINDOW.lock() {
+                    *guard = Some(WindowInfo {
+                        process_id: active_window.process_id,
+                        app_name: active_window.app_name,
+                    });
+                }
+            }
+            Ok(_) => {
+                log::debug!(
+                    "[WindowUtils] Skipping Cliporax while recording focused application (macOS)"
+                );
+            }
+            Err(_) => {
+                log::warn!("[WindowUtils] Failed to get active application on macOS");
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
@@ -252,6 +283,26 @@ pub fn restore_focused_window() -> Result<(), Box<dyn std::error::Error + Send +
                 log::info!("[WindowUtils] Focus restored successfully");
             }
 
+            #[cfg(target_os = "macos")]
+            {
+                log::info!(
+                    "[WindowUtils] Restoring focus to application (macOS): {} (pid {})",
+                    info.app_name,
+                    info.process_id
+                );
+                let output = Command::new("open").args(["-a", &info.app_name]).output()?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    log::error!(
+                        "[WindowUtils] Failed to restore macOS application focus: {}",
+                        stderr.trim()
+                    );
+                    return Err(format!("macOS application activation failed: {}", stderr.trim()).into());
+                }
+                log::info!("[WindowUtils] Focus restored successfully (macOS)");
+            }
+
             #[cfg(target_os = "windows")]
             {
                 use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
@@ -293,6 +344,29 @@ pub fn simulate_paste() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
             return Err(format!("xdotool key failed: {}", stderr).into());
         }
         log::info!("[WindowUtils] Paste simulated successfully");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+        log::info!("[WindowUtils] Simulating paste (Cmd+V) on macOS");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| "Failed to create macOS keyboard event source")?;
+        // 0x09 is the layout-independent macOS virtual key code for the V key.
+        let key_down = CGEvent::new_keyboard_event(source.clone(), 0x09, true)
+            .map_err(|_| "Failed to create macOS paste key-down event")?;
+        let key_up = CGEvent::new_keyboard_event(source, 0x09, false)
+            .map_err(|_| "Failed to create macOS paste key-up event")?;
+        key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+        key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+        key_down.post(CGEventTapLocation::Session);
+        key_up.post(CGEventTapLocation::Session);
+
+        log::info!("[WindowUtils] Paste simulated successfully (macOS)");
     }
 
     #[cfg(target_os = "windows")]
