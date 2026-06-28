@@ -189,7 +189,7 @@ const formFromProfile = (profile: SyncProfile): FormState => ({
     profile.provider === "sftp"
       ? parseSftpRemoteRoot(profile.remote_root).path
       : profile.provider === "webdav"
-        ? DEFAULT_FORM.remoteRoot
+        ? ""
         : profile.remote_root,
   tabMode: profile.sync_tabs.mode,
   selectedTabs: profile.sync_tabs.selected_tab_ids,
@@ -319,6 +319,10 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
   };
 
   const updateProvider = (provider: Provider) => {
+    if (provider === form.provider) {
+      return;
+    }
+
     const defaults = PROVIDER_DEFAULTS[provider];
     setForm((prev) => ({
       ...prev,
@@ -416,6 +420,8 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
   const saveProfile = async () => {
     const profileId = activeProfileId ?? DEFAULT_PROFILE_ID;
     const credentialRefs: SavedCredentialRefs = { ...savedCredentialRefs };
+    setSyncMessage(null);
+    setPendingSftpHostTrust(null);
 
     if (!form.profileName.trim()) {
       setSyncMessage("Profile name is required.");
@@ -534,10 +540,14 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
       return;
     }
     setTestingConnection(true);
+    setSyncMessage(null);
+    setPendingSftpHostTrust(null);
     try {
       const result = await sync.testConnection(profileId);
       setSyncMessage(result.message);
-      if (!result.success && form.provider === "sftp" && isUntrustedSftpHostMessage(result.message)) {
+      if (result.success) {
+        setPendingSftpHostTrust(null);
+      } else if (form.provider === "sftp" && isUntrustedSftpHostMessage(result.message)) {
         setPendingSftpHostTrust({
           profileId,
           host: form.serverUrl.trim(),
@@ -975,20 +985,22 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
       )}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <label className="space-y-2">
-          <span className="text-xs font-medium" style={{ color: palette.muted }}>
-            {CLOUD_TOKEN_PROVIDERS.has(form.provider)
-              ? t("cloudSync.setup.appFolder")
-              : t("cloudSync.setup.remoteRoot")}
-          </span>
-          <input
-            value={form.remoteRoot}
-            onChange={(event) => updateForm("remoteRoot", event.target.value)}
-            placeholder={PROVIDER_DEFAULTS[form.provider].remoteRoot}
-            className="h-10 w-full rounded-lg px-3 text-sm outline-none transition-all"
-            style={inputStyle}
-          />
-        </label>
+        {form.provider !== "webdav" && (
+          <label className="space-y-2">
+            <span className="text-xs font-medium" style={{ color: palette.muted }}>
+              {CLOUD_TOKEN_PROVIDERS.has(form.provider)
+                ? t("cloudSync.setup.appFolder")
+                : t("cloudSync.setup.remoteRoot")}
+            </span>
+            <input
+              value={form.remoteRoot}
+              onChange={(event) => updateForm("remoteRoot", event.target.value)}
+              placeholder={PROVIDER_DEFAULTS[form.provider].remoteRoot}
+              className="h-10 w-full rounded-lg px-3 text-sm outline-none transition-all"
+              style={inputStyle}
+            />
+          </label>
+        )}
 
         {form.provider === "sftp" ? (
           <div className="space-y-2">
@@ -1479,11 +1491,6 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
           {form.paused ? t("cloudSync.actions.resume") : t("cloudSync.actions.pause")}
         </button>
       </div>
-      {syncMessage && (
-        <p className="text-xs leading-5" style={{ color: palette.muted }}>
-          {syncMessage}
-        </p>
-      )}
     </div>
   );
 
