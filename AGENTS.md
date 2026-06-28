@@ -162,6 +162,7 @@ For `src-tauri/src/sync/` changes:
 
 ### Commit Message and Changelog Rules
 
+- Commit messages must be written in English.
 - GitHub release changelogs are generated from commit prefixes. Only `feat:` and `fix:` commits are listed; commits without these prefixes are intentionally omitted from release notes.
 - Use `feat:` only for substantial user-visible features. If the feature change is under 100 changed lines and does not add a meaningful new workflow or capability, do not use `feat:`.
 - Use `fix:` only for severe or clearly user-visible bugs. For small/non-severe bug fixes, do not use `fix:`; use an unprefixed concise message instead.
