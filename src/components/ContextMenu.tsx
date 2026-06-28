@@ -4,6 +4,7 @@ import React, {
   useRef,
   useEffect,
   useLayoutEffect,
+  useMemo,
 } from "react";
 import { FolderPlus, Copy, ChevronRight } from "lucide-react";
 import { clipboard } from "../lib/tauri-api";
@@ -27,6 +28,8 @@ const SUBMENU_VERTICAL_PADDING = 4;
 interface ContextMenuProps {
   itemId: number;
   currentTabId?: number | null;
+  batchItemIds?: Set<number>;
+  onBatchActionComplete?: () => void;
   children: React.ReactNode;
 }
 
@@ -90,6 +93,8 @@ const getSubMenuLayout = (
 export function ContextMenu({
   itemId,
   currentTabId,
+  batchItemIds,
+  onBatchActionComplete,
   children,
 }: ContextMenuProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -105,6 +110,13 @@ export function ContextMenu({
   const { tabs } = useTabStore();
   const { removeItem } = useClipboardStore();
   const availableTabs = tabs.filter((t) => t.id !== currentTabId);
+  const batchIds = useMemo(
+    () =>
+      batchItemIds?.has(itemId) && batchItemIds.size > 1
+        ? Array.from(batchItemIds)
+        : [],
+    [batchItemIds, itemId],
+  );
 
   const closeMenu = useCallback(() => {
     setPosition(null);
@@ -244,6 +256,14 @@ export function ContextMenu({
   const handleMoveToTab = useCallback(
     async (targetTabId: number) => {
       try {
+        if (batchIds.length > 1) {
+          const moved = await clipboard.moveToTabBatch(batchIds, targetTabId);
+          logger.info(`Moved ${moved} items to tab ${targetTabId}`);
+          onBatchActionComplete?.();
+          closeMenu();
+          return;
+        }
+
         await clipboard.moveToTab(itemId, targetTabId);
 
         // Update local state
@@ -262,12 +282,20 @@ export function ContextMenu({
         logger.error("Failed to move item:", error);
       }
     },
-    [closeMenu, itemId, removeItem],
+    [batchIds, closeMenu, itemId, onBatchActionComplete, removeItem],
   );
 
   const handleCopyToTab = useCallback(
     async (targetTabId: number) => {
       try {
+        if (batchIds.length > 1) {
+          const copied = await clipboard.copyToTabBatch(batchIds, targetTabId);
+          logger.info(`Copied ${copied} items to tab ${targetTabId}`);
+          onBatchActionComplete?.();
+          closeMenu();
+          return;
+        }
+
         const newId = await clipboard.copyToTab(itemId, targetTabId);
 
         // If copying to current visible tab, notify ClipboardList
@@ -287,7 +315,7 @@ export function ContextMenu({
         logger.error("Failed to copy item:", error);
       }
     },
-    [closeMenu, itemId, currentTabId],
+    [batchIds, closeMenu, itemId, currentTabId, onBatchActionComplete],
   );
 
   const handleSubMenuHover = useCallback(

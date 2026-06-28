@@ -1,12 +1,15 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextMenu } from "../components/ContextMenu";
+import { clipboard } from "../lib/tauri-api";
 
 vi.mock("../lib/tauri-api", () => ({
   clipboard: {
     moveToTab: vi.fn(),
     copyToTab: vi.fn(),
+    moveToTabBatch: vi.fn(),
+    copyToTabBatch: vi.fn(),
   },
 }));
 
@@ -37,6 +40,10 @@ const setViewport = (width: number, height: number) => {
 };
 
 describe("ContextMenu", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("keeps the main menu inside viewport boundaries", () => {
     setViewport(400, 300);
 
@@ -82,5 +89,69 @@ describe("ContextMenu", () => {
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: /move to/i })).toBeNull();
     });
+  });
+
+  it("moves all selected items from the right-click menu", async () => {
+    const onBatchActionComplete = vi.fn();
+    vi.mocked(clipboard.moveToTabBatch).mockResolvedValue(2);
+
+    render(
+      <ContextMenu
+        itemId={1}
+        currentTabId={1}
+        batchItemIds={new Set([1, 2])}
+        onBatchActionComplete={onBatchActionComplete}
+      >
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /move to/i }).parentElement!,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    await waitFor(() => {
+      expect(clipboard.moveToTabBatch).toHaveBeenCalledWith([1, 2], 2);
+    });
+    expect(clipboard.moveToTab).not.toHaveBeenCalled();
+    expect(onBatchActionComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("copies all selected items from the right-click menu", async () => {
+    const onBatchActionComplete = vi.fn();
+    vi.mocked(clipboard.copyToTabBatch).mockResolvedValue(2);
+
+    render(
+      <ContextMenu
+        itemId={1}
+        currentTabId={1}
+        batchItemIds={new Set([1, 2])}
+        onBatchActionComplete={onBatchActionComplete}
+      >
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /copy to/i }).parentElement!,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    await waitFor(() => {
+      expect(clipboard.copyToTabBatch).toHaveBeenCalledWith([1, 2], 2);
+    });
+    expect(clipboard.copyToTab).not.toHaveBeenCalled();
+    expect(onBatchActionComplete).toHaveBeenCalledTimes(1);
   });
 });

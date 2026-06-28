@@ -17,8 +17,10 @@ interface ClipboardCardProps {
   lineHeight: "small" | "medium" | "large";
   isMultiSelectMode?: boolean;
   isMultiSelected?: boolean; // Whether selected in multi-select mode, shown highlighted
+  batchItemIds?: Set<number>;
   isDraggingItem?: boolean; // Whether the current card is being dragged
   tabId?: number | null; // Current tab ID for context menu
+  onBatchActionComplete?: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onTogglePin: () => void;
@@ -63,8 +65,10 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       lineHeight,
       isMultiSelectMode = false,
       isMultiSelected = false,
+      batchItemIds,
       isDraggingItem = false,
       tabId,
+      onBatchActionComplete,
       onClick,
       onDoubleClick,
       onTogglePin,
@@ -294,6 +298,10 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       <ContextMenu 
         itemId={id} 
         currentTabId={tabId ?? null}
+        batchItemIds={
+          isMultiSelectMode && isMultiSelected ? batchItemIds : undefined
+        }
+        onBatchActionComplete={onBatchActionComplete}
       >
         <div
           ref={ref}

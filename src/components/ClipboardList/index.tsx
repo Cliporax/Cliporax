@@ -35,7 +35,6 @@ import { SkeletonCard } from "./ui/SkeletonCard";
 import { DropIndicator } from "./DropIndicator";
 import { Scrollbar } from "./ui/Scrollbar";
 import { StatusOverlay } from "./ui/StatusOverlay";
-import { MultiSelectBar } from "./ui/MultiSelectBar";
 import {
   useDataLoading,
   useDeleteHandler,
@@ -685,6 +684,11 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
       return checkedIds;
     }, [checkedIds, selectionRange, cacheVersion]);
+
+    const handleBatchActionComplete = useCallback(() => {
+      exitMultiSelectMode();
+      refreshList();
+    }, [exitMultiSelectMode, refreshList]);
 
     // ========== Overlap detection ==========
     const {
@@ -1402,8 +1406,10 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
                     isMultiSelected={
                       checkedIds.has(item.id) || isIndexInRange(index)
                     }
+                    batchItemIds={selectedIdsForBatch}
                     isDraggingItem={activeDraggedId === item.id}
                     tabId={tabId}
+                    onBatchActionComplete={handleBatchActionComplete}
                     onClick={(e) => handleCardClick(item.id, index, e)}
                     onDoubleClick={() => handleDoubleClick(item)}
                     onTogglePin={() =>
@@ -1584,16 +1590,6 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
           isDark={isDark}
         />
 
-        <MultiSelectBar
-          selectedCount={selectedIdsForBatch.size}
-          selectedIds={selectedIdsForBatch}
-          currentTabId={defaultTabId}
-          onActionComplete={() => {
-            exitMultiSelectMode();
-            refreshList();
-          }}
-          onCancel={exitMultiSelectMode}
-        />
       </div>
     );
   },
