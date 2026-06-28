@@ -159,3 +159,11 @@ For `src-tauri/src/sync/` changes:
 - Do not commit package/build artifacts (`*.zip`, `*.dmg`, `*.msi`, `*.AppImage`, `dist/`, `target/`).
 - Do not mix `package-lock.json` into a plugin package that already uses `yarn.lock` unless migrating package managers.
 - If push fails due to auth, report the local commit hash and exact error.
+
+### Commit Message and Changelog Rules
+
+- GitHub release changelogs are generated from commit prefixes. Only `feat:` and `fix:` commits are listed; commits without these prefixes are intentionally omitted from release notes.
+- Use `feat:` only for substantial user-visible features. If the feature change is under 100 changed lines and does not add a meaningful new workflow or capability, do not use `feat:`.
+- Use `fix:` only for severe or clearly user-visible bugs. For small/non-severe bug fixes, do not use `fix:`; use an unprefixed concise message instead.
+- Ordinary `fix:` entries may be summarized in release notes as `修复一下bug`. Serious fixes can use `fix!:` or include clear severity words in the subject so release notes can show the specific fix.
+- Use unprefixed or non-release prefixes such as `chore:`, `test:`, `refactor:`, or plain concise messages for maintenance, small fixes, tests, docs, and internal cleanup that should not appear in release notes.

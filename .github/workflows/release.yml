@@ -103,19 +103,43 @@ jobs:
             $range = "$previousTag..HEAD"
           }
 
-          $changes = @(git log --pretty=format:"%s" $range | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 20)
+          $subjects = @(git log --pretty=format:"%s" $range | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          $changes = New-Object System.Collections.Generic.List[string]
+          $hasBugFix = $false
+
+          foreach ($subject in $subjects) {
+            if ($subject -match '^feat(?:\([^)]+\))?:\s*(.+)$') {
+              $changes.Add("- 新功能：$($Matches[1])")
+              continue
+            }
+
+            if ($subject -match '^fix(?:\([^)]+\))?!?:\s*(.+)$') {
+              $fixText = $Matches[1]
+              if ($subject -match '^fix(?:\([^)]+\))?!:' -or $fixText -match '(严重|崩溃|crash|critical|security|安全|data loss|数据丢失)') {
+                $changes.Add("- 修复：$fixText")
+              } else {
+                $hasBugFix = $true
+              }
+            }
+          }
+
+          if ($hasBugFix) {
+            $changes.Add("- 修复一下bug")
+          }
+
+          $changes = @($changes | Select-Object -Unique | Select-Object -First 20)
           if ($changes.Count -eq 0) {
-            $changes = @("Release build and packaging updates")
+            $changes = @("- 本次没有需要展示的主要修改。")
           }
 
           $body = @(
-            "## Main changes",
+            "## 主要修改",
             "",
-            ($changes | ForEach-Object { "- $_" }),
+            $changes,
             "",
-            "## Downloads",
+            "## 下载",
             "",
-            "Download the installer or portable package for your platform from the assets below."
+            "请从下方 Assets 下载对应平台的安装包或便携版。"
           ) -join "`n"
 
           "body<<EOF" >> $env:GITHUB_OUTPUT
