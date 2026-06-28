@@ -24,6 +24,7 @@ pub fn encode_clipboard_item(
     let remote_item = RemoteClipboardItem {
         schema_version: CURRENT_SCHEMA_VERSION,
         item_key: item_key.clone(),
+        stable_seq: 0,
         device_id: device_id.clone(),
         local_id: local.id,
         item_type: local.item_type.clone(),
@@ -39,6 +40,7 @@ pub fn encode_clipboard_item(
             .updated_at
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        tab_key: local.tab_id.map(|id| format!("tab:{}", id)),
         tab_name: None,
         tags: local
             .tags

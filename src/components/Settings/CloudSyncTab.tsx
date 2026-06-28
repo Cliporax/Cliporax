@@ -165,7 +165,20 @@ const buildWebdavRemoteRoot = (serverUrl: string, remoteRoot: string) => {
   const trimmedServerUrl = serverUrl.trim().replace(/\/+$/g, "");
   const trimmedRemoteRoot = trimSlashes(remoteRoot);
 
-  return trimmedRemoteRoot ? `${trimmedServerUrl}/${trimmedRemoteRoot}` : trimmedServerUrl;
+  if (!trimmedRemoteRoot) {
+    return trimmedServerUrl;
+  }
+
+  const normalizedServerUrl = trimmedServerUrl.toLowerCase();
+  const normalizedRemoteRoot = trimSlashes(trimmedRemoteRoot).toLowerCase();
+  if (
+    normalizedServerUrl.endsWith(`/${normalizedRemoteRoot}`) ||
+    normalizedServerUrl.endsWith(`/${normalizedRemoteRoot}/`)
+  ) {
+    return trimmedServerUrl;
+  }
+
+  return `${trimmedServerUrl}/${trimmedRemoteRoot}`;
 };
 
 const parseWebdavRemoteRoot = (remoteRoot: string) => {
@@ -174,6 +187,7 @@ const parseWebdavRemoteRoot = (remoteRoot: string) => {
   const normalizedDefaultRemoteRoot = trimSlashes(defaultRemoteRoot);
   const withoutTrailingSlash = trimmedRemoteRoot.replace(/\/+$/g, "");
   const defaultSuffix = `/${normalizedDefaultRemoteRoot}`;
+  const normalizedDefaultSuffix = defaultSuffix.toLowerCase();
 
   if (!trimmedRemoteRoot) {
     return {
@@ -182,9 +196,14 @@ const parseWebdavRemoteRoot = (remoteRoot: string) => {
     };
   }
 
-  if (withoutTrailingSlash.endsWith(defaultSuffix)) {
+  let serverUrl = withoutTrailingSlash;
+  while (serverUrl.toLowerCase().endsWith(normalizedDefaultSuffix)) {
+    serverUrl = serverUrl.slice(0, -defaultSuffix.length).replace(/\/+$/g, "");
+  }
+
+  if (serverUrl !== withoutTrailingSlash) {
     return {
-      serverUrl: withoutTrailingSlash.slice(0, -defaultSuffix.length),
+      serverUrl,
       remoteRoot: defaultRemoteRoot,
     };
   }

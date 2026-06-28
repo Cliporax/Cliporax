@@ -9,7 +9,7 @@ use crate::sync::models::RemoteObject;
 use crate::sync::providers::SyncProvider;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Method, StatusCode};
+use reqwest::{Client, Method, StatusCode, Url};
 use std::time::Duration;
 
 /// XML namespace for DAV responses
@@ -59,6 +59,114 @@ impl WebDavProvider {
         self.client
             .request(method, url)
             .basic_auth(&self.username, Some(&self.password))
+    }
+
+    fn propfind_method() -> Result<Method, SyncError> {
+        Method::from_bytes(b"PROPFIND")
+            .map_err(|e| SyncError::provider(format!("Invalid PROPFIND method: {}", e)))
+    }
+
+    fn mkcol_method() -> Result<Method, SyncError> {
+        Method::from_bytes(b"MKCOL")
+            .map_err(|e| SyncError::provider(format!("Invalid MKCOL method: {}", e)))
+    }
+
+    fn base_url_segments(&self) -> Result<Vec<String>, SyncError> {
+        let parsed = Url::parse(&self.base_url)
+            .map_err(|e| SyncError::provider(format!("Invalid WebDAV URL: {}", e)))?;
+        Ok(parsed
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    fn url_for_base_segments(&self, segments: &[String]) -> Result<String, SyncError> {
+        let mut url = Url::parse(&self.base_url)
+            .map_err(|e| SyncError::provider(format!("Invalid WebDAV URL: {}", e)))?;
+        let path = if segments.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}/", segments.join("/"))
+        };
+        url.set_path(&path);
+        Ok(url.to_string())
+    }
+
+    async fn propfind_url_status(&self, url: &str) -> Result<StatusCode, SyncError> {
+        let resp = self
+            .request(Self::propfind_method()?, url)
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml")
+            .body(build_propfind_body())
+            .send()
+            .await
+            .map_err(|e| SyncError::provider(format!("PROPFIND failed: {}", e)))?;
+
+        Ok(resp.status())
+    }
+
+    async fn ensure_base_collection(&self) -> Result<(), SyncError> {
+        let segments = self.base_url_segments()?;
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        let mut existing_prefix_len = None;
+        for len in (0..=segments.len()).rev() {
+            let url = self.url_for_base_segments(&segments[..len])?;
+            let status = self.propfind_url_status(&url).await?;
+            if status.is_success() || status == StatusCode::MULTI_STATUS {
+                existing_prefix_len = Some(len);
+                break;
+            }
+            if status != StatusCode::NOT_FOUND {
+                return Err(SyncError::provider(format!(
+                    "Failed to access WebDAV directory {}: HTTP status {}",
+                    url, status
+                )));
+            }
+        }
+
+        let Some(existing_prefix_len) = existing_prefix_len else {
+            return Err(SyncError::provider(
+                "No accessible parent WebDAV directory found".to_string(),
+            ));
+        };
+
+        for len in (existing_prefix_len + 1)..=segments.len() {
+            let url = self.url_for_base_segments(&segments[..len])?;
+            let display_path = segments[..len].join("/");
+            let resp = self
+                .request(Self::mkcol_method()?, &url)
+                .send()
+                .await
+                .map_err(|e| {
+                    SyncError::provider(format!("MKCOL failed for {}: {}", display_path, e))
+                })?;
+            let status = resp.status();
+
+            if status == StatusCode::CREATED
+                || status == StatusCode::OK
+                || status == StatusCode::NO_CONTENT
+                || status == StatusCode::METHOD_NOT_ALLOWED
+            {
+                log::debug!("[Sync::WebDAV] Base directory ready: {}", display_path);
+                continue;
+            }
+
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(SyncError::provider(format!(
+                "MKCOL failed for {} with status {}: {}",
+                display_path, status, body_text
+            )));
+        }
+
+        Ok(())
     }
 
     /// Parse a WebDAV PROPFIND XML response and extract RemoteObject entries
@@ -189,6 +297,8 @@ impl SyncProvider for WebDavProvider {
     /// Test connection by sending a PROPFIND request to the root
     async fn test_connection(&self) -> Result<(), SyncError> {
         log::info!("[Sync::WebDAV] Testing connection to {}", self.base_url);
+
+        self.ensure_base_collection().await?;
 
         let url = self.build_url("");
         let body = build_propfind_body();
@@ -378,6 +488,8 @@ impl SyncProvider for WebDavProvider {
     /// Upload file content using PUT
     async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), SyncError> {
         log::debug!("[Sync::WebDAV] Putting: {} ({} bytes)", path, data.len());
+
+        self.ensure_base_collection().await?;
 
         if let Some(parent) = path.trim_matches('/').rsplit_once('/') {
             if !parent.0.is_empty() {
@@ -643,5 +755,30 @@ mod tests {
 
         let href = WebDavProvider::extract_xml_text(&responses[0], "D:href");
         assert!(href.is_some());
+    }
+
+    #[test]
+    fn test_base_url_segments_for_nextcloud_path() -> Result<(), SyncError> {
+        let provider = WebDavProvider {
+            base_url: "https://cloud.example.com/remote.php/dav/files/me/cliporax/v1/".to_string(),
+            username: String::new(),
+            password: String::new(),
+            client: Client::new(),
+        };
+
+        let segments = provider.base_url_segments()?;
+        assert_eq!(
+            segments,
+            vec!["remote.php", "dav", "files", "me", "cliporax", "v1"]
+        );
+        assert_eq!(
+            provider.url_for_base_segments(&segments[..4])?,
+            "https://cloud.example.com/remote.php/dav/files/me/"
+        );
+        assert_eq!(
+            provider.url_for_base_segments(&segments[..5])?,
+            "https://cloud.example.com/remote.php/dav/files/me/cliporax/"
+        );
+        Ok(())
     }
 }

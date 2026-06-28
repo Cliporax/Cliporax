@@ -1,23 +1,16 @@
-use crate::db::models::ClipboardItem;
 /// Sync Engine - orchestrates the sync process
-use crate::sync::change_log::{
-    build_change_path, build_tombstone_path, list_remote_changes_after, list_remote_devices,
-    next_local_remote_seq,
-};
-use crate::sync::codec::{
-    decode_clipboard_item_with_key, decode_tombstone, encode_change,
-    encode_clipboard_item_from_remote_with_key, encode_tombstone,
-};
-use crate::sync::crypto::derive_key;
+use crate::sync::crypto::{decrypt, derive_key, encrypt};
 use crate::sync::error::SyncError;
 use crate::sync::lock::{acquire_remote_lock, release_remote_lock};
-use crate::sync::manifest::get_or_create_manifest;
+use crate::sync::manifest::{read_manifest, write_manifest, APP_NAME, SNAPSHOT_SCHEMA_VERSION};
 use crate::sync::models::*;
 use crate::sync::providers::{join_remote_path, SyncProvider};
 use crate::sync::repository::SyncRepository;
 use crate::sync::secrets::SecretStore;
 use secrecy::ExposeSecret;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -44,6 +37,16 @@ struct SyncPhaseReport {
     items_deleted: i64,
     conflicts_found: i64,
     errors: Vec<String>,
+}
+
+const SNAPSHOT_SHARD_SIZE: usize = 100;
+const SNAPSHOT_INLINE_CONTENT_LIMIT: usize = 64 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SnapshotEncryptionEnvelope {
+    schema_version: u32,
+    encrypted_data: String,
+    algorithm: String,
 }
 
 impl SyncEngine {
@@ -167,37 +170,22 @@ impl SyncEngine {
     ) -> Result<SyncRunReport, SyncError> {
         log::info!("[Sync::Engine] Sync requested for profile: {}", profile_id);
 
-        // Check if already running
+        // Check and mark under one write lock so concurrent triggers cannot
+        // start multiple runs for the same profile and fight over remote locks.
+        let profile_id_string = profile_id.to_string();
         {
-            let runs = self.current_runs.read().await;
-            if runs.contains(&profile_id.to_string()) {
+            let mut runs = self.current_runs.write().await;
+            if runs.contains(&profile_id_string) {
                 return Err(SyncError::Cancelled(
                     "Sync already running for this profile".to_string(),
                 ));
             }
-        }
-
-        // Mark as running
-        {
-            let mut runs = self.current_runs.write().await;
-            runs.push(profile_id.to_string());
+            runs.push(profile_id_string.clone());
         }
         {
             let mut cancelled = self.cancelled_runs.write().await;
             cancelled.retain(|id| id != profile_id);
         }
-
-        // Execute sync with cleanup guard
-        let profile_id_clone = profile_id.to_string();
-        let runs_clone = self.current_runs.clone();
-        let cleanup_guard = scopeguard::guard((), move |_| {
-            tokio::spawn(async move {
-                let mut r = runs_clone.write().await;
-                if let Some(pos) = r.iter().position(|p| p == &profile_id_clone) {
-                    r.remove(pos);
-                }
-            });
-        });
 
         // Run the actual sync
         let result = self.execute_sync_run(profile_id, provider).await;
@@ -236,8 +224,12 @@ impl SyncEngine {
             reports.insert(profile_id.to_string(), report);
         }
 
-        // Drop the cleanup guard (will remove from current_runs)
-        drop(cleanup_guard);
+        {
+            let mut runs = self.current_runs.write().await;
+            if let Some(pos) = runs.iter().position(|p| p == &profile_id_string) {
+                runs.remove(pos);
+            }
+        }
 
         result
     }
@@ -317,9 +309,10 @@ impl SyncEngine {
             )
             .await;
             let upload_report = self
-                .upload_local_changes(provider.as_ref(), &prepared, &run_id)
+                .upload_local_changes(provider.as_ref(), &prepared)
                 .await?;
             report.items_uploaded = upload_report.items_uploaded;
+            report.errors.extend(upload_report.errors);
 
             self.set_status(
                 profile_id,
@@ -355,7 +348,7 @@ impl SyncEngine {
         }
         let device_id = self.repository.get_or_create_device_id().await?;
         log::info!("[Sync::Engine] Step 2: Testing provider availability");
-        let _manifest = get_or_create_manifest(provider, "")
+        let _manifest = read_manifest(provider, "")
             .await
             .map_err(|e| SyncError::Provider(format!("Failed to access remote storage: {}", e)))?;
 
@@ -387,148 +380,84 @@ impl SyncEngine {
         provider: &dyn SyncProvider,
         prepared: &PreparedSyncRun,
     ) -> Result<SyncPhaseReport, SyncError> {
-        log::info!("[Sync::Engine] Step 5: Pulling remote changes");
+        log::info!("[Sync::Engine] Step 5: Pulling remote snapshot");
         let mut report = SyncPhaseReport::default();
-        let remote_devices = list_remote_devices(provider, "").await?;
 
-        for remote_device_id in remote_devices {
-            if remote_device_id == prepared.device_id {
-                continue;
+        let Some(manifest) = read_manifest(provider, "").await? else {
+            log::info!("[Sync::Engine] Remote snapshot is empty");
+            return Ok(report);
+        };
+
+        if manifest.device_id == prepared.device_id {
+            return Ok(report);
+        }
+
+        let crypto_key = self.get_crypto_key(profile_id).await.ok().flatten();
+        let mut remote_items = Vec::new();
+        for shard_ref in &manifest.item_shards {
+            let shard_bytes = provider.get(&shard_ref.path).await.map_err(|e| {
+                SyncError::provider(format!("Failed to download shard {}: {}", shard_ref.path, e))
+            })?;
+            let decoded = decode_snapshot_file(&shard_bytes, &prepared.profile, crypto_key.as_ref())?;
+            let actual_hash = sha256_hex(&decoded);
+            if actual_hash != shard_ref.hash {
+                return Err(SyncError::validation(format!(
+                    "Shard hash mismatch for {}",
+                    shard_ref.path
+                )));
             }
-
-            let cursor = self
-                .repository
-                .get_remote_cursor(profile_id, &remote_device_id)
-                .await?;
-            let remote_changes =
-                list_remote_changes_after(provider, "", &remote_device_id, cursor).await?;
-
-            for change in remote_changes {
-                if let Some(change_report) = self
-                    .apply_remote_change(profile_id, provider, &prepared.profile, &change)
-                    .await?
-                {
-                    let had_errors = !change_report.errors.is_empty();
-                    report.items_downloaded += change_report.items_downloaded;
-                    report.items_deleted += change_report.items_deleted;
-                    report.conflicts_found += change_report.conflicts_found;
-                    report.errors.extend(change_report.errors);
-                    if !had_errors {
-                        self.repository
-                            .update_remote_cursor(profile_id, &remote_device_id, change.seq)
-                            .await?;
+            let mut shard: SnapshotItemShard = serde_json::from_slice(&decoded)?;
+            for item in &mut shard.items {
+                if item.content.is_none() {
+                    if let Some(blob_path) = &item.blob_path {
+                        let blob_bytes = provider.get(blob_path).await.map_err(|e| {
+                            SyncError::provider(format!(
+                                "Failed to download blob {}: {}",
+                                blob_path, e
+                            ))
+                        })?;
+                        let decoded_blob =
+                            decode_snapshot_file(&blob_bytes, &prepared.profile, crypto_key.as_ref())?;
+                        item.content = Some(String::from_utf8(decoded_blob).map_err(|e| {
+                            SyncError::validation(format!("Remote blob is not valid UTF-8: {}", e))
+                        })?);
                     }
                 }
             }
+            remote_items.extend(shard.items);
+        }
+
+        let prune_missing = !self.repository.has_unsynced_changes(&prepared.profile).await?;
+        report.items_downloaded = self
+            .repository
+            .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
+            .await?;
+
+        if let Some(order_ref) = &manifest.order {
+            let order_bytes = provider.get(&order_ref.path).await.map_err(|e| {
+                SyncError::provider(format!("Failed to download order {}: {}", order_ref.path, e))
+            })?;
+            let decoded = decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
+            let actual_hash = sha256_hex(&decoded);
+            if actual_hash != order_ref.hash {
+                return Err(SyncError::validation(format!(
+                    "Order hash mismatch for {}",
+                    order_ref.path
+                )));
+            }
+            let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
+            self.repository.apply_snapshot_order(&order).await?;
         }
 
         Ok(report)
-    }
-
-    async fn apply_remote_change(
-        &self,
-        profile_id: &str,
-        provider: &dyn SyncProvider,
-        profile: &SyncProfile,
-        change: &RemoteChange,
-    ) -> Result<Option<SyncPhaseReport>, SyncError> {
-        let mut report = SyncPhaseReport::default();
-        match change.operation {
-            ChangeOperation::Upsert => {
-                let Some(item_path) = &change.item_path else {
-                    return Ok(Some(report));
-                };
-                let item_data = match provider.get(item_path).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        let message = format!(
-                            "[Sync::Engine] Failed to download item {}: {}",
-                            item_path, e
-                        );
-                        log::warn!("{}", message);
-                        report.errors.push(message);
-                        return Ok(Some(report));
-                    }
-                };
-                let crypto_key = self.get_crypto_key(profile_id).await.ok().flatten();
-                let remote_item = match decode_clipboard_item_with_key(
-                    &item_data,
-                    profile,
-                    crypto_key.as_ref(),
-                ) {
-                    Ok(item) => item,
-                    Err(e) => {
-                        let message = format!("[Sync::Engine] Failed to decode remote item: {}", e);
-                        log::warn!("{}", message);
-                        report.errors.push(message);
-                        return Ok(Some(report));
-                    }
-                };
-
-                match self
-                    .repository
-                    .apply_remote_item(profile, remote_item, None)
-                    .await
-                {
-                    Ok(ApplyItemResult::Conflict { .. }) => report.conflicts_found += 1,
-                    Ok(_) => report.items_downloaded += 1,
-                    Err(e) => {
-                        let message = format!("[Sync::Engine] Failed to apply remote item: {}", e);
-                        log::warn!("{}", message);
-                        report.errors.push(message);
-                        return Ok(Some(report));
-                    }
-                }
-            }
-            ChangeOperation::Delete => {
-                let Some(tombstone_path) = &change.tombstone_path else {
-                    return Ok(Some(report));
-                };
-                let tombstone_data = match provider.get(tombstone_path).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        let message = format!(
-                            "[Sync::Engine] Failed to download tombstone {}: {}",
-                            tombstone_path, e
-                        );
-                        log::warn!("{}", message);
-                        report.errors.push(message);
-                        return Ok(Some(report));
-                    }
-                };
-                let tombstone = match decode_tombstone(&tombstone_data) {
-                    Ok(tombstone) => tombstone,
-                    Err(e) => {
-                        let message = format!("[Sync::Engine] Failed to decode tombstone: {}", e);
-                        log::warn!("{}", message);
-                        report.errors.push(message);
-                        return Ok(Some(report));
-                    }
-                };
-                if let Err(e) = self
-                    .repository
-                    .apply_remote_tombstone(profile, tombstone)
-                    .await
-                {
-                    let message = format!("[Sync::Engine] Failed to apply tombstone: {}", e);
-                    log::warn!("{}", message);
-                    report.errors.push(message);
-                    return Ok(Some(report));
-                }
-                report.items_deleted += 1;
-            }
-        }
-
-        Ok(Some(report))
     }
 
     async fn upload_local_changes(
         &self,
         provider: &dyn SyncProvider,
         prepared: &PreparedSyncRun,
-        run_id: &str,
     ) -> Result<SyncPhaseReport, SyncError> {
-        log::info!("[Sync::Engine] Step 7: Reading unsynced local changes");
+        log::info!("[Sync::Engine] Step 7: Reading local snapshot changes");
         let mut unsynced_changes = self
             .repository
             .list_unsynced_changes(&prepared.profile)
@@ -555,30 +484,16 @@ impl SyncEngine {
             "[Sync::Engine] Found {} unsynced changes",
             unsynced_changes.len()
         );
-        log::info!("[Sync::Engine] Step 8: Staging local files");
-        let staged = self
-            .stage_local_changes(
-                provider,
-                "",
-                run_id,
-                &prepared.device_id,
-                &prepared.profile,
-                &unsynced_changes,
-            )
+        log::info!("[Sync::Engine] Step 8: Uploading local snapshot");
+        let upload_report = self
+            .upload_snapshot(provider, &prepared.profile, &prepared.device_id)
             .await?;
-
-        log::info!("[Sync::Engine] Step 9: Committing staged files");
-        let items_uploaded = self
-            .commit_staged_changes(provider, "", run_id, &staged)
-            .await?;
-
-        log::info!("[Sync::Engine] Step 10: Marking changes as synced");
-        let change_ids: Vec<i64> = unsynced_changes.iter().map(|c| c.id).collect();
+        let change_ids: Vec<i64> = unsynced_changes.iter().map(|change| change.id).collect();
         self.repository.mark_changes_synced(&change_ids).await?;
 
         Ok(SyncPhaseReport {
-            items_uploaded,
-            errors: staged.warnings,
+            items_uploaded: upload_report.items_uploaded,
+            errors: upload_report.errors,
             ..SyncPhaseReport::default()
         })
     }
@@ -644,6 +559,148 @@ impl SyncEngine {
         Ok(run_report)
     }
 
+    async fn upload_snapshot(
+        &self,
+        provider: &dyn SyncProvider,
+        profile: &SyncProfile,
+        device_id: &str,
+    ) -> Result<SyncPhaseReport, SyncError> {
+        let previous_manifest = read_manifest(provider, "").await?;
+        let previous_shards = previous_manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .item_shards
+                    .iter()
+                    .map(|shard| (shard.path.clone(), shard.hash.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let previous_order_hash = previous_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.order.as_ref())
+            .map(|order| order.hash.clone());
+
+        let crypto_key = self.get_crypto_key(&profile.id).await.ok().flatten();
+        let snapshot_items = self.repository.list_snapshot_items(profile, device_id).await?;
+        let mut buckets: BTreeMap<i64, Vec<RemoteClipboardItem>> = BTreeMap::new();
+        for item in snapshot_items {
+            let bucket_start =
+                ((item.stable_seq.saturating_sub(1)) / SNAPSHOT_SHARD_SIZE as i64)
+                    * SNAPSHOT_SHARD_SIZE as i64
+                    + 1;
+            buckets.entry(bucket_start).or_default().push(item);
+        }
+        let mut shard_refs = Vec::new();
+        let mut items_uploaded = 0;
+
+        for (bucket_start, bucket_items) in buckets {
+            let bucket_end = bucket_start + SNAPSHOT_SHARD_SIZE as i64 - 1;
+            let mut shard_items = Vec::with_capacity(bucket_items.len());
+            for item in bucket_items {
+                let mut item = item.clone();
+                if let Some(content) = item.content.take() {
+                    let content_bytes = content.into_bytes();
+                    if content_bytes.len() > SNAPSHOT_INLINE_CONTENT_LIMIT {
+                        let content_hash = item
+                            .content_hash
+                            .clone()
+                            .unwrap_or_else(|| sha256_hex(&content_bytes));
+                        let blob_path = format!("blobs/{}.bin", content_hash);
+                        let blob_data =
+                            encode_snapshot_file(&content_bytes, profile, crypto_key.as_ref())?;
+                        if provider.stat(&blob_path).await?.is_none() {
+                            provider.put(&blob_path, blob_data).await?;
+                        }
+                        item.content_hash = Some(content_hash);
+                        item.blob_path = Some(blob_path);
+                    } else {
+                        item.content = Some(String::from_utf8(content_bytes).map_err(|e| {
+                            SyncError::validation(format!("Local content is not valid UTF-8: {}", e))
+                        })?);
+                    }
+                }
+                shard_items.push(item);
+            }
+
+            let shard = SnapshotItemShard {
+                schema_version: SNAPSHOT_SCHEMA_VERSION,
+                start: bucket_start,
+                end: bucket_end,
+                items: shard_items,
+            };
+            let shard_json = serde_json::to_vec(&shard)?;
+            let shard_hash = sha256_hex(&shard_json);
+            let shard_path = format!(
+                "items/{:08}-{:08}.json",
+                shard.start.max(0),
+                shard.end.max(0)
+            );
+            if previous_shards.get(&shard_path) != Some(&shard_hash) {
+                let tmp_path = join_remote_path(".tmp", &format!("{}.tmp", shard_path));
+                let data = encode_snapshot_file(&shard_json, profile, crypto_key.as_ref())?;
+                provider.put(&tmp_path, data.clone()).await?;
+                provider.put(&shard_path, data).await?;
+                if let Err(e) = provider.delete(&tmp_path).await {
+                    log::debug!(
+                        "[Sync::Engine] Failed to cleanup snapshot temp file {}: {}",
+                        tmp_path,
+                        e
+                    );
+                }
+                items_uploaded += shard.items.len() as i64;
+            }
+            shard_refs.push(SnapshotShardRef {
+                path: shard_path,
+                start: shard.start,
+                end: shard.end,
+                count: shard.items.len(),
+                hash: shard_hash,
+            });
+        }
+
+        let order = self.repository.build_snapshot_order(profile).await?;
+        let order_json = serde_json::to_vec(&order)?;
+        let order_hash = sha256_hex(&order_json);
+        let order_path = "order/default.json".to_string();
+        if previous_order_hash.as_deref() != Some(order_hash.as_str()) {
+            let data = encode_snapshot_file(&order_json, profile, crypto_key.as_ref())?;
+            let tmp_path = join_remote_path(".tmp", "order/default.json.tmp");
+            provider.put(&tmp_path, data.clone()).await?;
+            provider.put(&order_path, data).await?;
+            if let Err(e) = provider.delete(&tmp_path).await {
+                log::debug!(
+                    "[Sync::Engine] Failed to cleanup order temp file {}: {}",
+                    tmp_path,
+                    e
+                );
+            }
+        }
+
+        let manifest = SnapshotManifest {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            app: APP_NAME.to_string(),
+            generation: previous_manifest
+                .as_ref()
+                .map(|manifest| manifest.generation + 1)
+                .unwrap_or(1),
+            device_id: device_id.to_string(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            item_shard_size: SNAPSHOT_SHARD_SIZE,
+            item_shards: shard_refs,
+            order: Some(SnapshotFileRef {
+                path: order_path,
+                hash: order_hash,
+            }),
+        };
+        write_manifest(provider, "", &manifest).await?;
+
+        Ok(SyncPhaseReport {
+            items_uploaded,
+            ..SyncPhaseReport::default()
+        })
+    }
+
     /// Cleanup stale .tmp runs from previous failed sync attempts
     async fn cleanup_stale_tmp_runs(
         &self,
@@ -687,263 +744,6 @@ impl SyncEngine {
         }
 
         Ok(())
-    }
-
-    /// Stage local changes under .tmp/<run_id>/
-    async fn stage_local_changes(
-        &self,
-        provider: &dyn SyncProvider,
-        remote_root: &str,
-        run_id: &str,
-        device_id: &str,
-        profile: &SyncProfile,
-        changes: &[LocalSyncChange],
-    ) -> Result<StagedCommit, SyncError> {
-        let mut item_paths = Vec::new();
-        let mut change_paths = Vec::new();
-        let mut tombstone_paths = Vec::new();
-        let mut warnings = Vec::new();
-        let mut next_seq = next_local_remote_seq(provider, remote_root, device_id).await?;
-
-        for change in changes {
-            match change.operation.as_str() {
-                "create" | "update" | "upsert" | "toggle_pin" | "metadata_update"
-                | "tab_change" | "reorder" => {
-                    let local_id = change.entity_id.parse::<i64>().map_err(|_| {
-                        SyncError::Validation(format!(
-                            "Invalid clipboard change entity_id: {}",
-                            change.entity_id
-                        ))
-                    })?;
-                    let local_item = match self
-                        .repository
-                        .get_local_clipboard_item(local_id)
-                        .await?
-                    {
-                        Some(local_item) => local_item,
-                        None => {
-                            let message = format!(
-                                "[Sync::Engine] Skipping stale local change {}: clipboard item {} no longer exists",
-                                change.id, local_id
-                            );
-                            log::warn!("{}", message);
-                            warnings.push(message);
-
-                            if let Some(item_key) = change.item_key.clone() {
-                                let tombstone = RemoteTombstone {
-                                    schema_version: 1,
-                                    item_key: item_key.clone(),
-                                    deleted_at: chrono::Utc::now().to_rfc3339(),
-                                    deleted_by: device_id.to_string(),
-                                };
-                                let tombstone_bytes = encode_tombstone(tombstone)?;
-                                let tombstone_path = build_tombstone_path(&item_key);
-                                let tmp_run_path = join_remote_path(".tmp", run_id);
-                                let staged_tombstone_path = join_remote_path(
-                                    remote_root,
-                                    &join_remote_path(&tmp_run_path, &tombstone_path),
-                                );
-                                provider
-                                    .put(&staged_tombstone_path, tombstone_bytes)
-                                    .await?;
-                                tombstone_paths.push(staged_tombstone_path);
-
-                                let change_entry = RemoteChange {
-                                    schema_version: 1,
-                                    seq: next_seq,
-                                    device_id: device_id.to_string(),
-                                    operation: ChangeOperation::Delete,
-                                    entity_type: change.entity_type.clone(),
-                                    item_key,
-                                    item_path: None,
-                                    blob_path: None,
-                                    tombstone_path: Some(tombstone_path),
-                                    changed_at: chrono::Utc::now().to_rfc3339(),
-                                };
-                                let change_bytes = encode_change(change_entry)?;
-                                let change_path = build_change_path(device_id, next_seq);
-                                let staged_change_path = join_remote_path(
-                                    remote_root,
-                                    &join_remote_path(&tmp_run_path, &change_path),
-                                );
-                                provider.put(&staged_change_path, change_bytes).await?;
-                                change_paths.push(staged_change_path);
-                                next_seq += 1;
-                            }
-
-                            continue;
-                        }
-                    };
-                    let created_at = local_item.created_at.unwrap_or_else(chrono::Utc::now);
-                    let item_key = match &change.item_key {
-                        Some(item_key) => item_key.clone(),
-                        None => {
-                            self.repository
-                                .get_or_create_item_key(local_id, created_at, device_id)
-                                .await?
-                        }
-                    };
-                    let remote_item = local_item_to_remote(local_item, item_key.clone(), device_id);
-
-                    // Get crypto key if profile is unlocked
-                    let crypto_key = self.get_crypto_key(&profile.id).await.ok().flatten();
-                    let encoded = encode_clipboard_item_from_remote_with_key(
-                        remote_item.clone(),
-                        profile,
-                        crypto_key.as_ref(),
-                    )?;
-
-                    // Stage item
-                    let tmp_run_path = join_remote_path(".tmp", run_id);
-                    let staged_item_path = join_remote_path(
-                        remote_root,
-                        &join_remote_path(&tmp_run_path, &encoded.item_path),
-                    );
-                    provider.put(&staged_item_path, encoded.json_data).await?;
-                    item_paths.push(staged_item_path.clone());
-
-                    // Build and stage change log entry
-                    let change_entry = RemoteChange {
-                        schema_version: 1,
-                        seq: next_seq,
-                        device_id: device_id.to_string(),
-                        operation: ChangeOperation::Upsert,
-                        entity_type: change.entity_type.clone(),
-                        item_key: item_key.clone(),
-                        item_path: Some(encoded.item_path.clone()),
-                        blob_path: None,
-                        tombstone_path: None,
-                        changed_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let change_bytes = encode_change(change_entry)?;
-                    let change_path = build_change_path(device_id, next_seq);
-                    let staged_change_path = join_remote_path(
-                        remote_root,
-                        &join_remote_path(&tmp_run_path, &change_path),
-                    );
-                    provider.put(&staged_change_path, change_bytes).await?;
-                    change_paths.push(staged_change_path);
-                    next_seq += 1;
-                }
-                "delete" => {
-                    let item_key = change
-                        .item_key
-                        .clone()
-                        .unwrap_or_else(|| format!("{}_{}_unknown", device_id, change.entity_id));
-
-                    // Stage tombstone
-                    let tombstone = RemoteTombstone {
-                        schema_version: 1,
-                        item_key: item_key.clone(),
-                        deleted_at: chrono::Utc::now().to_rfc3339(),
-                        deleted_by: device_id.to_string(),
-                    };
-                    let tombstone_bytes = encode_tombstone(tombstone)?;
-                    let tombstone_path = build_tombstone_path(&item_key);
-                    let tmp_run_path = join_remote_path(".tmp", run_id);
-                    let staged_tombstone_path = join_remote_path(
-                        remote_root,
-                        &join_remote_path(&tmp_run_path, &tombstone_path),
-                    );
-                    provider
-                        .put(&staged_tombstone_path, tombstone_bytes)
-                        .await?;
-                    tombstone_paths.push(staged_tombstone_path);
-
-                    // Build and stage delete change log entry
-                    let change_entry = RemoteChange {
-                        schema_version: 1,
-                        seq: next_seq,
-                        device_id: device_id.to_string(),
-                        operation: ChangeOperation::Delete,
-                        entity_type: change.entity_type.clone(),
-                        item_key,
-                        item_path: None,
-                        blob_path: None,
-                        tombstone_path: Some(tombstone_path.clone()),
-                        changed_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let change_bytes = encode_change(change_entry)?;
-                    let change_path = build_change_path(device_id, next_seq);
-                    let staged_change_path = join_remote_path(
-                        remote_root,
-                        &join_remote_path(&tmp_run_path, &change_path),
-                    );
-                    provider.put(&staged_change_path, change_bytes).await?;
-                    change_paths.push(staged_change_path);
-                    next_seq += 1;
-                }
-                _ => {
-                    log::warn!(
-                        "[Sync::Engine] Unknown operation in change {}: {}",
-                        change.id,
-                        change.operation
-                    );
-                }
-            }
-        }
-
-        Ok(StagedCommit {
-            run_id: run_id.to_string(),
-            item_paths,
-            change_paths,
-            tombstone_paths,
-            warnings,
-        })
-    }
-
-    /// Commit staged changes by moving from .tmp/ to final paths
-    async fn commit_staged_changes(
-        &self,
-        provider: &dyn SyncProvider,
-        remote_root: &str,
-        run_id: &str,
-        staged: &StagedCommit,
-    ) -> Result<i64, SyncError> {
-        let mut items_uploaded: i64 = 0;
-
-        // Commit items
-        for staged_path in &staged.item_paths {
-            // Extract final path from .tmp/<run_id>/<final_path>
-            let prefix = join_remote_path(remote_root, &join_remote_path(".tmp", run_id)) + "/";
-            if let Some(final_path) = staged_path.strip_prefix(&prefix) {
-                let final_full_path = join_remote_path(remote_root, final_path);
-                // Copy by reading and re-uploading
-                let data = provider.get(staged_path).await?;
-                provider.put(&final_full_path, data).await?;
-                items_uploaded += 1;
-            }
-        }
-
-        // Commit changes
-        for staged_path in &staged.change_paths {
-            let prefix = join_remote_path(remote_root, &join_remote_path(".tmp", run_id)) + "/";
-            if let Some(final_path) = staged_path.strip_prefix(&prefix) {
-                let final_full_path = join_remote_path(remote_root, final_path);
-                // Copy by reading and re-uploading
-                let data = provider.get(staged_path).await?;
-                provider.put(&final_full_path, data).await?;
-            }
-        }
-
-        // Commit tombstones
-        for staged_path in &staged.tombstone_paths {
-            let prefix = join_remote_path(remote_root, &join_remote_path(".tmp", run_id)) + "/";
-            if let Some(final_path) = staged_path.strip_prefix(&prefix) {
-                let final_full_path = join_remote_path(remote_root, final_path);
-                // Copy by reading and re-uploading
-                let data = provider.get(staged_path).await?;
-                provider.put(&final_full_path, data).await?;
-            }
-        }
-
-        // Clean up .tmp directory after successful commit
-        let tmp_prefix = join_remote_path(remote_root, &join_remote_path(".tmp", run_id)) + "/";
-        if let Err(e) = provider.delete(&tmp_prefix).await {
-            log::warn!("[Sync::Engine] Failed to cleanup .tmp directory: {}", e);
-        }
-
-        Ok(items_uploaded)
     }
 
     /// Cancel running sync
@@ -1015,80 +815,58 @@ impl SyncEngine {
     }
 }
 
-fn local_item_to_remote(
-    local: ClipboardItem,
-    item_key: String,
-    device_id: &str,
-) -> RemoteClipboardItem {
-    RemoteClipboardItem {
-        schema_version: 1,
-        item_key,
-        device_id: device_id.to_string(),
-        local_id: local.id,
-        item_type: local.item_type,
-        content: Some(local.content),
-        blob_path: None,
-        blob_mime: None,
-        content_hash: local.content_hash,
-        created_at: local
-            .created_at
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-        updated_at: local
-            .updated_at
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-        tab_name: None,
-        tags: parse_local_tags(local.tags.as_deref()),
-        is_pinned: local.is_pinned.unwrap_or(0) != 0,
-        is_sensitive: local.is_sensitive.unwrap_or(0) != 0,
-        metadata: local
-            .metadata
-            .as_deref()
-            .and_then(|metadata| serde_json::from_str(metadata).ok())
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
-        revision: 0,
-        last_modified_by: device_id.to_string(),
-        deleted: false,
-    }
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
-fn parse_local_tags(tags: Option<&str>) -> Vec<String> {
-    let Some(tags) = tags else {
-        return Vec::new();
+fn encode_snapshot_file(
+    bytes: &[u8],
+    profile: &SyncProfile,
+    crypto_key: Option<&secrecy::SecretVec<u8>>,
+) -> Result<Vec<u8>, SyncError> {
+    if !profile.encryption.enabled {
+        return Ok(bytes.to_vec());
+    }
+    let key = crypto_key.ok_or_else(|| {
+        SyncError::encryption("Encryption enabled but no crypto key provided".to_string())
+    })?;
+    let encrypted = encrypt(bytes, key)?;
+    let envelope = SnapshotEncryptionEnvelope {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        encrypted_data: base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            encrypted,
+        ),
+        algorithm: profile.encryption.algorithm.clone(),
     };
-    if tags.trim().is_empty() {
-        return Vec::new();
-    }
-    if let Ok(values) = serde_json::from_str::<Vec<String>>(tags) {
-        return values;
-    }
-    tags.split(',')
-        .map(str::trim)
-        .filter(|tag| !tag.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
+    serde_json::to_vec(&envelope).map_err(SyncError::Serialization)
 }
 
-// Need to add scopeguard to Cargo.toml
-mod scopeguard {
-    pub fn guard<T, F: FnOnce(T)>(value: T, drop_fn: F) -> impl Drop {
-        Guard {
-            value: Some(value),
-            drop_fn: Some(drop_fn),
-        }
+fn decode_snapshot_file(
+    bytes: &[u8],
+    profile: &SyncProfile,
+    crypto_key: Option<&secrecy::SecretVec<u8>>,
+) -> Result<Vec<u8>, SyncError> {
+    if !profile.encryption.enabled {
+        return Ok(bytes.to_vec());
     }
-
-    pub struct Guard<T, F: FnOnce(T)> {
-        value: Option<T>,
-        drop_fn: Option<F>,
+    let envelope: SnapshotEncryptionEnvelope = serde_json::from_slice(bytes).map_err(|e| {
+        SyncError::validation(format!("Invalid snapshot encryption envelope: {}", e))
+    })?;
+    if envelope.schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(SyncError::SchemaVersionMismatch {
+            local: SNAPSHOT_SCHEMA_VERSION,
+            remote: envelope.schema_version,
+        });
     }
-
-    impl<T, F: FnOnce(T)> Drop for Guard<T, F> {
-        fn drop(&mut self) {
-            if let (Some(value), Some(drop_fn)) = (self.value.take(), self.drop_fn.take()) {
-                drop_fn(value);
-            }
-        }
-    }
+    let encrypted = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        envelope.encrypted_data,
+    )
+    .map_err(|e| SyncError::encryption(format!("Base64 decode failed: {}", e)))?;
+    let key = crypto_key.ok_or_else(|| {
+        SyncError::encryption("Encryption enabled but no crypto key provided".to_string())
+    })?;
+    decrypt(&encrypted, key)
 }

@@ -11,29 +11,29 @@ pub async fn acquire_remote_lock(
     wait_config: LockWaitConfig,
 ) -> Result<RemoteLockGuard, SyncError> {
     let start = std::time::Instant::now();
+    let mut last_observation = "not started".to_string();
 
     loop {
         if start.elapsed().as_secs() > wait_config.max_wait_seconds {
             return Err(SyncError::Lock(format!(
-                "Failed to acquire lock after {} seconds",
-                wait_config.max_wait_seconds
+                "Failed to acquire lock after {} seconds; last observation: {}",
+                wait_config.max_wait_seconds, last_observation
             )));
         }
 
-        // Try to read existing lock
         let existing_lock = read_remote_lock(provider, lock_path).await?;
 
         if let Some(lock) = existing_lock {
+            last_observation = format!(
+                "existing lock owner_device_id={} owner_run_id={} expires_at={}",
+                lock.owner_device_id, lock.owner_run_id, lock.expires_at
+            );
             // Check if lock has expired
             let expires_at = chrono::DateTime::parse_from_rfc3339(&lock.expires_at)
                 .map_err(|e| SyncError::Lock(format!("Invalid expires_at: {}", e)))?;
 
-            if expires_at
-                > chrono::Utc::now()
-                    .to_rfc3339()
-                    .parse::<chrono::DateTime<chrono::FixedOffset>>()
-                    .unwrap()
-            {
+            let is_same_device = lock.owner_device_id == owner.owner_device_id;
+            if expires_at > chrono::Utc::now() && !is_same_device {
                 // Lock is still valid, wait and retry
                 tokio::time::sleep(tokio::time::Duration::from_millis(
                     wait_config.retry_interval_ms,
@@ -42,7 +42,14 @@ pub async fn acquire_remote_lock(
                 continue;
             }
 
-            // Lock has expired, overwrite it
+            // The lock is expired, or it was left by this device after a
+            // previous interrupted run. Remove it before writing a fresh lock;
+            // some WebDAV servers reject or delay overwriting locked files.
+            if is_same_device {
+                provider.delete(lock_path).await?;
+            }
+        } else {
+            log::debug!("[Sync::Lock] No existing remote lock at {}", lock_path);
         }
 
         // Create new lock
@@ -53,12 +60,18 @@ pub async fn acquire_remote_lock(
         // Verify lock
         let verified = read_remote_lock(provider, lock_path).await?;
         if let Some(verified_lock) = verified {
+            last_observation = format!(
+                "verified lock owner_device_id={} owner_run_id={} expires_at={}",
+                verified_lock.owner_device_id, verified_lock.owner_run_id, verified_lock.expires_at
+            );
             if verified_lock.owner_run_id == owner.owner_run_id {
                 return Ok(RemoteLockGuard {
                     provider_path: lock_path.to_string(),
                     owner_run_id: owner.owner_run_id,
                 });
             }
+        } else {
+            last_observation = "lock write completed but verification found no lock".to_string();
         }
 
         // Verification failed, wait and retry
@@ -74,14 +87,14 @@ pub async fn read_remote_lock(
     provider: &dyn SyncProvider,
     lock_path: &str,
 ) -> Result<Option<RemoteLock>, SyncError> {
-    match provider.stat(lock_path).await? {
-        Some(_) => {
-            let data = provider.get(lock_path).await?;
+    match provider.get(lock_path).await {
+        Ok(data) => {
             let lock: RemoteLock = serde_json::from_slice(&data)
                 .map_err(|e| SyncError::Lock(format!("Failed to parse lock: {}", e)))?;
             Ok(Some(lock))
         }
-        None => Ok(None),
+        Err(SyncError::Provider(message)) if message.contains("File not found") => Ok(None),
+        Err(error) => Err(error),
     }
 }
 

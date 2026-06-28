@@ -347,6 +347,7 @@ async fn create_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
         CREATE TABLE IF NOT EXISTS sync_item_map (
             local_id INTEGER NOT NULL,
             item_key TEXT NOT NULL UNIQUE,
+            stable_seq INTEGER,
             remote_path TEXT NOT NULL,
             last_remote_updated_at DATETIME,
             last_synced_at DATETIME,
@@ -357,6 +358,31 @@ async fn create_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     log::info!("[Database] sync_item_map table created");
+
+    let add_stable_seq_result = sqlx::query(
+        r#"
+        ALTER TABLE sync_item_map ADD COLUMN stable_seq INTEGER
+        "#,
+    )
+    .execute(pool)
+    .await;
+    match add_stable_seq_result {
+        Ok(_) => log::info!("[Database] Added stable_seq column to sync_item_map"),
+        Err(e) => log::debug!(
+            "[Database] sync_item_map stable_seq column likely already exists: {}",
+            e
+        ),
+    }
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_sync_item_map_stable_seq
+        ON sync_item_map(stable_seq)
+        WHERE stable_seq IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     // sync_state table - stores sync cursors per scope
     sqlx::query(

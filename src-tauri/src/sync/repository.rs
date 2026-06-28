@@ -338,14 +338,46 @@ impl SyncRepository {
         let created_at_ms = created_at.timestamp_millis();
         let item_key = format!("{}_{}_{}", device_id, local_id, created_at_ms);
 
-        sqlx::query("INSERT INTO sync_item_map (local_id, item_key, remote_path) VALUES (?, ?, ?)")
-            .bind(local_id)
-            .bind(&item_key)
-            .bind("") // Will be updated when uploaded
-            .execute(&self.pool)
-            .await?;
+        self.insert_item_mapping(local_id, &item_key, "", None).await?;
 
         Ok(item_key)
+    }
+
+    async fn next_stable_seq(&self) -> Result<i64, SyncError> {
+        let next: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT MAX(stable_seq) FROM sync_item_map")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(next.and_then(|(value,)| value).unwrap_or(0) + 1)
+    }
+
+    async fn insert_item_mapping(
+        &self,
+        local_id: i64,
+        item_key: &str,
+        remote_path: &str,
+        stable_seq_hint: Option<i64>,
+    ) -> Result<i64, SyncError> {
+        let stable_seq = match stable_seq_hint {
+            Some(value) if value > 0 => value,
+            _ => self.next_stable_seq().await?,
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO sync_item_map
+                (local_id, item_key, stable_seq, remote_path, last_synced_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            "#,
+        )
+        .bind(local_id)
+        .bind(item_key)
+        .bind(stable_seq)
+        .bind(remote_path)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(stable_seq)
     }
 
     async fn find_local_id_by_item_key(&self, item_key: &str) -> Result<Option<i64>, SyncError> {
@@ -358,20 +390,27 @@ impl SyncRepository {
         Ok(existing.map(|(local_id,)| local_id))
     }
 
-    async fn upsert_item_mapping(
+    async fn upsert_item_mapping_with_stable_seq(
         &self,
         local_id: i64,
         item_key: &str,
+        stable_seq: i64,
         remote_path: &str,
         last_remote_updated_at: Option<&str>,
     ) -> Result<(), SyncError> {
+        let stable_seq = if stable_seq > 0 {
+            stable_seq
+        } else {
+            self.next_stable_seq().await?
+        };
         sqlx::query(
             r#"
             INSERT INTO sync_item_map
-                (local_id, item_key, remote_path, last_remote_updated_at, last_synced_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
+                (local_id, item_key, stable_seq, remote_path, last_remote_updated_at, last_synced_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(item_key) DO UPDATE SET
                 local_id = excluded.local_id,
+                stable_seq = excluded.stable_seq,
                 remote_path = excluded.remote_path,
                 last_remote_updated_at = excluded.last_remote_updated_at,
                 last_synced_at = datetime('now')
@@ -379,6 +418,7 @@ impl SyncRepository {
         )
         .bind(local_id)
         .bind(item_key)
+        .bind(stable_seq)
         .bind(remote_path)
         .bind(last_remote_updated_at)
         .execute(&self.pool)
@@ -556,6 +596,228 @@ impl SyncRepository {
 
     pub async fn has_unsynced_changes(&self, profile: &SyncProfile) -> Result<bool, SyncError> {
         Ok(!self.list_unsynced_changes(profile).await?.is_empty())
+    }
+
+    /// Return the current local clipboard snapshot with stable remote identity.
+    pub async fn list_snapshot_items(
+        &self,
+        profile: &SyncProfile,
+        device_id: &str,
+    ) -> Result<Vec<RemoteClipboardItem>, SyncError> {
+        let mut sql = String::from(
+            r#"
+            SELECT ci.id,
+                   ci.type,
+                   ci.content,
+                   ci.content_hash,
+                   ci.metadata,
+                   ci.tags,
+                   ci.tab_id,
+                   ci.is_sensitive,
+                   ci.is_pinned,
+                   ci.display_order,
+                   ci.created_at,
+                   ci.updated_at,
+                   sim.item_key,
+                   sim.stable_seq
+            FROM clipboard_items ci
+            LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
+            "#,
+        );
+
+        if profile.sync_tabs.mode == TabSyncMode::Selected {
+            if profile.sync_tabs.selected_tab_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            let placeholders = profile
+                .sync_tabs
+                .selected_tab_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(&format!(" WHERE ci.tab_id IN ({})", placeholders));
+        }
+
+        sql.push_str(" ORDER BY COALESCE(sim.stable_seq, ci.id), ci.id");
+
+        type SnapshotRow = (
+            Option<i64>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<String>,
+            Option<i64>,
+        );
+
+        let mut query = sqlx::query_as::<_, SnapshotRow>(&sql);
+        if profile.sync_tabs.mode == TabSyncMode::Selected {
+            for tab_id in &profile.sync_tabs.selected_tab_ids {
+                query = query.bind(tab_id);
+            }
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        let mut items = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let (
+                local_id,
+                item_type,
+                content,
+                content_hash,
+                metadata,
+                tags,
+                tab_id,
+                is_sensitive,
+                is_pinned,
+                _display_order,
+                created_at,
+                updated_at,
+                item_key,
+                stable_seq,
+            ) = row;
+            let local_id = local_id.ok_or_else(|| {
+                SyncError::validation("Snapshot item is missing local id".to_string())
+            })?;
+            let created_at = created_at.unwrap_or_else(chrono::Utc::now);
+            let (item_key, stable_seq) = match item_key {
+                Some(item_key) => (item_key, stable_seq),
+                None => {
+                    let item_key = self
+                        .get_or_create_item_key(local_id, created_at, device_id)
+                        .await?;
+                    let stored_stable_seq: Option<(Option<i64>,)> = sqlx::query_as(
+                        "SELECT stable_seq FROM sync_item_map WHERE local_id = ?",
+                    )
+                    .bind(local_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                    (item_key, stored_stable_seq.and_then(|(value,)| value))
+                }
+            };
+            let stable_seq = match stable_seq {
+                Some(value) if value > 0 => value,
+                _ => {
+                    let next = self.next_stable_seq().await?;
+                    sqlx::query("UPDATE sync_item_map SET stable_seq = ? WHERE local_id = ?")
+                        .bind(next)
+                        .bind(local_id)
+                        .execute(&self.pool)
+                        .await?;
+                    next
+                }
+            };
+
+            items.push(RemoteClipboardItem {
+                schema_version: 2,
+                item_key,
+                stable_seq,
+                device_id: device_id.to_string(),
+                local_id: Some(local_id),
+                item_type,
+                content: Some(content),
+                blob_path: None,
+                blob_mime: None,
+                content_hash,
+                created_at: created_at.to_rfc3339(),
+                updated_at: updated_at
+                    .unwrap_or_else(chrono::Utc::now)
+                    .to_rfc3339(),
+                tab_key: Some(tab_key_for_local_id(tab_id)),
+                tab_name: None,
+                tags: parse_sync_tags(tags.as_deref()),
+                is_pinned: is_pinned.unwrap_or(0) != 0,
+                is_sensitive: is_sensitive.unwrap_or(0) != 0,
+                metadata: metadata
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+                revision: 0,
+                last_modified_by: device_id.to_string(),
+                deleted: false,
+            });
+        }
+
+        items.sort_by_key(|item| item.stable_seq);
+        Ok(items)
+    }
+
+    pub async fn build_snapshot_order(
+        &self,
+        profile: &SyncProfile,
+    ) -> Result<SnapshotOrder, SyncError> {
+        let mut sql = String::from(
+            r#"
+            SELECT ci.tab_id,
+                   COALESCE(ci.is_pinned, 0),
+                   sim.item_key
+            FROM clipboard_items ci
+            JOIN sync_item_map sim ON sim.local_id = ci.id
+            "#,
+        );
+        if profile.sync_tabs.mode == TabSyncMode::Selected {
+            if profile.sync_tabs.selected_tab_ids.is_empty() {
+                return Ok(SnapshotOrder {
+                    schema_version: 1,
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                    tabs: Vec::new(),
+                });
+            }
+            let placeholders = profile
+                .sync_tabs
+                .selected_tab_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(&format!(" WHERE ci.tab_id IN ({})", placeholders));
+        }
+        sql.push_str(" ORDER BY ci.tab_id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC");
+
+        let mut query = sqlx::query_as::<_, (Option<i64>, i32, String)>(&sql);
+        if profile.sync_tabs.mode == TabSyncMode::Selected {
+            for tab_id in &profile.sync_tabs.selected_tab_ids {
+                query = query.bind(tab_id);
+            }
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        let mut tabs: Vec<SnapshotTabOrder> = Vec::new();
+        for (tab_id, is_pinned, item_key) in rows {
+            let tab_key = tab_key_for_local_id(tab_id);
+            let tab_index = match tabs.iter().position(|tab| tab.tab_key == tab_key) {
+                Some(index) => index,
+                None => {
+                    tabs.push(SnapshotTabOrder {
+                        tab_key: tab_key.clone(),
+                        pinned: Vec::new(),
+                        normal: Vec::new(),
+                    });
+                    tabs.len() - 1
+                }
+            };
+            let tab = &mut tabs[tab_index];
+            if is_pinned != 0 {
+                tab.pinned.push(item_key);
+            } else {
+                tab.normal.push(item_key);
+            }
+        }
+
+        Ok(SnapshotOrder {
+            schema_version: 1,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            tabs,
+        })
     }
 
     /// Enqueue existing clipboard items for a first manual sync.
@@ -761,9 +1023,10 @@ impl SyncRepository {
 
             log::info!("[Sync::Repository] Updated local item {}", local_id);
 
-            self.upsert_item_mapping(
+            self.upsert_item_mapping_with_stable_seq(
                 local_id,
                 &item.item_key,
+                item.stable_seq,
                 &format!("items/{}.json", item.item_key),
                 Some(&item.updated_at),
             )
@@ -790,13 +1053,16 @@ impl SyncRepository {
             let metadata_json =
                 serde_json::to_string(&item.metadata).unwrap_or_else(|_| "{}".to_string());
 
-            // Use default tab - we'll need to get it
-            let default_tab: Option<(i64,)> =
-                sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
-                    .fetch_optional(&self.pool)
-                    .await?;
-
-            let tab_id = default_tab.map(|(id,)| id);
+            let tab_id = match item.tab_key.as_deref() {
+                Some(tab_key) => local_id_for_tab_key(tab_key, &self.pool).await?,
+                None => {
+                    let default_tab: Option<(i64,)> =
+                        sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
+                            .fetch_optional(&self.pool)
+                            .await?;
+                    default_tab.map(|(id,)| id)
+                }
+            };
 
             let result = sqlx::query(
                 r#"
@@ -820,9 +1086,10 @@ impl SyncRepository {
 
             log::info!("[Sync::Repository] Created local item {}", local_id);
 
-            self.upsert_item_mapping(
+            self.upsert_item_mapping_with_stable_seq(
                 local_id,
                 &item.item_key,
+                item.stable_seq,
                 &format!("items/{}.json", item.item_key),
                 Some(&item.updated_at),
             )
@@ -874,6 +1141,140 @@ impl SyncRepository {
         );
         Ok(())
     }
+
+    pub async fn apply_snapshot_items(
+        &self,
+        profile: &SyncProfile,
+        items: Vec<RemoteClipboardItem>,
+        prune_missing: bool,
+    ) -> Result<i64, SyncError> {
+        let mut applied = 0;
+        let remote_keys: std::collections::HashSet<String> =
+            items.iter().map(|item| item.item_key.clone()).collect();
+        for item in items {
+            if item.deleted {
+                continue;
+            }
+            match self.apply_remote_item(profile, item, None).await? {
+                ApplyItemResult::Created { .. }
+                | ApplyItemResult::Updated { .. }
+                | ApplyItemResult::Merged { .. } => applied += 1,
+                ApplyItemResult::Conflict { .. } | ApplyItemResult::Skipped => {}
+            }
+        }
+        if prune_missing {
+            self.prune_items_missing_from_snapshot(&remote_keys).await?;
+        }
+        Ok(applied)
+    }
+
+    async fn prune_items_missing_from_snapshot(
+        &self,
+        remote_keys: &std::collections::HashSet<String>,
+    ) -> Result<(), SyncError> {
+        let local_mappings: Vec<(i64, String)> =
+            sqlx::query_as("SELECT local_id, item_key FROM sync_item_map")
+                .fetch_all(&self.pool)
+                .await?;
+        for (local_id, item_key) in local_mappings {
+            if remote_keys.contains(&item_key) {
+                continue;
+            }
+            sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+                .bind(local_id)
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                .bind(local_id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn apply_snapshot_order(&self, order: &SnapshotOrder) -> Result<(), SyncError> {
+        for tab_order in &order.tabs {
+            let tab_id = local_id_for_tab_key(&tab_order.tab_key, &self.pool).await?;
+            self.apply_order_group(tab_id, true, &tab_order.pinned).await?;
+            self.apply_order_group(tab_id, false, &tab_order.normal).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_order_group(
+        &self,
+        tab_id: Option<i64>,
+        pinned: bool,
+        item_keys: &[String],
+    ) -> Result<(), SyncError> {
+        for (index, item_key) in item_keys.iter().enumerate() {
+            let display_order = if pinned {
+                -1_000_000 + index as i32
+            } else {
+                index as i32
+            };
+            let query = sqlx::query(
+                r#"
+                UPDATE clipboard_items
+                SET display_order = ?, is_pinned = ?, tab_id = ?, updated_at = updated_at
+                WHERE id = (SELECT local_id FROM sync_item_map WHERE item_key = ?)
+                "#,
+            )
+            .bind(display_order)
+            .bind(if pinned { 1 } else { 0 })
+            .bind(tab_id)
+            .bind(item_key);
+            query.execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+}
+
+fn tab_key_for_local_id(tab_id: Option<i64>) -> String {
+    tab_id
+        .map(|id| format!("tab:{}", id))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+async fn local_id_for_tab_key(
+    tab_key: &str,
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<i64>, SyncError> {
+    if tab_key == "default" {
+        let default_tab: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
+                .fetch_optional(pool)
+                .await?;
+        return Ok(default_tab.map(|(id,)| id));
+    }
+    if let Some(id) = tab_key
+        .strip_prefix("tab:")
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM tabs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+        return Ok(existing.map(|(id,)| id));
+    }
+    Ok(None)
+}
+
+fn parse_sync_tags(tags: Option<&str>) -> Vec<String> {
+    let Some(tags) = tags else {
+        return Vec::new();
+    };
+    if tags.trim().is_empty() {
+        return Vec::new();
+    }
+    if let Ok(values) = serde_json::from_str::<Vec<String>>(tags) {
+        return values;
+    }
+    tags.split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[cfg(test)]
@@ -940,6 +1341,7 @@ mod tests {
             CREATE TABLE sync_item_map (
                 local_id INTEGER NOT NULL,
                 item_key TEXT NOT NULL UNIQUE,
+                stable_seq INTEGER,
                 remote_path TEXT NOT NULL,
                 last_remote_updated_at DATETIME,
                 last_synced_at DATETIME,
@@ -1015,6 +1417,7 @@ mod tests {
         RemoteClipboardItem {
             schema_version: 1,
             item_key: item_key.to_string(),
+            stable_seq: 0,
             device_id: "device_b".to_string(),
             local_id: None,
             item_type: "text".to_string(),
@@ -1024,6 +1427,7 @@ mod tests {
             content_hash: Some(content_hash.to_string()),
             created_at: "2026-05-15T00:00:00Z".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
+            tab_key: None,
             tab_name: None,
             tags: Vec::new(),
             is_pinned: false,
@@ -1177,5 +1581,53 @@ mod tests {
 
         assert_eq!(stored.0, "new content");
         assert_eq!(stored.1.as_deref(), Some("new-hash"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_items_keep_stable_seq_when_display_order_changes() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+
+        for (content, display_order) in [("first", 0), ("second", 1), ("third", 2)] {
+            sqlx::query(
+                r#"
+                INSERT INTO clipboard_items
+                    (type, content, tab_id, is_sensitive, is_pinned, display_order, created_at, updated_at)
+                VALUES ('text', ?, 1, 0, 0, ?, datetime('now'), datetime('now'))
+                "#,
+            )
+            .bind(content)
+            .bind(display_order)
+            .execute(&pool)
+            .await?;
+        }
+
+        let before = repository
+            .list_snapshot_items(&profile, "device_a")
+            .await?;
+        let before_pairs: Vec<(String, i64)> = before
+            .iter()
+            .map(|item| (item.item_key.clone(), item.stable_seq))
+            .collect();
+
+        sqlx::query("UPDATE clipboard_items SET display_order = CASE content WHEN 'third' THEN 0 WHEN 'first' THEN 1 ELSE 2 END")
+            .execute(&pool)
+            .await?;
+
+        let after = repository
+            .list_snapshot_items(&profile, "device_a")
+            .await?;
+        let after_pairs: Vec<(String, i64)> = after
+            .iter()
+            .map(|item| (item.item_key.clone(), item.stable_seq))
+            .collect();
+        let order = repository.build_snapshot_order(&profile).await?;
+
+        assert_eq!(before_pairs, after_pairs);
+        assert_eq!(order.tabs.len(), 1);
+        assert_eq!(order.tabs[0].normal.len(), 3);
+        assert_eq!(order.tabs[0].normal[0], before[2].item_key);
+        Ok(())
     }
 }

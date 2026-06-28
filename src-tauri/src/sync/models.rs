@@ -291,6 +291,8 @@ pub struct RemoteChange {
 pub struct RemoteClipboardItem {
     pub schema_version: u32,
     pub item_key: String,
+    #[serde(default)]
+    pub stable_seq: i64,
     pub device_id: String,
     pub local_id: Option<i64>,
     #[serde(rename = "type")]
@@ -301,6 +303,8 @@ pub struct RemoteClipboardItem {
     pub content_hash: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub tab_key: Option<String>,
     pub tab_name: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -316,6 +320,60 @@ pub struct RemoteClipboardItem {
     pub last_modified_by: String,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// Remote manifest for snapshot-based sync.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SnapshotManifest {
+    pub schema_version: u32,
+    pub app: String,
+    pub generation: i64,
+    pub device_id: String,
+    pub updated_at: String,
+    pub item_shard_size: usize,
+    #[serde(default)]
+    pub item_shards: Vec<SnapshotShardRef>,
+    pub order: Option<SnapshotFileRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotShardRef {
+    pub path: String,
+    pub start: i64,
+    pub end: i64,
+    pub count: usize,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotFileRef {
+    pub path: String,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotItemShard {
+    pub schema_version: u32,
+    pub start: i64,
+    pub end: i64,
+    pub items: Vec<RemoteClipboardItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotOrder {
+    pub schema_version: u32,
+    pub updated_at: String,
+    #[serde(default)]
+    pub tabs: Vec<SnapshotTabOrder>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotTabOrder {
+    pub tab_key: String,
+    #[serde(default)]
+    pub pinned: Vec<String>,
+    #[serde(default)]
+    pub normal: Vec<String>,
 }
 
 /// Remote tombstone for deleted items
