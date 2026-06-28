@@ -102,7 +102,7 @@
       "notSet": "未设置"
     },
     "about": {
-      "version": "版本 1.0.0-mvp",
+      "version": "版本 {{version}}",
       "checkUpdate": "检查更新",
       "lastChecked": "上次检查：从未",
       "checkNow": "立即检查",

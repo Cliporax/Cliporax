@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import packageJson from './package.json'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -23,6 +24,9 @@ export default defineConfig({
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     // Produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_DEBUG,
+  },
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
   },
   plugins: [react()],
 })

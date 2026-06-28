@@ -1208,7 +1208,7 @@ const Settings: React.FC<SettingsProps> = ({
           className="text-sm mt-1"
           style={{ color: isDark ? "#64748b" : "#9a9a98" }}
         >
-          {t("settings.about.version")}
+          {t("settings.about.version", { version: __APP_VERSION__ })}
         </p>
       </div>
 
