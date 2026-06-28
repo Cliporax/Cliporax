@@ -50,6 +50,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -83,6 +85,43 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Generate release notes
+        id: release-notes
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = "v__VERSION__"
+          }
+
+          $previousTag = git tag --sort=-creatordate | Where-Object { $_ -ne $tag } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+            $range = "HEAD"
+          } else {
+            $range = "$previousTag..HEAD"
+          }
+
+          $changes = @(git log --pretty=format:"%s" $range | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 20)
+          if ($changes.Count -eq 0) {
+            $changes = @("Release build and packaging updates")
+          }
+
+          $body = @(
+            "## Main changes",
+            "",
+            ($changes | ForEach-Object { "- $_" }),
+            "",
+            "## Downloads",
+            "",
+            "Download the installer or portable package for your platform from the assets below."
+          ) -join "`n"
+
+          "body<<EOF" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -92,7 +131,7 @@ jobs:
           tauriScript: npm run tauri
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v__VERSION__' }}
           releaseName: Cliporax v__VERSION__
-          releaseBody: See the assets below to download the installer for your platform.
+          releaseBody: ${{ steps.release-notes.outputs.body }}
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
           generateReleaseNotes: true

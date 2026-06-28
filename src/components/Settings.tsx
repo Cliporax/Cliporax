@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { open } from "@tauri-apps/plugin-shell";
 import i18n from "../i18n";
 import {
   X,
@@ -37,6 +38,12 @@ export type { AppSettings } from "../lib/tauri-api";
 const logger = createLogger("Settings");
 
 const STORAGE_KEY = "cliporax-settings";
+const GITHUB_REPO_URL = "https://github.com/Cliporax/Cliporax";
+const GITHUB_RELEASES_URL = `${GITHUB_REPO_URL}/releases`;
+const GITHUB_CURRENT_RELEASE_URL = `${GITHUB_RELEASES_URL}/tag/v${__APP_VERSION__}`;
+const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
+const GITHUB_DOCS_URL = `${GITHUB_REPO_URL}/blob/master/docs/README.md`;
+const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues/new`;
 
 type SettingsTab = "general" | "shortcuts" | "plugins" | "sync" | "about";
 
@@ -277,6 +284,14 @@ const Settings: React.FC<SettingsProps> = ({
     type: "success" | "error";
     message: string;
   } | null>(null);
+
+  const handleOpenExternal = useCallback(async (url: string) => {
+    try {
+      await open(url);
+    } catch (error) {
+      logger.error("[Settings] Failed to open external URL:", error);
+    }
+  }, []);
 
   // Debug logging
   useEffect(() => {
@@ -1235,21 +1250,27 @@ const Settings: React.FC<SettingsProps> = ({
             {t("settings.about.lastChecked")}
           </p>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/20 rounded-lg transition-all">
+        <button
+          type="button"
+          onClick={() => handleOpenExternal(GITHUB_LATEST_RELEASE_URL)}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/20 rounded-lg transition-all"
+        >
           <Download size={14} />
           {t("settings.about.checkNow")}
         </button>
       </div>
 
       <div className="space-y-2">
-        <a
-          href="#"
+        <button
+          type="button"
+          onClick={() => handleOpenExternal(GITHUB_CURRENT_RELEASE_URL)}
           className="flex items-center justify-between p-4 rounded-xl transition-all group"
           style={{
             backgroundColor: isDark
               ? "rgba(255,255,255,0.05)"
               : "rgba(255,255,255,0.6)",
             border: `1px solid ${isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"}`,
+            width: "100%",
           }}
         >
           <span
@@ -1264,15 +1285,17 @@ const Settings: React.FC<SettingsProps> = ({
           >
             →
           </span>
-        </a>
-        <a
-          href="#"
+        </button>
+        <button
+          type="button"
+          onClick={() => handleOpenExternal(GITHUB_DOCS_URL)}
           className="flex items-center justify-between p-4 rounded-xl transition-all group"
           style={{
             backgroundColor: isDark
               ? "rgba(255,255,255,0.05)"
               : "rgba(255,255,255,0.6)",
             border: `1px solid ${isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"}`,
+            width: "100%",
           }}
         >
           <span
@@ -1287,15 +1310,17 @@ const Settings: React.FC<SettingsProps> = ({
           >
             →
           </span>
-        </a>
-        <a
-          href="#"
+        </button>
+        <button
+          type="button"
+          onClick={() => handleOpenExternal(GITHUB_ISSUES_URL)}
           className="flex items-center justify-between p-4 rounded-xl transition-all group"
           style={{
             backgroundColor: isDark
               ? "rgba(255,255,255,0.05)"
               : "rgba(255,255,255,0.6)",
             border: `1px solid ${isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"}`,
+            width: "100%",
           }}
         >
           <span
@@ -1310,7 +1335,7 @@ const Settings: React.FC<SettingsProps> = ({
           >
             →
           </span>
-        </a>
+        </button>
       </div>
 
       <div
