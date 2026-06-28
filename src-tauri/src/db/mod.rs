@@ -7,6 +7,9 @@ pub use models::{ClipboardItem, ClipboardItemInput, Metadata, Tab};
 pub use repositories::{ClipboardRepository, TabRepository};
 
 #[cfg(test)]
+mod repositories_test;
+
+#[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;
     use std::env;
@@ -54,6 +57,41 @@ mod tests {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (tab_id) REFERENCES tabs (id)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sync_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                tab_id INTEGER,
+                item_key TEXT,
+                source TEXT NOT NULL DEFAULT 'local',
+                changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                synced INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sync_item_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                local_id INTEGER NOT NULL,
+                item_key TEXT NOT NULL,
+                profile_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
         )

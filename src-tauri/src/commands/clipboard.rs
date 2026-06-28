@@ -705,17 +705,9 @@ pub async fn clipboard_move_to_tab(
         }
     }
 
-    // Update the item's tab_id
-    match sqlx::query(
-        "UPDATE clipboard_items SET tab_id = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(target_tab_id)
-    .bind(item_id)
-    .execute(db.inner())
-    .await
-    {
-        Ok(result) => {
-            if result.rows_affected() == 0 {
+    match ClipboardRepository::move_to_tab(&db, item_id, target_tab_id).await {
+        Ok(moved) => {
+            if !moved {
                 let error_msg = format!("Item not found: {}", item_id);
                 log::error!("[Command] clipboard_move_to_tab failed: {}", error_msg);
                 Err(error_msg)

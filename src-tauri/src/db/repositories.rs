@@ -930,6 +930,52 @@ impl ClipboardRepository {
 
     /// Move multiple items to another tab (batch update tab_id)
     /// Returns the number of items moved
+    pub async fn move_to_tab(pool: &Db, id: i64, target_tab_id: i64) -> Result<bool, Error> {
+        log::info!(
+            "[ClipboardRepository] move_to_tab called - id: {}, target_tab_id: {}",
+            id,
+            target_tab_id
+        );
+
+        let mut tx = pool.begin().await?;
+        let Some(is_pinned) =
+            sqlx::query_scalar::<_, i32>("SELECT is_pinned FROM clipboard_items WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+        else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        let display_order =
+            Self::next_display_order_for_new_item(&mut *tx, target_tab_id, is_pinned).await?;
+
+        let result = sqlx::query(
+            "UPDATE clipboard_items SET tab_id = ?, display_order = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(target_tab_id)
+        .bind(display_order)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+        record_sync_change_tx(
+            &mut tx,
+            SYNC_ENTITY_CLIPBOARD_ITEM,
+            &id.to_string(),
+            SYNC_OP_TAB_CHANGE,
+            Some(target_tab_id),
+            None,
+            SYNC_SOURCE_LOCAL,
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Move multiple items to another tab. Moved items are placed at the top of
+    /// the target tab instead of preserving their old manual order.
     pub async fn move_to_tab_batch(
         pool: &Db,
         ids: &[i64],
@@ -945,20 +991,77 @@ impl ClipboardRepository {
             return Ok(0);
         }
 
-        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "UPDATE clipboard_items SET tab_id = ?, updated_at = datetime('now') WHERE id IN ({})",
-            placeholders.join(", ")
-        );
-
         let mut tx = pool.begin().await?;
-        let mut query = sqlx::query(&sql).bind(target_tab_id);
+        let mut movable_items = Vec::new();
+
         for &id in ids {
-            query = query.bind(id);
+            if let Some(is_pinned) =
+                sqlx::query_scalar::<_, i32>("SELECT is_pinned FROM clipboard_items WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+            {
+                movable_items.push((id, is_pinned));
+            }
         }
 
-        let result = query.execute(&mut *tx).await?;
-        for &id in ids {
+        let pinned_count = movable_items
+            .iter()
+            .filter(|(_, is_pinned)| *is_pinned == 1)
+            .count();
+        let unpinned_count = movable_items.len().saturating_sub(pinned_count);
+
+        let first_pinned_order = if pinned_count > 0 {
+            Some(
+                Self::next_display_order_for_new_item(&mut *tx, target_tab_id, 1)
+                    .await?
+                    .saturating_sub((pinned_count.saturating_sub(1) as i32) * Self::ORDER_STEP),
+            )
+        } else {
+            None
+        };
+        let first_unpinned_order = if unpinned_count > 0 {
+            Some(
+                Self::next_display_order_for_new_item(&mut *tx, target_tab_id, 0)
+                    .await?
+                    .saturating_sub((unpinned_count.saturating_sub(1) as i32) * Self::ORDER_STEP),
+            )
+        } else {
+            None
+        };
+
+        let mut moved = 0i64;
+        let mut next_pinned_order = first_pinned_order;
+        let mut next_unpinned_order = first_unpinned_order;
+
+        for (id, is_pinned) in movable_items {
+            let next_order = if is_pinned == 1 {
+                &mut next_pinned_order
+            } else {
+                &mut next_unpinned_order
+            };
+            let display_order = match next_order {
+                Some(order) => {
+                    let current = *order;
+                    *order = order.saturating_add(Self::ORDER_STEP);
+                    current
+                }
+                None => {
+                    Self::next_display_order_for_new_item(&mut *tx, target_tab_id, is_pinned)
+                        .await?
+                }
+            };
+
+            let result = sqlx::query(
+                "UPDATE clipboard_items SET tab_id = ?, display_order = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(target_tab_id)
+            .bind(display_order)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+            moved += result.rows_affected() as i64;
             record_sync_change_tx(
                 &mut tx,
                 SYNC_ENTITY_CLIPBOARD_ITEM,
@@ -974,9 +1077,9 @@ impl ClipboardRepository {
 
         log::info!(
             "[ClipboardRepository] move_to_tab_batch moved {} rows",
-            result.rows_affected()
+            moved
         );
-        Ok(result.rows_affected() as i64)
+        Ok(moved)
     }
 
     /// Copy multiple items to another tab (batch insert with new tab_id)

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::tests::setup_test_db;
+    use crate::db::{ClipboardItemInput, ClipboardRepository, TabRepository};
 
     #[tokio::test]
     async fn test_tab_repository_crud() {
@@ -23,7 +23,7 @@ mod tests {
 
         // Test get default tab
         let default_tab = TabRepository::get_default_tab(&pool).await.unwrap();
-        assert_eq!(default_tab.name, "Default");
+        assert_eq!(default_tab.name, "Clipboard");
 
         // Test delete tab
         TabRepository::delete(&pool, tab_id).await.unwrap();
@@ -39,6 +39,7 @@ mod tests {
         let item_input = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Test content".to_string(),
+            content_hash: None,
             metadata: Some(r#"{"source": "test"}"#.to_string()),
             tags: Some(r#"["tag1", "tag2"]"#.to_string()),
             tab_id: None,
@@ -72,6 +73,7 @@ mod tests {
             let item_input = ClipboardItemInput {
                 item_type: "text".to_string(),
                 content: content.to_string(),
+                content_hash: None,
                 metadata: None,
                 tags: None,
                 tab_id: None,
@@ -99,6 +101,110 @@ mod tests {
         );
         assert!(items[0].display_order.unwrap() < items[1].display_order.unwrap());
         assert!(items[1].display_order.unwrap() < items[2].display_order.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_repository_move_to_tab_places_item_at_target_top(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let target_tab_id = TabRepository::create(&pool, "Target").await?;
+
+        for content in ["Target One", "Target Two"] {
+            let item_input = ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: content.to_string(),
+                content_hash: None,
+                metadata: None,
+                tags: None,
+                tab_id: Some(target_tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            };
+            ClipboardRepository::create(&pool, item_input).await?;
+        }
+
+        let source_item = ClipboardItemInput {
+            item_type: "text".to_string(),
+            content: "Moved Item".to_string(),
+            content_hash: None,
+            metadata: None,
+            tags: None,
+            tab_id: None,
+            is_sensitive: Some(0),
+            is_pinned: Some(0),
+        };
+        let moved_id = ClipboardRepository::create(&pool, source_item).await?;
+
+        let moved = ClipboardRepository::move_to_tab(&pool, moved_id, target_tab_id).await?;
+        assert!(moved);
+
+        let target_items = ClipboardRepository::get_by_tab(&pool, target_tab_id, 10, 0).await?;
+        assert_eq!(target_items[0].id, Some(moved_id));
+        assert_eq!(target_items[0].content, "Moved Item");
+        assert!(target_items[0].display_order < target_items[1].display_order);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_repository_move_to_tab_batch_places_items_at_target_top(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let target_tab_id = TabRepository::create(&pool, "Target").await?;
+
+        for content in ["Target One", "Target Two"] {
+            let item_input = ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: content.to_string(),
+                content_hash: None,
+                metadata: None,
+                tags: None,
+                tab_id: Some(target_tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            };
+            ClipboardRepository::create(&pool, item_input).await?;
+        }
+
+        let mut source_ids = Vec::new();
+        for content in ["Source One", "Source Two", "Source Three"] {
+            let item_input = ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: content.to_string(),
+                content_hash: None,
+                metadata: None,
+                tags: None,
+                tab_id: None,
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            };
+            source_ids.push(ClipboardRepository::create(&pool, item_input).await?);
+        }
+
+        let ids_in_visible_order = vec![source_ids[2], source_ids[1], source_ids[0]];
+        let moved =
+            ClipboardRepository::move_to_tab_batch(&pool, &ids_in_visible_order, target_tab_id)
+                .await?;
+        assert_eq!(moved, 3);
+
+        let target_items = ClipboardRepository::get_by_tab(&pool, target_tab_id, 10, 0).await?;
+        assert_eq!(
+            target_items
+                .iter()
+                .take(5)
+                .map(|item| item.content.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Source Three",
+                "Source Two",
+                "Source One",
+                "Target Two",
+                "Target One"
+            ]
+        );
+        assert!(target_items
+            .windows(2)
+            .all(|pair| pair[0].display_order <= pair[1].display_order));
+        Ok(())
     }
 
     #[tokio::test]
@@ -163,6 +269,7 @@ mod tests {
         let item1 = ClipboardItemInput {
             item_type: "text".to_string(),
             content: short_text.clone(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -173,6 +280,7 @@ mod tests {
         let item2 = ClipboardItemInput {
             item_type: "text".to_string(),
             content: short_text.clone(), // Same content
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -182,6 +290,7 @@ mod tests {
 
         // Create first item
         let id1 = ClipboardRepository::create(&pool, item1).await.unwrap();
+        let _ = id1;
 
         // Create second item with same content (should trigger dedup)
         let id2 = ClipboardRepository::create(&pool, item2).await.unwrap();
@@ -206,6 +315,7 @@ mod tests {
         let item_input = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Test content".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -251,6 +361,7 @@ mod tests {
         let item1 = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Hello world test".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -261,6 +372,7 @@ mod tests {
         let item2 = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Another test content".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -292,6 +404,7 @@ mod tests {
         let item_input = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Test content".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -329,6 +442,7 @@ mod tests {
         let item_input = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Test content".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -363,6 +477,7 @@ mod tests {
         let normal_item = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "Normal content".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
@@ -374,6 +489,7 @@ mod tests {
         let sensitive_item = ClipboardItemInput {
             item_type: "text".to_string(),
             content: "password123".to_string(),
+            content_hash: None,
             metadata: None,
             tags: None,
             tab_id: None,
