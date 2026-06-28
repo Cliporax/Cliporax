@@ -159,6 +159,42 @@ const formatSyncDate = (value: string | null | undefined) => {
 
 const DEFAULT_PROFILE_ID = "default-cloud-sync";
 
+const trimSlashes = (value: string) => value.trim().replace(/^\/+|\/+$/g, "");
+
+const buildWebdavRemoteRoot = (serverUrl: string, remoteRoot: string) => {
+  const trimmedServerUrl = serverUrl.trim().replace(/\/+$/g, "");
+  const trimmedRemoteRoot = trimSlashes(remoteRoot);
+
+  return trimmedRemoteRoot ? `${trimmedServerUrl}/${trimmedRemoteRoot}` : trimmedServerUrl;
+};
+
+const parseWebdavRemoteRoot = (remoteRoot: string) => {
+  const trimmedRemoteRoot = remoteRoot.trim();
+  const defaultRemoteRoot = PROVIDER_DEFAULTS.webdav.remoteRoot;
+  const normalizedDefaultRemoteRoot = trimSlashes(defaultRemoteRoot);
+  const withoutTrailingSlash = trimmedRemoteRoot.replace(/\/+$/g, "");
+  const defaultSuffix = `/${normalizedDefaultRemoteRoot}`;
+
+  if (!trimmedRemoteRoot) {
+    return {
+      serverUrl: PROVIDER_DEFAULTS.webdav.serverUrl,
+      remoteRoot: defaultRemoteRoot,
+    };
+  }
+
+  if (withoutTrailingSlash.endsWith(defaultSuffix)) {
+    return {
+      serverUrl: withoutTrailingSlash.slice(0, -defaultSuffix.length),
+      remoteRoot: defaultRemoteRoot,
+    };
+  }
+
+  return {
+    serverUrl: trimmedRemoteRoot,
+    remoteRoot: "",
+  };
+};
+
 const buildSftpRemoteRoot = (host: string, port: number, remoteRoot: string) => {
   const trimmedHost = host.trim().replace(/^sftp:\/\//, "").replace(/\/.*$/, "");
   const normalizedRoot = remoteRoot.trim().startsWith("/")
@@ -189,6 +225,7 @@ const parseSftpRemoteRoot = (remoteRoot: string) => {
 const formFromProfile = (profile: SyncProfile): FormState => {
   const provider = normalizeProvider(profile.provider);
   const sftpRemote = provider === "sftp" ? parseSftpRemoteRoot(profile.remote_root) : null;
+  const webdavRemote = provider === "webdav" ? parseWebdavRemoteRoot(profile.remote_root) : null;
 
   return {
     ...DEFAULT_FORM,
@@ -199,14 +236,14 @@ const formFromProfile = (profile: SyncProfile): FormState => {
       provider === "sftp"
         ? sftpRemote?.host ?? ""
         : provider === "webdav"
-          ? profile.remote_root
+          ? webdavRemote?.serverUrl ?? PROVIDER_DEFAULTS.webdav.serverUrl
           : PROVIDER_DEFAULTS[provider].serverUrl,
     sftpPort: provider === "sftp" ? sftpRemote?.port ?? DEFAULT_FORM.sftpPort : DEFAULT_FORM.sftpPort,
     remoteRoot:
       provider === "sftp"
         ? sftpRemote?.path ?? PROVIDER_DEFAULTS.sftp.remoteRoot
         : provider === "webdav"
-          ? ""
+          ? webdavRemote?.remoteRoot ?? PROVIDER_DEFAULTS.webdav.remoteRoot
           : profile.remote_root,
     tabMode: profile.sync_tabs.mode,
     selectedTabs: profile.sync_tabs.selected_tab_ids,
@@ -506,7 +543,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
         provider: form.provider,
         remote_root:
           form.provider === "webdav"
-            ? form.serverUrl.trim()
+            ? buildWebdavRemoteRoot(form.serverUrl, form.remoteRoot)
             : form.provider === "sftp"
               ? buildSftpRemoteRoot(form.serverUrl, form.sftpPort, form.remoteRoot)
               : form.remoteRoot.trim().replace(/^\/+/, "") || PROVIDER_DEFAULTS[form.provider].remoteRoot,
@@ -1003,22 +1040,20 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
       )}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {form.provider !== "webdav" && (
-          <label className="space-y-2">
-            <span className="text-xs font-medium" style={{ color: palette.muted }}>
-              {CLOUD_TOKEN_PROVIDERS.has(form.provider)
-                ? t("cloudSync.setup.appFolder")
-                : t("cloudSync.setup.remoteRoot")}
-            </span>
-            <input
-              value={form.remoteRoot}
-              onChange={(event) => updateForm("remoteRoot", event.target.value)}
-              placeholder={PROVIDER_DEFAULTS[form.provider].remoteRoot}
-              className="h-10 w-full rounded-lg px-3 text-sm outline-none transition-all"
-              style={inputStyle}
-            />
-          </label>
-        )}
+        <label className="space-y-2">
+          <span className="text-xs font-medium" style={{ color: palette.muted }}>
+            {CLOUD_TOKEN_PROVIDERS.has(form.provider)
+              ? t("cloudSync.setup.appFolder")
+              : t("cloudSync.setup.remoteRoot")}
+          </span>
+          <input
+            value={form.remoteRoot}
+            onChange={(event) => updateForm("remoteRoot", event.target.value)}
+            placeholder={PROVIDER_DEFAULTS[form.provider].remoteRoot}
+            className="h-10 w-full rounded-lg px-3 text-sm outline-none transition-all"
+            style={inputStyle}
+          />
+        </label>
 
         {form.provider === "sftp" ? (
           <div className="space-y-2">
