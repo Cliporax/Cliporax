@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncProviderKind {
+    #[serde(rename = "webdav", alias = "web_dav")]
     WebDav,
     Sftp,
     GoogleDrive,
@@ -547,4 +548,23 @@ pub struct CleanupReport {
     pub tombstones_removed: i64,
     pub tmp_dirs_cleaned: i64,
     pub errors: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncProviderKind;
+
+    #[test]
+    fn webdav_provider_serializes_to_frontend_value() -> Result<(), serde_json::Error> {
+        let value = serde_json::to_string(&SyncProviderKind::WebDav)?;
+        assert_eq!(value, "\"webdav\"");
+        Ok(())
+    }
+
+    #[test]
+    fn webdav_provider_reads_legacy_snake_case_value() -> Result<(), serde_json::Error> {
+        let provider: SyncProviderKind = serde_json::from_str("\"web_dav\"")?;
+        assert_eq!(provider, SyncProviderKind::WebDav);
+        Ok(())
+    }
 }

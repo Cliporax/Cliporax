@@ -134,6 +134,22 @@ const PROVIDER_LABELS: Record<Provider, string> = {
 
 const CLOUD_TOKEN_PROVIDERS = new Set<Provider>(["google_drive", "one_drive"]);
 
+const normalizeProvider = (provider: string | null | undefined): Provider => {
+  switch (provider) {
+    case "webdav":
+    case "web_dav":
+      return "webdav";
+    case "sftp":
+      return "sftp";
+    case "google_drive":
+      return "google_drive";
+    case "one_drive":
+      return "one_drive";
+    default:
+      return DEFAULT_FORM.provider;
+  }
+};
+
 const formatSyncDate = (value: string | null | undefined) => {
   if (!value) return "Never";
   const date = new Date(value);
@@ -170,37 +186,39 @@ const parseSftpRemoteRoot = (remoteRoot: string) => {
   };
 };
 
-const formFromProfile = (profile: SyncProfile): FormState => ({
-  ...DEFAULT_FORM,
-  ...PROVIDER_DEFAULTS[profile.provider],
-  profileName: profile.name,
-  provider: profile.provider,
-  serverUrl:
-    profile.provider === "sftp"
-      ? parseSftpRemoteRoot(profile.remote_root).host
-      : profile.provider === "webdav"
-        ? profile.remote_root
-        : PROVIDER_DEFAULTS[profile.provider].serverUrl,
-  sftpPort:
-    profile.provider === "sftp"
-      ? parseSftpRemoteRoot(profile.remote_root).port
-      : DEFAULT_FORM.sftpPort,
-  remoteRoot:
-    profile.provider === "sftp"
-      ? parseSftpRemoteRoot(profile.remote_root).path
-      : profile.provider === "webdav"
-        ? ""
-        : profile.remote_root,
-  tabMode: profile.sync_tabs.mode,
-  selectedTabs: profile.sync_tabs.selected_tab_ids,
-  pluginMode: profile.sync_plugins.mode,
-  selectedPlugins: profile.sync_plugins.selected_plugin_ids,
-  encryptionEnabled: profile.encryption.enabled,
-  syncOnStartup: profile.schedule.sync_on_startup,
-  syncOnLocalChange: profile.schedule.sync_on_local_change,
-  intervalMinutes: profile.schedule.interval_minutes,
-  paused: Boolean(profile.schedule.paused),
-});
+const formFromProfile = (profile: SyncProfile): FormState => {
+  const provider = normalizeProvider(profile.provider);
+  const sftpRemote = provider === "sftp" ? parseSftpRemoteRoot(profile.remote_root) : null;
+
+  return {
+    ...DEFAULT_FORM,
+    ...PROVIDER_DEFAULTS[provider],
+    profileName: profile.name,
+    provider,
+    serverUrl:
+      provider === "sftp"
+        ? sftpRemote?.host ?? ""
+        : provider === "webdav"
+          ? profile.remote_root
+          : PROVIDER_DEFAULTS[provider].serverUrl,
+    sftpPort: provider === "sftp" ? sftpRemote?.port ?? DEFAULT_FORM.sftpPort : DEFAULT_FORM.sftpPort,
+    remoteRoot:
+      provider === "sftp"
+        ? sftpRemote?.path ?? PROVIDER_DEFAULTS.sftp.remoteRoot
+        : provider === "webdav"
+          ? ""
+          : profile.remote_root,
+    tabMode: profile.sync_tabs.mode,
+    selectedTabs: profile.sync_tabs.selected_tab_ids,
+    pluginMode: profile.sync_plugins.mode,
+    selectedPlugins: profile.sync_plugins.selected_plugin_ids,
+    encryptionEnabled: profile.encryption.enabled,
+    syncOnStartup: profile.schedule.sync_on_startup,
+    syncOnLocalChange: profile.schedule.sync_on_local_change,
+    intervalMinutes: profile.schedule.interval_minutes,
+    paused: Boolean(profile.schedule.paused),
+  };
+};
 
 const resolutionByLabelKey: Record<string, ConflictResolutionInput> = {
   keepLocal: "use_local",
