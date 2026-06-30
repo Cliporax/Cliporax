@@ -6,9 +6,18 @@ use crate::sync::providers::factory::ProviderFactory;
 use crate::sync::repository::SyncRepository;
 use crate::sync::secrets::SecretStore;
 use base64::Engine;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::RwLock;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncCompletedEventPayload {
+    profile_id: String,
+    report: SyncRunReport,
+}
 
 pub struct SyncService {
     repository: Arc<SyncRepository>,
@@ -16,6 +25,7 @@ pub struct SyncService {
     engine: Arc<SyncEngine>,
     plugin_registry: Arc<RwLock<PluginRegistry>>,
     provider_factory: ProviderFactory,
+    app_handle: tauri::AppHandle,
 }
 
 impl SyncService {
@@ -24,6 +34,7 @@ impl SyncService {
         secret_store: Arc<SecretStore>,
         engine: Arc<SyncEngine>,
         plugin_registry: Arc<RwLock<PluginRegistry>>,
+        app_handle: tauri::AppHandle,
     ) -> Self {
         let provider_factory = ProviderFactory::new(secret_store.clone());
         Self {
@@ -32,6 +43,7 @@ impl SyncService {
             engine,
             plugin_registry,
             provider_factory,
+            app_handle,
         }
     }
 
@@ -141,7 +153,22 @@ impl SyncService {
             ));
         }
         let provider = self.provider_factory.build(&profile).await?;
-        self.engine.run_now(profile_id, provider).await
+        let report = self.engine.run_now(profile_id, provider).await?;
+        self.emit_sync_completed(profile_id, &report);
+        Ok(report)
+    }
+
+    fn emit_sync_completed(&self, profile_id: &str, report: &SyncRunReport) {
+        let payload = SyncCompletedEventPayload {
+            profile_id: profile_id.to_string(),
+            report: report.clone(),
+        };
+        if let Err(error) = self.app_handle.emit("sync:completed", payload) {
+            log::warn!(
+                "[Sync::Service] Failed to emit sync completion event: {}",
+                error
+            );
+        }
     }
 
     pub async fn run_startup_profiles(&self) {

@@ -338,7 +338,8 @@ impl SyncRepository {
         let created_at_ms = created_at.timestamp_millis();
         let item_key = format!("{}_{}_{}", device_id, local_id, created_at_ms);
 
-        self.insert_item_mapping(local_id, &item_key, "", None).await?;
+        self.insert_item_mapping(local_id, &item_key, "", None)
+            .await?;
 
         Ok(item_key)
     }
@@ -613,6 +614,8 @@ impl SyncRepository {
                    ci.metadata,
                    ci.tags,
                    ci.tab_id,
+                   t.name,
+                   COALESCE(t.is_default, 0),
                    ci.is_sensitive,
                    ci.is_pinned,
                    ci.display_order,
@@ -622,6 +625,7 @@ impl SyncRepository {
                    sim.stable_seq
             FROM clipboard_items ci
             LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
+            LEFT JOIN tabs t ON t.id = ci.tab_id
             "#,
         );
 
@@ -649,6 +653,8 @@ impl SyncRepository {
             Option<String>,
             Option<String>,
             Option<i64>,
+            Option<String>,
+            i32,
             Option<i32>,
             Option<i32>,
             Option<i32>,
@@ -677,6 +683,8 @@ impl SyncRepository {
                 metadata,
                 tags,
                 tab_id,
+                tab_name,
+                tab_is_default,
                 is_sensitive,
                 is_pinned,
                 _display_order,
@@ -695,12 +703,11 @@ impl SyncRepository {
                     let item_key = self
                         .get_or_create_item_key(local_id, created_at, device_id)
                         .await?;
-                    let stored_stable_seq: Option<(Option<i64>,)> = sqlx::query_as(
-                        "SELECT stable_seq FROM sync_item_map WHERE local_id = ?",
-                    )
-                    .bind(local_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
+                    let stored_stable_seq: Option<(Option<i64>,)> =
+                        sqlx::query_as("SELECT stable_seq FROM sync_item_map WHERE local_id = ?")
+                            .bind(local_id)
+                            .fetch_optional(&self.pool)
+                            .await?;
                     (item_key, stored_stable_seq.and_then(|(value,)| value))
                 }
             };
@@ -729,11 +736,13 @@ impl SyncRepository {
                 blob_mime: None,
                 content_hash,
                 created_at: created_at.to_rfc3339(),
-                updated_at: updated_at
-                    .unwrap_or_else(chrono::Utc::now)
-                    .to_rfc3339(),
-                tab_key: Some(tab_key_for_local_id(tab_id)),
-                tab_name: None,
+                updated_at: updated_at.unwrap_or_else(chrono::Utc::now).to_rfc3339(),
+                tab_key: Some(tab_key_for_snapshot(
+                    tab_id,
+                    tab_name.as_deref(),
+                    tab_is_default != 0,
+                )),
+                tab_name,
                 tags: parse_sync_tags(tags.as_deref()),
                 is_pinned: is_pinned.unwrap_or(0) != 0,
                 is_sensitive: is_sensitive.unwrap_or(0) != 0,
@@ -758,10 +767,13 @@ impl SyncRepository {
         let mut sql = String::from(
             r#"
             SELECT ci.tab_id,
+                   t.name,
+                   COALESCE(t.is_default, 0),
                    COALESCE(ci.is_pinned, 0),
                    sim.item_key
             FROM clipboard_items ci
             JOIN sync_item_map sim ON sim.local_id = ci.id
+            LEFT JOIN tabs t ON t.id = ci.tab_id
             "#,
         );
         if profile.sync_tabs.mode == TabSyncMode::Selected {
@@ -781,9 +793,11 @@ impl SyncRepository {
                 .join(", ");
             sql.push_str(&format!(" WHERE ci.tab_id IN ({})", placeholders));
         }
-        sql.push_str(" ORDER BY ci.tab_id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC");
+        sql.push_str(
+            " ORDER BY ci.tab_id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC",
+        );
 
-        let mut query = sqlx::query_as::<_, (Option<i64>, i32, String)>(&sql);
+        let mut query = sqlx::query_as::<_, (Option<i64>, Option<String>, i32, i32, String)>(&sql);
         if profile.sync_tabs.mode == TabSyncMode::Selected {
             for tab_id in &profile.sync_tabs.selected_tab_ids {
                 query = query.bind(tab_id);
@@ -792,8 +806,8 @@ impl SyncRepository {
 
         let rows = query.fetch_all(&self.pool).await?;
         let mut tabs: Vec<SnapshotTabOrder> = Vec::new();
-        for (tab_id, is_pinned, item_key) in rows {
-            let tab_key = tab_key_for_local_id(tab_id);
+        for (tab_id, tab_name, tab_is_default, is_pinned, item_key) in rows {
+            let tab_key = tab_key_for_snapshot(tab_id, tab_name.as_deref(), tab_is_default != 0);
             let tab_index = match tabs.iter().position(|tab| tab.tab_key == tab_key) {
                 Some(index) => index,
                 None => {
@@ -995,6 +1009,12 @@ impl SyncRepository {
 
             let metadata_json =
                 serde_json::to_string(&item.metadata).unwrap_or_else(|_| "{}".to_string());
+            let tab_id = local_id_for_remote_tab(
+                item.tab_key.as_deref(),
+                item.tab_name.as_deref(),
+                &self.pool,
+            )
+            .await?;
 
             sqlx::query(
                 r#"
@@ -1004,6 +1024,7 @@ impl SyncRepository {
                     content_hash = ?,
                     tags = COALESCE(?, tags),
                     metadata = ?,
+                    tab_id = ?,
                     is_pinned = ?,
                     is_sensitive = ?,
                     updated_at = datetime('now')
@@ -1015,6 +1036,7 @@ impl SyncRepository {
             .bind(&item.content_hash)
             .bind(&tags_str)
             .bind(&metadata_json)
+            .bind(tab_id)
             .bind(if item.is_pinned { 1 } else { 0 })
             .bind(if item.is_sensitive { 1 } else { 0 })
             .bind(local_id)
@@ -1053,16 +1075,12 @@ impl SyncRepository {
             let metadata_json =
                 serde_json::to_string(&item.metadata).unwrap_or_else(|_| "{}".to_string());
 
-            let tab_id = match item.tab_key.as_deref() {
-                Some(tab_key) => local_id_for_tab_key(tab_key, &self.pool).await?,
-                None => {
-                    let default_tab: Option<(i64,)> =
-                        sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
-                            .fetch_optional(&self.pool)
-                            .await?;
-                    default_tab.map(|(id,)| id)
-                }
-            };
+            let tab_id = local_id_for_remote_tab(
+                item.tab_key.as_deref(),
+                item.tab_name.as_deref(),
+                &self.pool,
+            )
+            .await?;
 
             let result = sqlx::query(
                 r#"
@@ -1195,8 +1213,10 @@ impl SyncRepository {
     pub async fn apply_snapshot_order(&self, order: &SnapshotOrder) -> Result<(), SyncError> {
         for tab_order in &order.tabs {
             let tab_id = local_id_for_tab_key(&tab_order.tab_key, &self.pool).await?;
-            self.apply_order_group(tab_id, true, &tab_order.pinned).await?;
-            self.apply_order_group(tab_id, false, &tab_order.normal).await?;
+            self.apply_order_group(tab_id, true, &tab_order.pinned)
+                .await?;
+            self.apply_order_group(tab_id, false, &tab_order.normal)
+                .await?;
         }
         Ok(())
     }
@@ -1236,16 +1256,67 @@ fn tab_key_for_local_id(tab_id: Option<i64>) -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+fn tab_key_for_snapshot(tab_id: Option<i64>, tab_name: Option<&str>, is_default: bool) -> String {
+    if is_default || tab_id.is_none() {
+        return "default".to_string();
+    }
+    tab_name
+        .map(|name| format!("tab-name:{}", name.trim().to_lowercase()))
+        .filter(|key| key != "tab-name:")
+        .unwrap_or_else(|| tab_key_for_local_id(tab_id))
+}
+
+async fn local_id_for_remote_tab(
+    tab_key: Option<&str>,
+    tab_name: Option<&str>,
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<i64>, SyncError> {
+    if let Some(tab_key) = tab_key {
+        if tab_key == "default" {
+            return default_tab_id(pool).await;
+        }
+        if let Some(name) = tab_key.strip_prefix("tab-name:") {
+            if let Some(id) = find_tab_id_by_name(name, pool).await? {
+                return Ok(Some(id));
+            }
+        }
+        if let Some(id) = tab_key
+            .strip_prefix("tab:")
+            .and_then(|value| value.parse::<i64>().ok())
+        {
+            let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM tabs WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+            if let Some((id,)) = existing {
+                return Ok(Some(id));
+            }
+        }
+    }
+
+    if let Some(name) = normalize_remote_tab_name(tab_name) {
+        if let Some(id) = find_tab_id_by_name(&name, pool).await? {
+            return Ok(Some(id));
+        }
+        let result = sqlx::query("INSERT INTO tabs (name) VALUES (?)")
+            .bind(&name)
+            .execute(pool)
+            .await?;
+        return Ok(Some(result.last_insert_rowid()));
+    }
+
+    default_tab_id(pool).await
+}
+
 async fn local_id_for_tab_key(
     tab_key: &str,
     pool: &sqlx::SqlitePool,
 ) -> Result<Option<i64>, SyncError> {
     if tab_key == "default" {
-        let default_tab: Option<(i64,)> =
-            sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
-                .fetch_optional(pool)
-                .await?;
-        return Ok(default_tab.map(|(id,)| id));
+        return default_tab_id(pool).await;
+    }
+    if let Some(name) = tab_key.strip_prefix("tab-name:") {
+        return find_tab_id_by_name(name, pool).await;
     }
     if let Some(id) = tab_key
         .strip_prefix("tab:")
@@ -1258,6 +1329,40 @@ async fn local_id_for_tab_key(
         return Ok(existing.map(|(id,)| id));
     }
     Ok(None)
+}
+
+async fn default_tab_id(pool: &sqlx::SqlitePool) -> Result<Option<i64>, SyncError> {
+    let default_tab: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM tabs WHERE is_default = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(default_tab.map(|(id,)| id))
+}
+
+async fn find_tab_id_by_name(
+    name: &str,
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<i64>, SyncError> {
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM tabs WHERE lower(name) = lower(?) LIMIT 1")
+            .bind(name.trim())
+            .fetch_optional(pool)
+            .await?;
+    Ok(existing.map(|(id,)| id))
+}
+
+fn normalize_remote_tab_name(name: Option<&str>) -> Option<String> {
+    let name = name?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if ["default", "system clipboard"]
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    Some(name.chars().take(64).collect())
 }
 
 fn parse_sync_tags(tags: Option<&str>) -> Vec<String> {
@@ -1584,6 +1689,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_items_include_portable_tab_identity() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+
+        let tab_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Research')")
+            .execute(&pool)
+            .await?
+            .last_insert_rowid();
+        sqlx::query(
+            r#"
+            INSERT INTO clipboard_items
+                (type, content, tab_id, is_sensitive, is_pinned, created_at, updated_at)
+            VALUES ('text', 'tabbed item', ?, 0, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(tab_id)
+        .execute(&pool)
+        .await?;
+
+        let items = repository.list_snapshot_items(&profile, "device_a").await?;
+        let item = items
+            .iter()
+            .find(|item| item.content.as_deref() == Some("tabbed item"))
+            .ok_or_else(|| SyncError::validation("missing tabbed snapshot item"))?;
+
+        assert_eq!(item.tab_key.as_deref(), Some("tab-name:research"));
+        assert_eq!(item.tab_name.as_deref(), Some("Research"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_remote_item_creates_missing_tab_by_name() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let mut item = remote_item("device_b_1_1", "remote tab item", "remote-tab-hash");
+        item.tab_key = Some("tab-name:research".to_string());
+        item.tab_name = Some("Research".to_string());
+
+        let local_id = match repository.apply_remote_item(&profile, item, None).await? {
+            ApplyItemResult::Created { local_id } => local_id,
+            other => panic!("unexpected apply result: {:?}", other),
+        };
+
+        let stored: (String, String) = sqlx::query_as(
+            r#"
+            SELECT ci.content, t.name
+            FROM clipboard_items ci
+            JOIN tabs t ON t.id = ci.tab_id
+            WHERE ci.id = ?
+            "#,
+        )
+        .bind(local_id)
+        .fetch_one(&pool)
+        .await?;
+
+        assert_eq!(stored.0, "remote tab item");
+        assert_eq!(stored.1, "Research");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn all_scope_keeps_remote_new_tab_after_order_apply() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let mut item = remote_item("device_b_1_1", "remote tab item", "remote-tab-hash");
+        item.tab_key = Some("tab-name:research".to_string());
+        item.tab_name = Some("Research".to_string());
+
+        repository
+            .apply_snapshot_items(&profile, vec![item], false)
+            .await?;
+        repository
+            .apply_snapshot_order(&SnapshotOrder {
+                schema_version: 1,
+                updated_at: "2026-05-15T00:00:00Z".to_string(),
+                tabs: vec![SnapshotTabOrder {
+                    tab_key: "tab-name:research".to_string(),
+                    pinned: Vec::new(),
+                    normal: vec!["device_b_1_1".to_string()],
+                }],
+            })
+            .await?;
+
+        let stored: (String,) = sqlx::query_as(
+            r#"
+            SELECT t.name
+            FROM clipboard_items ci
+            JOIN tabs t ON t.id = ci.tab_id
+            WHERE ci.content = 'remote tab item'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await?;
+
+        assert_eq!(stored.0, "Research");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn snapshot_items_keep_stable_seq_when_display_order_changes() -> Result<(), SyncError> {
         let pool = setup_sync_test_db().await;
         let repository = SyncRepository::new(pool.clone());
@@ -1603,9 +1810,7 @@ mod tests {
             .await?;
         }
 
-        let before = repository
-            .list_snapshot_items(&profile, "device_a")
-            .await?;
+        let before = repository.list_snapshot_items(&profile, "device_a").await?;
         let before_pairs: Vec<(String, i64)> = before
             .iter()
             .map(|item| (item.item_key.clone(), item.stable_seq))
@@ -1615,9 +1820,7 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let after = repository
-            .list_snapshot_items(&profile, "device_a")
-            .await?;
+        let after = repository.list_snapshot_items(&profile, "device_a").await?;
         let after_pairs: Vec<(String, i64)> = after
             .iter()
             .map(|item| (item.item_key.clone(), item.stable_seq))

@@ -674,6 +674,8 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
       const report = await sync.runNow(profileId);
       setLastReport(report);
       setSyncMessage(`${report.status}: ${report.items_uploaded} uploaded, ${report.items_downloaded} downloaded`);
+      const tabs = await sync.getTabOptions();
+      setTabOptions(tabs);
       await refreshRuntimeState(profileId);
     } catch (error) {
       setSyncMessage(`Sync failed: ${error}`);

@@ -208,6 +208,7 @@ fn main() {
                     secret_store,
                     sync_engine.clone(),
                     plugin_registry.clone(),
+                    app_handle.clone(),
                 ));
                 app_handle.manage(plugin_registry);
                 app_handle.manage(sync_service.clone());

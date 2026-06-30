@@ -164,13 +164,26 @@ Sync-related code is mainly located in:
 - `src/components/Settings/CloudSyncTab.tsx`
 - `plugins/com.cliporax.cloud-sync/`
 
+## Release Packaging
+
+GitHub release builds for macOS must be signed and notarized. Unsigned DMGs downloaded from GitHub are blocked by Gatekeeper and can show `"Cliporax" is damaged and can't be opened`.
+
+Set these repository secrets before creating a macOS release:
+
+- `APPLE_CERTIFICATE`: base64-encoded `.p12` Developer ID Application certificate.
+- `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12` certificate.
+- `APPLE_SIGNING_IDENTITY`: Developer ID Application signing identity.
+- `APPLE_ID`: Apple ID used for notarization.
+- `APPLE_PASSWORD`: app-specific password for the Apple ID.
+- `APPLE_TEAM_ID`: Apple Developer team ID.
+
 ## Roadmap Notes
 
 - Plugin system: discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.
 - AI features: general image OCR, local semantic search, and text summaries are not implemented. The QR scanner plugin can recognize QR codes, but that is not equivalent to OCR or AI retrieval.
 - Local encryption: the sync module has a remote-sync encryption model based on Argon2id and authenticated encryption, and provider credentials are saved through the backend. The main SQLite clipboard database is not currently encrypted with SQLCipher.
 - Cloud Sync: settings UI, sync profiles, WebDAV/SFTP/Google Drive/OneDrive providers, credential references, connection tests, scheduling, logs, conflict entry points, and optional encryption model are implemented. Next steps should focus on verification with real services, conflict UX, credential storage hardening, and cross-platform runtime testing.
-- Packaging and release: Tauri build scripts and Linux `deb`/`rpm` bundle configuration exist. macOS/Windows packaging configuration and release pipelines still need completion and verification.
+- Packaging and release: Tauri build scripts, GitHub release workflow, Linux `deb`/`rpm`, macOS DMG, and Windows NSIS bundle configuration exist. macOS releases require Apple signing and notarization secrets in GitHub Actions.
 
 ## Documentation
 

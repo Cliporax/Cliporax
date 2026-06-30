@@ -20,7 +20,7 @@ import {
   PluginSidebarExtensions,
 } from "./plugin";
 import { createLogger } from "./utils/logger";
-import { window as windowApi } from "./lib/tauri-api";
+import { events, window as windowApi } from "./lib/tauri-api";
 import { useUIStore } from "./stores/uiStore";
 import { useTabStore } from "./stores/tabStore";
 import { TabBar } from "./components/TabBar";
@@ -103,6 +103,37 @@ function App() {
   const clipboardListRef = useRef<ClipboardListRef>(null);
 
   const isDark = resolvedTheme === "dark";
+
+  useEffect(() => {
+    if (!backendReady || isSettingsWindow) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    events
+      .onSyncCompleted(async () => {
+        if (disposed) return;
+        await loadTabs();
+        if (!disposed) {
+          setListRefreshTrigger((prev) => prev + 1);
+        }
+      })
+      .then((dispose) => {
+        if (disposed) {
+          dispose();
+        } else {
+          unlisten = dispose;
+        }
+      })
+      .catch((error) => {
+        logger.error("[App] Failed to listen for sync completion:", error);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [backendReady, isSettingsWindow, loadTabs]);
 
   // Remote settings change callback - settings sync from the Settings window
   // Only update local state and do not sync to the backend again, or it would loop

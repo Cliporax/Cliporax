@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, Event } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { tracedInvoke } from "../utils/traced-invoke";
 
 // Import generated types
@@ -807,6 +807,11 @@ export interface ClipboardChangedPayload {
   reason?: string;
 }
 
+export interface SyncCompletedPayload {
+  profileId: string;
+  report: SyncRunReport;
+}
+
 export const events = {
   onClipboardChanged: (
     callback: (payload: ClipboardChangedPayload | null) => void,
@@ -817,6 +822,18 @@ export const events = {
       callback(event.payload ?? null);
     }).then((unlisten) => {
       log("debug", "API", "clipboard:changed listener registered");
+      return unlisten;
+    });
+  },
+  onSyncCompleted: (
+    callback: (payload: SyncCompletedPayload | null) => void,
+  ): Promise<() => void> => {
+    log("info", "API", "events.onSyncCompleted() registering");
+    return listen<SyncCompletedPayload>("sync:completed", (event) => {
+      log("info", "API", "sync:completed event received", event.payload);
+      callback(event.payload ?? null);
+    }).then((unlisten) => {
+      log("debug", "API", "sync:completed listener registered");
       return unlisten;
     });
   },
