@@ -160,6 +160,13 @@ For `src-tauri/src/sync/` changes:
 - Do not mix `package-lock.json` into a plugin package that already uses `yarn.lock` unless migrating package managers.
 - If push fails due to auth, report the local commit hash and exact error.
 
+### Release Tag Rules
+
+- When pushing a release tag, default to semantic version tags in the `vX.X.X` format, for example `v1.2.3`.
+- Do not push a release tag unless the project version has already been updated to match that tag in the relevant version files.
+- Treat tag creation and version bumping as one release operation: update versions, commit the version bump, then create and push the matching `vX.X.X` tag.
+- If the user asks to push a tag without specifying a version format, use `vX.X.X` by default and confirm the current project version matches before pushing.
+
 ### Commit Message and Changelog Rules
 
 - Commit messages must be written in English.

@@ -530,6 +530,7 @@ fn main() {
             plugin_read_script,
             // Preview window commands
             preview_create_window,
+            preview_get_data,
             preview_close_window,
             preview_close_all,
             // Sync commands (Cloud Sync plugin)

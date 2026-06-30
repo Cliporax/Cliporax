@@ -10,6 +10,7 @@ import SettingsModal, {
   ShortcutSettings,
 } from "./components/Settings";
 import SettingsWindow from "./components/SettingsWindow";
+import PreviewWindow from "./components/PreviewWindow";
 import ContentEditor from "./components/ContentEditor";
 import { ToastProvider } from "./components/Toast";
 import { ConfirmDialogProvider } from "./components/ConfirmDialog";
@@ -37,6 +38,7 @@ function App() {
 
   // Check whether this is the settings window via URL pathname
   const isSettingsWindow = window.location.pathname === "/settings";
+  const isPreviewWindow = window.location.pathname === "/preview";
   const [backendReady, setBackendReady] = useState(false);
   const [backendReadyError, setBackendReadyError] = useState<string | null>(null);
 
@@ -66,10 +68,10 @@ function App() {
   const { loadTabs, activeTabId } = useTabStore();
   
   useEffect(() => {
-    if (backendReady) {
+    if (backendReady && !isSettingsWindow && !isPreviewWindow) {
       loadTabs();
     }
-  }, [backendReady, loadTabs]);
+  }, [backendReady, isPreviewWindow, isSettingsWindow, loadTabs]);
 
   // Get state from the store
   const {
@@ -105,7 +107,7 @@ function App() {
   const isDark = resolvedTheme === "dark";
 
   useEffect(() => {
-    if (!backendReady || isSettingsWindow) return;
+    if (!backendReady || isSettingsWindow || isPreviewWindow) return;
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -133,7 +135,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [backendReady, isSettingsWindow, loadTabs]);
+  }, [backendReady, isPreviewWindow, isSettingsWindow, loadTabs]);
 
   // Remote settings change callback - settings sync from the Settings window
   // Only update local state and do not sync to the backend again, or it would loop
@@ -153,10 +155,12 @@ function App() {
   // Listen for settings changes from other windows
   useSettingsSync({
     onRemoteSettingsChange: handleRemoteSettingsChange,
-    enabled: true,
+    enabled: !isPreviewWindow,
   });
 
   useEffect(() => {
+    if (isPreviewWindow) return;
+
     logger.debug("App mounted");
     perfMeasure("App", "mounted", appStartRef.current, undefined, {
       minIntervalMs: 0,
@@ -232,6 +236,7 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    isPreviewWindow,
     showSearch,
     isSettingsOpen,
     editingItem,
@@ -342,7 +347,9 @@ function App() {
     </div>
   );
 
-  const content = !backendReady ? readinessContent : isSettingsWindow ? (
+  const content = !backendReady ? readinessContent : isPreviewWindow ? (
+    <PreviewWindow />
+  ) : isSettingsWindow ? (
     <SettingsWindow />
   ) : (
     <ExtensionManagerProvider>

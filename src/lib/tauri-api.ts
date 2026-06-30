@@ -1036,6 +1036,11 @@ export const test = {
 };
 
 // Preview window API
+export interface PreviewData {
+  image_data: string;
+  title: string;
+}
+
 export const preview = {
   /**
    * Create a new preview window for displaying an image
@@ -1054,6 +1059,21 @@ export const preview = {
       return label;
     } catch (error) {
       log("error", "API", "preview.create() failed", error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get current preview image data for the preview window
+   */
+  getData: async (): Promise<PreviewData> => {
+    log("info", "API", "preview.getData() called");
+    try {
+      const data = await invoke<PreviewData>("preview_get_data");
+      log("info", "API", "preview.getData() success - title:", data.title);
+      return data;
+    } catch (error) {
+      log("error", "API", "preview.getData() failed", error);
       throw error;
     }
   },

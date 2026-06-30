@@ -8,7 +8,9 @@ use image::{
 use regex::Regex;
 use serde_json;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -143,10 +145,12 @@ fn parse_file_list(content: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn file_uri_from_path(path: &Path) -> String {
     format!("file://{}", path.to_string_lossy().replace('\\', "/"))
 }
 
+#[cfg(target_os = "linux")]
 fn paths_from_uri_list(uri_list: &str) -> Vec<String> {
     uri_list
         .lines()
@@ -367,7 +371,10 @@ impl ClipboardMonitor {
                 None
             };
 
+            #[cfg(target_os = "linux")]
             let mut current_file_content = String::new();
+            #[cfg(not(target_os = "linux"))]
+            let current_file_content = String::new();
 
             #[cfg(target_os = "linux")]
             if current_text.is_empty() {
@@ -1247,7 +1254,7 @@ impl ClipboardMonitor {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 return Ok(());
             }
-            return Err(format!("osascript clipboard file write failed: {}", status).into());
+            Err(format!("osascript clipboard file write failed: {}", status).into())
         }
 
         #[cfg(target_os = "linux")]
