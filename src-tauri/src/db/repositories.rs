@@ -14,6 +14,7 @@ const SYNC_OP_TAB_CHANGE: &str = "tab_change";
 const SYNC_OP_REORDER: &str = "reorder";
 const SYNC_OP_TAB_CREATE: &str = "tab_create";
 const SYNC_OP_TAB_RENAME: &str = "tab_rename";
+const SEARCH_RESULT_LIMIT: i64 = 200;
 
 async fn record_sync_change_tx(
     tx: &mut SqliteConnection,
@@ -651,9 +652,9 @@ impl ClipboardRepository {
         );
         // Search only text items and exclude base64 image content
         let sql = if tab_id.is_some() {
-            "SELECT * FROM clipboard_items WHERE type = 'text' AND content LIKE ? AND tab_id = ? ORDER BY created_at DESC"
+            "SELECT * FROM clipboard_items WHERE type = 'text' AND content LIKE ? AND tab_id = ? ORDER BY created_at DESC LIMIT ?"
         } else {
-            "SELECT * FROM clipboard_items WHERE type = 'text' AND content LIKE ? ORDER BY created_at DESC"
+            "SELECT * FROM clipboard_items WHERE type = 'text' AND content LIKE ? ORDER BY created_at DESC LIMIT ?"
         };
 
         let mut q = sqlx::query_as::<_, ClipboardItem>(sql).bind(format!("%{}%", query));
@@ -661,6 +662,7 @@ impl ClipboardRepository {
         if let Some(tid) = tab_id {
             q = q.bind(tid);
         }
+        q = q.bind(SEARCH_RESULT_LIMIT);
 
         let result = q.fetch_all(pool).await;
         match &result {

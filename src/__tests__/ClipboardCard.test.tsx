@@ -180,6 +180,26 @@ describe('ClipboardCard Component', () => {
     expect(text).not.toContain('first line');
   });
 
+  it('caps rendered preview and title for very large text items', () => {
+    const largeContent = `${'prefix '.repeat(1000)}needle${' suffix'.repeat(50000)}`;
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        content={largeContent}
+        searchQuery="needle"
+        searchMode="fuzzy"
+        isSearchMode
+      />
+    );
+
+    const text = div.querySelector('p')?.textContent ?? '';
+    const title = div.querySelector('p')?.getAttribute('title') ?? '';
+    expect(text).toContain('needle');
+    expect(text.length).toBeLessThan(4100);
+    expect(title.length).toBeLessThan(2100);
+    expect(title).not.toBe(largeContent);
+  });
+
   it('passes callback functions as props', () => {
     const callbacks = {
       onClick: vi.fn(),

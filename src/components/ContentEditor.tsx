@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { X, Check, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { createLogger } from "../utils/logger";
@@ -6,6 +6,8 @@ import { clipboard } from "../lib/tauri-api";
 import { useTheme } from "../contexts/ThemeContext";
 
 const logger = createLogger("ContentEditor");
+const EDITOR_LAYOUT_SCAN_LIMIT = 100000;
+const END_SELECTION_LIMIT = 200000;
 
 interface ContentEditorProps {
   id: number;
@@ -29,12 +31,25 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const contentLines = Math.max(
-    editedContent
-      .split(/\r\n|\r|\n/)
-      .reduce((lineCount, line) => lineCount + Math.max(Math.ceil(line.length / 72), 1), 0),
-    1,
-  );
+  const contentLines = useMemo(() => {
+    let lineCount = 0;
+    let currentLineLength = 0;
+    const scanLength = Math.min(editedContent.length, EDITOR_LAYOUT_SCAN_LIMIT);
+
+    for (let i = 0; i < scanLength; i += 1) {
+      const char = editedContent[i];
+      if (char === "\n" || char === "\r") {
+        lineCount += Math.max(Math.ceil(currentLineLength / 72), 1);
+        currentLineLength = 0;
+        if (char === "\r" && editedContent[i + 1] === "\n") i += 1;
+      } else {
+        currentLineLength += 1;
+      }
+    }
+
+    lineCount += Math.max(Math.ceil(currentLineLength / 72), 1);
+    return Math.max(lineCount, 1);
+  }, [editedContent]);
   const editorHeight = Math.min(Math.max(contentLines * 24 + 128, 260), 670);
 
   // Track changes
@@ -46,9 +61,12 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.focus();
-      // Move cursor to end
-      const len = textareaRef.current.value.length;
-      textareaRef.current.setSelectionRange(len, len);
+      if (textareaRef.current.value.length <= END_SELECTION_LIMIT) {
+        const len = textareaRef.current.value.length;
+        textareaRef.current.setSelectionRange(len, len);
+      } else {
+        textareaRef.current.setSelectionRange(0, 0);
+      }
     }
   }, []);
 

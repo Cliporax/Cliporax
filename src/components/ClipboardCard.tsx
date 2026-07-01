@@ -55,11 +55,26 @@ export const CARD_SIZE_CONFIG = {
 } as const;
 
 const IMAGE_CARD_HEIGHT = 96; // Fixed image card height
+const LINE_COUNT_SCAN_LIMIT = 20000;
+const TEXT_PREVIEW_CHAR_LIMIT = 4000;
+const SEARCH_SCAN_LIMIT = 200000;
+const MAX_HIGHLIGHT_RANGES = 40;
+const TITLE_PREVIEW_LIMIT = 2000;
 
 type HighlightRange = { start: number; end: number };
 
 function getLineCount(content: string): number {
-  return content.split(/\r\n|\r|\n/).length;
+  const scan = content.slice(0, LINE_COUNT_SCAN_LIMIT);
+  const lineBreaks = scan.match(/\r\n|\r|\n/g)?.length ?? 0;
+  return lineBreaks + 1;
+}
+
+function truncateText(
+  content: string,
+  maxLength = TEXT_PREVIEW_CHAR_LIMIT,
+): string {
+  if (content.length <= maxLength) return content;
+  return `${content.slice(0, maxLength)}...`;
 }
 
 function escapeRegExp(value: string): string {
@@ -95,6 +110,7 @@ function getMatchRanges(
           continue;
         }
         ranges.push({ start: match.index, end: match.index + match[0].length });
+        if (ranges.length >= MAX_HIGHLIGHT_RANGES) break;
       }
       return ranges;
     } catch {
@@ -107,31 +123,67 @@ function getMatchRanges(
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content)) !== null) {
     ranges.push({ start: match.index, end: match.index + match[0].length });
+    if (ranges.length >= MAX_HIGHLIGHT_RANGES) break;
   }
   return ranges;
 }
 
-function getSearchPreview(
+function getFirstMatchRange(
   content: string,
-  ranges: HighlightRange[],
-  isSearchMode: boolean,
-): string {
-  if (!isSearchMode || ranges.length === 0 || !/\r\n|\r|\n/.test(content)) {
-    return content;
+  searchQuery: string,
+  searchMode: "fuzzy" | "regex",
+): HighlightRange | null {
+  const query = getDisplaySearchQuery(searchQuery, searchMode);
+  if (!query) return null;
+
+  const scan = content.slice(0, SEARCH_SCAN_LIMIT);
+  if (searchMode === "regex") {
+    try {
+      const pattern = new RegExp(query, "i");
+      const match = pattern.exec(scan);
+      if (!match || match[0].length === 0) return null;
+      return { start: match.index, end: match.index + match[0].length };
+    } catch {
+      return null;
+    }
   }
 
-  const firstMatch = ranges[0].start;
-  const previousLineBreak = Math.max(
-    content.lastIndexOf("\n", firstMatch - 1),
-    content.lastIndexOf("\r", firstMatch - 1),
-  );
-  const lineStart = previousLineBreak + 1;
-  const rest = content.slice(firstMatch);
-  const nextLineBreak = rest.search(/\r\n|\r|\n/);
-  const lineEnd =
-    nextLineBreak === -1 ? content.length : firstMatch + nextLineBreak;
+  const index = scan.toLowerCase().indexOf(query.toLowerCase());
+  return index === -1 ? null : { start: index, end: index + query.length };
+}
 
-  return content.slice(lineStart, lineEnd);
+function getSearchPreview(
+  content: string,
+  firstMatch: HighlightRange | null,
+  isSearchMode: boolean,
+): string {
+  if (!isSearchMode || !firstMatch) {
+    return truncateText(content);
+  }
+
+  const matchStart = firstMatch.start;
+  const previousLineBreak = Math.max(
+    content.lastIndexOf("\n", matchStart - 1),
+    content.lastIndexOf("\r", matchStart - 1),
+  );
+  const contextStart = Math.max(
+    matchStart - Math.floor(TEXT_PREVIEW_CHAR_LIMIT / 3),
+    0,
+  );
+  const lineStart = Math.max(previousLineBreak + 1, contextStart);
+  const scanEnd = Math.min(content.length, lineStart + TEXT_PREVIEW_CHAR_LIMIT);
+  let lineEnd = scanEnd;
+  for (let i = matchStart; i < scanEnd; i += 1) {
+    if (content[i] === "\n" || content[i] === "\r") {
+      lineEnd = i;
+      break;
+    }
+  }
+  const contextEnd = Math.min(lineEnd, lineStart + TEXT_PREVIEW_CHAR_LIMIT);
+  const prefix = lineStart > 0 ? "..." : "";
+  const suffix = contextEnd < content.length ? "..." : "";
+
+  return `${prefix}${content.slice(lineStart, contextEnd)}${suffix}`;
 }
 
 const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
@@ -179,16 +231,20 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
     const [isDragging, setIsDragging] = React.useState(false);
     const [imageError, setImageError] = React.useState(false);
     const lineCount = type === "text" ? getLineCount(content) : 1;
-    const fullMatchRanges =
-      type === "text" ? getMatchRanges(content, searchQuery, searchMode) : [];
+    const firstMatchRange =
+      type === "text"
+        ? getFirstMatchRange(content, searchQuery, searchMode)
+        : null;
     const previewContent =
       type === "text"
-        ? getSearchPreview(content, fullMatchRanges, isSearchMode)
+        ? getSearchPreview(content, firstMatchRange, isSearchMode)
         : content;
     const previewMatchRanges =
       type === "text"
         ? getMatchRanges(previewContent, searchQuery, searchMode)
         : [];
+    const titleContent =
+      type === "text" ? truncateText(content, TITLE_PREVIEW_LIMIT) : content;
 
     // Get card extension buttons from plugins
     const cardExtensions = useCardExtensions(
@@ -568,7 +624,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
               )}
             </div>
           ) : (
-            <p style={contentStyle} title={content}>
+            <p style={contentStyle} title={titleContent}>
               {renderTextContent()}
             </p>
           )}
