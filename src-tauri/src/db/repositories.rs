@@ -13,6 +13,7 @@ const SYNC_OP_METADATA_UPDATE: &str = "metadata_update";
 const SYNC_OP_TAB_CHANGE: &str = "tab_change";
 const SYNC_OP_REORDER: &str = "reorder";
 const SYNC_OP_TAB_CREATE: &str = "tab_create";
+const SYNC_OP_TAB_DELETE: &str = "tab_delete";
 const SYNC_OP_TAB_RENAME: &str = "tab_rename";
 const SEARCH_RESULT_LIMIT: i64 = 200;
 
@@ -124,10 +125,54 @@ impl TabRepository {
     pub async fn delete(pool: &Db, id: i64) -> Result<(), Error> {
         log::info!("[TabRepository] delete called with id: {}", id);
 
+        let mut tx = pool.begin().await?;
+        let tab: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM tabs WHERE id = ? AND is_default = 0")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if tab.is_none() {
+            tx.commit().await?;
+            log::info!("[TabRepository] delete skipped default or missing tab");
+            return Ok(());
+        }
+
+        let item_keys: Vec<(i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT ci.id, sim.item_key
+            FROM clipboard_items ci
+            LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
+            WHERE ci.tab_id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for (item_id, item_key) in &item_keys {
+            record_sync_change_tx(
+                &mut tx,
+                SYNC_ENTITY_CLIPBOARD_ITEM,
+                &item_id.to_string(),
+                SYNC_OP_DELETE,
+                Some(id),
+                item_key.as_deref(),
+                SYNC_SOURCE_LOCAL,
+            )
+            .await?;
+        }
+
+        for (item_id, _) in &item_keys {
+            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                .bind(item_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
         // Delete all clipboard items in this tab first
         let items_result = sqlx::query("DELETE FROM clipboard_items WHERE tab_id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await;
         match &items_result {
             Ok(result) => log::info!(
@@ -146,8 +191,19 @@ impl TabRepository {
         // Then delete the tab itself
         sqlx::query("DELETE FROM tabs WHERE id = ? AND is_default = 0")
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        record_sync_change_tx(
+            &mut tx,
+            SYNC_ENTITY_TAB,
+            &id.to_string(),
+            SYNC_OP_TAB_DELETE,
+            None,
+            None,
+            SYNC_SOURCE_LOCAL,
+        )
+        .await?;
+        tx.commit().await?;
         log::info!("[TabRepository] delete success");
         Ok(())
     }
@@ -587,6 +643,10 @@ impl ClipboardRepository {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -923,6 +983,10 @@ impl ClipboardRepository {
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;
@@ -1205,6 +1269,12 @@ impl ClipboardRepository {
         }
 
         let result = query.execute(&mut *tx).await?;
+        for &id in ids {
+            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
 
         log::info!(

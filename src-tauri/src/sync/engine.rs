@@ -10,7 +10,7 @@ use crate::sync::secrets::SecretStore;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -396,9 +396,13 @@ impl SyncEngine {
         let mut remote_items = Vec::new();
         for shard_ref in &manifest.item_shards {
             let shard_bytes = provider.get(&shard_ref.path).await.map_err(|e| {
-                SyncError::provider(format!("Failed to download shard {}: {}", shard_ref.path, e))
+                SyncError::provider(format!(
+                    "Failed to download shard {}: {}",
+                    shard_ref.path, e
+                ))
             })?;
-            let decoded = decode_snapshot_file(&shard_bytes, &prepared.profile, crypto_key.as_ref())?;
+            let decoded =
+                decode_snapshot_file(&shard_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != shard_ref.hash {
                 return Err(SyncError::validation(format!(
@@ -416,8 +420,11 @@ impl SyncEngine {
                                 blob_path, e
                             ))
                         })?;
-                        let decoded_blob =
-                            decode_snapshot_file(&blob_bytes, &prepared.profile, crypto_key.as_ref())?;
+                        let decoded_blob = decode_snapshot_file(
+                            &blob_bytes,
+                            &prepared.profile,
+                            crypto_key.as_ref(),
+                        )?;
                         item.content = Some(String::from_utf8(decoded_blob).map_err(|e| {
                             SyncError::validation(format!("Remote blob is not valid UTF-8: {}", e))
                         })?);
@@ -427,7 +434,10 @@ impl SyncEngine {
             remote_items.extend(shard.items);
         }
 
-        let prune_missing = !self.repository.has_unsynced_changes(&prepared.profile).await?;
+        let prune_missing = !self
+            .repository
+            .has_unsynced_changes(&prepared.profile)
+            .await?;
         report.items_downloaded = self
             .repository
             .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
@@ -435,9 +445,13 @@ impl SyncEngine {
 
         if let Some(order_ref) = &manifest.order {
             let order_bytes = provider.get(&order_ref.path).await.map_err(|e| {
-                SyncError::provider(format!("Failed to download order {}: {}", order_ref.path, e))
+                SyncError::provider(format!(
+                    "Failed to download order {}: {}",
+                    order_ref.path, e
+                ))
             })?;
-            let decoded = decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
+            let decoded =
+                decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != order_ref.hash {
                 return Err(SyncError::validation(format!(
@@ -446,7 +460,9 @@ impl SyncEngine {
                 )));
             }
             let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
-            self.repository.apply_snapshot_order(&order).await?;
+            self.repository
+                .apply_snapshot_order(&prepared.profile, &order, prune_missing)
+                .await?;
         }
 
         Ok(report)
@@ -582,13 +598,16 @@ impl SyncEngine {
             .map(|order| order.hash.clone());
 
         let crypto_key = self.get_crypto_key(&profile.id).await.ok().flatten();
-        let snapshot_items = self.repository.list_snapshot_items(profile, device_id).await?;
+        let snapshot_items = self
+            .repository
+            .list_snapshot_items(profile, device_id)
+            .await?;
         let mut buckets: BTreeMap<i64, Vec<RemoteClipboardItem>> = BTreeMap::new();
+        let mut current_blob_paths: HashSet<String> = HashSet::new();
         for item in snapshot_items {
-            let bucket_start =
-                ((item.stable_seq.saturating_sub(1)) / SNAPSHOT_SHARD_SIZE as i64)
-                    * SNAPSHOT_SHARD_SIZE as i64
-                    + 1;
+            let bucket_start = ((item.stable_seq.saturating_sub(1)) / SNAPSHOT_SHARD_SIZE as i64)
+                * SNAPSHOT_SHARD_SIZE as i64
+                + 1;
             buckets.entry(bucket_start).or_default().push(item);
         }
         let mut shard_refs = Vec::new();
@@ -612,11 +631,15 @@ impl SyncEngine {
                         if provider.stat(&blob_path).await?.is_none() {
                             provider.put(&blob_path, blob_data).await?;
                         }
+                        current_blob_paths.insert(blob_path.clone());
                         item.content_hash = Some(content_hash);
                         item.blob_path = Some(blob_path);
                     } else {
                         item.content = Some(String::from_utf8(content_bytes).map_err(|e| {
-                            SyncError::validation(format!("Local content is not valid UTF-8: {}", e))
+                            SyncError::validation(format!(
+                                "Local content is not valid UTF-8: {}",
+                                e
+                            ))
                         })?);
                     }
                 }
@@ -694,11 +717,70 @@ impl SyncEngine {
             }),
         };
         write_manifest(provider, "", &manifest).await?;
+        self.cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
+            .await;
 
         Ok(SyncPhaseReport {
             items_uploaded,
             ..SyncPhaseReport::default()
         })
+    }
+
+    async fn cleanup_unreferenced_snapshot_objects(
+        &self,
+        provider: &dyn SyncProvider,
+        manifest: &SnapshotManifest,
+        current_blob_paths: &HashSet<String>,
+    ) {
+        let current_shards: HashSet<&str> = manifest
+            .item_shards
+            .iter()
+            .map(|shard| shard.path.as_str())
+            .collect();
+
+        match provider.list("items/").await {
+            Ok(objects) => {
+                for object in objects {
+                    if !object.path.ends_with(".json")
+                        || current_shards.contains(object.path.as_str())
+                    {
+                        continue;
+                    }
+                    if let Err(error) = provider.delete(&object.path).await {
+                        log::warn!(
+                            "[Sync::Engine] Failed to delete unreferenced shard {}: {}",
+                            object.path,
+                            error
+                        );
+                    }
+                }
+            }
+            Err(error) => log::warn!(
+                "[Sync::Engine] Failed to list snapshot shards for cleanup: {}",
+                error
+            ),
+        }
+
+        match provider.list("blobs/").await {
+            Ok(objects) => {
+                for object in objects {
+                    if !object.path.ends_with(".bin") || current_blob_paths.contains(&object.path) {
+                        continue;
+                    }
+                    if let Err(error) = provider.delete(&object.path).await {
+                        log::warn!(
+                            "[Sync::Engine] Failed to delete unreferenced blob {}: {}",
+                            object.path,
+                            error
+                        );
+                    }
+                }
+            }
+            Err(error) => log::warn!(
+                "[Sync::Engine] Failed to list snapshot blobs for cleanup: {}",
+                error
+            ),
+        }
     }
 
     /// Cleanup stale .tmp runs from previous failed sync attempts

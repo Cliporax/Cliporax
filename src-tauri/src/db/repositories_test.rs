@@ -32,6 +32,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tab_repository_delete_records_sync_deletes() -> Result<(), sqlx::Error> {
+        let pool = setup_test_db().await;
+        let tab_id = TabRepository::create(&pool, "Delete Me").await?;
+        let item_id = ClipboardRepository::create(
+            &pool,
+            ClipboardItemInput {
+                item_type: "image".to_string(),
+                content: "data:image/png;base64,test".to_string(),
+                content_hash: Some("image-hash".to_string()),
+                metadata: None,
+                tags: None,
+                tab_id: Some(tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            },
+        )
+        .await?;
+        sqlx::query("INSERT INTO sync_item_map (local_id, item_key) VALUES (?, ?)")
+            .bind(item_id)
+            .bind("remote-image-key")
+            .execute(&pool)
+            .await?;
+
+        TabRepository::delete(&pool, tab_id).await?;
+
+        let item_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM clipboard_items WHERE id = ?")
+                .bind(item_id)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(item_count.0, 0);
+
+        let item_delete: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sync_changes WHERE entity_type = 'clipboard_item' AND operation = 'delete' AND item_key = 'remote-image-key'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(item_delete.0, 1);
+
+        let tab_delete: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sync_changes WHERE entity_type = 'tab' AND entity_id = ? AND operation = 'tab_delete'",
+        )
+        .bind(tab_id.to_string())
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(tab_delete.0, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_clipboard_repository_create_and_retrieve() {
         let pool = setup_test_db().await;
 

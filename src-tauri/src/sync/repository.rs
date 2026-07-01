@@ -1210,13 +1210,55 @@ impl SyncRepository {
         Ok(())
     }
 
-    pub async fn apply_snapshot_order(&self, order: &SnapshotOrder) -> Result<(), SyncError> {
+    pub async fn apply_snapshot_order(
+        &self,
+        profile: &SyncProfile,
+        order: &SnapshotOrder,
+        prune_missing_tabs: bool,
+    ) -> Result<(), SyncError> {
         for tab_order in &order.tabs {
             let tab_id = local_id_for_tab_key(&tab_order.tab_key, &self.pool).await?;
             self.apply_order_group(tab_id, true, &tab_order.pinned)
                 .await?;
             self.apply_order_group(tab_id, false, &tab_order.normal)
                 .await?;
+        }
+        if prune_missing_tabs && profile.sync_tabs.mode == TabSyncMode::All {
+            self.prune_empty_tabs_missing_from_order(order).await?;
+        }
+        Ok(())
+    }
+
+    async fn prune_empty_tabs_missing_from_order(
+        &self,
+        order: &SnapshotOrder,
+    ) -> Result<(), SyncError> {
+        let remote_tab_keys: std::collections::HashSet<&str> =
+            order.tabs.iter().map(|tab| tab.tab_key.as_str()).collect();
+        let local_tabs: Vec<(i64, String, i32)> =
+            sqlx::query_as("SELECT id, name, COALESCE(is_default, 0) FROM tabs")
+                .fetch_all(&self.pool)
+                .await?;
+
+        for (tab_id, tab_name, is_default) in local_tabs {
+            if is_default != 0 {
+                continue;
+            }
+            let tab_key = tab_key_for_snapshot(Some(tab_id), Some(&tab_name), false);
+            if remote_tab_keys.contains(tab_key.as_str()) {
+                continue;
+            }
+            let item_count: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM clipboard_items WHERE tab_id = ?")
+                    .bind(tab_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if item_count.0 == 0 {
+                sqlx::query("DELETE FROM tabs WHERE id = ? AND is_default = 0")
+                    .bind(tab_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -1764,15 +1806,19 @@ mod tests {
             .apply_snapshot_items(&profile, vec![item], false)
             .await?;
         repository
-            .apply_snapshot_order(&SnapshotOrder {
-                schema_version: 1,
-                updated_at: "2026-05-15T00:00:00Z".to_string(),
-                tabs: vec![SnapshotTabOrder {
-                    tab_key: "tab-name:research".to_string(),
-                    pinned: Vec::new(),
-                    normal: vec!["device_b_1_1".to_string()],
-                }],
-            })
+            .apply_snapshot_order(
+                &profile,
+                &SnapshotOrder {
+                    schema_version: 1,
+                    updated_at: "2026-05-15T00:00:00Z".to_string(),
+                    tabs: vec![SnapshotTabOrder {
+                        tab_key: "tab-name:research".to_string(),
+                        pinned: Vec::new(),
+                        normal: vec!["device_b_1_1".to_string()],
+                    }],
+                },
+                false,
+            )
             .await?;
 
         let stored: (String,) = sqlx::query_as(
@@ -1787,6 +1833,39 @@ mod tests {
         .await?;
 
         assert_eq!(stored.0, "Research");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn all_scope_prunes_empty_tabs_missing_from_remote_order() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        sqlx::query("INSERT INTO tabs (name) VALUES ('Deleted Remote Tab')")
+            .execute(&pool)
+            .await?;
+
+        repository
+            .apply_snapshot_order(
+                &profile,
+                &SnapshotOrder {
+                    schema_version: 1,
+                    updated_at: "2026-05-15T00:00:00Z".to_string(),
+                    tabs: vec![SnapshotTabOrder {
+                        tab_key: "default".to_string(),
+                        pinned: Vec::new(),
+                        normal: Vec::new(),
+                    }],
+                },
+                true,
+            )
+            .await?;
+
+        let deleted_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tabs WHERE name = 'Deleted Remote Tab'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(deleted_count.0, 0);
         Ok(())
     }
 
