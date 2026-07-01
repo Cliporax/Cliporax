@@ -11,6 +11,10 @@
       "settings": "设置",
       "multiSelectHint": "Ctrl+点击选择, Esc 退出",
       "searchHint": "Ctrl+F 搜索"
+    },
+    "searchScope": {
+      "current": "当前",
+      "global": "全局"
     }
   },
   "titleBar": {
@@ -28,7 +32,8 @@
     "editContent": "编辑内容",
     "pin": "固定",
     "unpin": "取消固定",
-    "imageLoadError": "图片加载失败"
+    "imageLoadError": "图片加载失败",
+    "lineCount": "{{count}} 行"
   },
   "contentEditor": {
     "title": "编辑内容",

@@ -78,6 +78,7 @@ function App() {
     showSearch,
     searchQuery,
     searchMode,
+    searchScope,
     isSettingsOpen,
     editingItem,
     isMultiSelectMode,
@@ -85,6 +86,7 @@ function App() {
     setShowSearch,
     setSearchQuery,
     setSearchMode,
+    setSearchScope,
     openSettings,
     closeSettings,
     openEditor,
@@ -389,46 +391,87 @@ function App() {
                 : "rgba(0,0,0,0.04)",
             }}
           >
-            <div className="relative flex-1 w-full max-w-2xl mx-auto">
-              <Search
-                className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors duration-300"
-                size={14}
-                style={{ color: isDark ? "#94a3b8" : "#8a8a88" }}
-              />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder={t("app.searchPlaceholder")}
-                className="w-full border rounded-lg py-1.5 pl-9 pr-20 text-xs transition-all outline-none"
+            <div className="relative flex items-center gap-2 flex-1 w-full max-w-2xl mx-auto">
+              <div
+                className="flex h-7 flex-shrink-0 overflow-hidden rounded-lg border p-0.5"
                 style={{
                   backgroundColor: isDark
                     ? "rgba(255,255,255,0.05)"
-                    : "rgba(255,255,255,0.8)",
+                    : "rgba(255,255,255,0.75)",
                   borderColor: isDark
                     ? "rgba(255,255,255,0.1)"
                     : "rgba(0,0,0,0.06)",
-                  color: isDark ? "#e2e8f0" : "#4a4a48",
                 }}
-                value={searchQuery}
-                onChange={handleSearchInput}
-                onKeyDown={handleSearchKeyDown}
-              />
-              {searchQuery && (
-                <span
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-medium px-2 py-0.5 rounded-md border"
+              >
+                {(["current", "global"] as const).map((scope) => {
+                  const active = searchScope === scope;
+                  return (
+                    <button
+                      key={scope}
+                      type="button"
+                      className="h-full rounded-md px-2 text-[10px] font-medium transition-colors"
+                      style={{
+                        color: active
+                          ? isDark
+                            ? "#e2e8f0"
+                            : "#27272a"
+                          : isDark
+                            ? "#94a3b8"
+                            : "#71717a",
+                        backgroundColor: active
+                          ? isDark
+                            ? "rgba(59,130,246,0.28)"
+                            : "rgba(59,130,246,0.14)"
+                          : "transparent",
+                      }}
+                      onClick={() => setSearchScope(scope)}
+                    >
+                      {t(`app.searchScope.${scope}`)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="relative flex-1 min-w-0">
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors duration-300"
+                  size={14}
+                  style={{ color: isDark ? "#94a3b8" : "#8a8a88" }}
+                />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  placeholder={t("app.searchPlaceholder")}
+                  className="w-full border rounded-lg py-1.5 pl-9 pr-20 text-xs transition-all outline-none"
                   style={{
-                    color: isDark ? "#94a3b8" : "#71717a",
                     backgroundColor: isDark
-                      ? "rgba(255,255,255,0.1)"
-                      : "rgba(0,0,0,0.05)",
-                    borderColor: isDark
                       ? "rgba(255,255,255,0.05)"
-                      : "rgba(0,0,0,0.05)",
+                      : "rgba(255,255,255,0.8)",
+                    borderColor: isDark
+                      ? "rgba(255,255,255,0.1)"
+                      : "rgba(0,0,0,0.06)",
+                    color: isDark ? "#e2e8f0" : "#4a4a48",
                   }}
-                >
-                  {searchMode === "regex" ? "REGEX" : "FUZZY"}
-                </span>
-              )}
+                  value={searchQuery}
+                  onChange={handleSearchInput}
+                  onKeyDown={handleSearchKeyDown}
+                />
+                {searchQuery && (
+                  <span
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-medium px-2 py-0.5 rounded-md border"
+                    style={{
+                      color: isDark ? "#94a3b8" : "#71717a",
+                      backgroundColor: isDark
+                        ? "rgba(255,255,255,0.1)"
+                        : "rgba(0,0,0,0.05)",
+                      borderColor: isDark
+                        ? "rgba(255,255,255,0.05)"
+                        : "rgba(0,0,0,0.05)",
+                    }}
+                  >
+                    {searchMode === "regex" ? "REGEX" : "FUZZY"}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -440,6 +483,7 @@ function App() {
             tabId={activeTabId}
             searchQuery={searchQuery}
             searchMode={searchMode}
+            searchScope={searchScope}
             lineHeight={generalSettings.lineHeight}
             refreshTrigger={listRefreshTrigger}
             onEdit={(item) => {

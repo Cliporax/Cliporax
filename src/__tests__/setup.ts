@@ -1,6 +1,8 @@
 // Test setup file
 import { vi } from "vitest";
 
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
 // Mock Tauri APIs
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),

@@ -11,6 +11,10 @@
       "settings": "Settings",
       "multiSelectHint": "Ctrl+Click to select, Esc to exit",
       "searchHint": "Ctrl+F to search"
+    },
+    "searchScope": {
+      "current": "Current",
+      "global": "Global"
     }
   },
   "titleBar": {
@@ -28,7 +32,8 @@
     "editContent": "Edit content",
     "pin": "Pin",
     "unpin": "Unpin",
-    "imageLoadError": "Failed to load image"
+    "imageLoadError": "Failed to load image",
+    "lineCount": "{{count}} lines"
   },
   "contentEditor": {
     "title": "Edit Content",

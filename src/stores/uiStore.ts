@@ -11,9 +11,11 @@ interface UIState {
   showSearch: boolean;
   searchQuery: string;
   searchMode: "fuzzy" | "regex";
+  searchScope: "current" | "global";
   setShowSearch: (show: boolean) => void;
   setSearchQuery: (query: string) => void;
   setSearchMode: (mode: "fuzzy" | "regex") => void;
+  setSearchScope: (scope: "current" | "global") => void;
   toggleSearch: () => void;
 
   // Settings
@@ -41,9 +43,11 @@ export const useUIStore = create<UIState>()((set, get) => ({
   showSearch: false,
   searchQuery: "",
   searchMode: "fuzzy",
+  searchScope: "current",
   setShowSearch: (showSearch) => set({ showSearch }),
   setSearchQuery: (searchQuery) => set({ searchQuery }),
   setSearchMode: (searchMode) => set({ searchMode }),
+  setSearchScope: (searchScope) => set({ searchScope }),
   toggleSearch: () =>
     set((state) => ({
       showSearch: !state.showSearch,
