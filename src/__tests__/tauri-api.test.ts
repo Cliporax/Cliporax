@@ -204,6 +204,18 @@ describe("Tauri API Tests", () => {
       });
     });
 
+    it("should support global clipboard search without a tab id", async () => {
+      const query = "global";
+      mockInvoke.mockResolvedValue([]);
+
+      await tauriApi.clipboard.search(query);
+
+      expectInvokeCalledWith("clipboard_search", {
+        query,
+        tabId: undefined,
+      });
+    });
+
     it("should update tags successfully", async () => {
       const itemId = 1;
       const tags = ["tag1", "tag2"];

@@ -38,6 +38,9 @@ interface ClipboardCardProps {
   onMouseMove?: (e: React.MouseEvent) => void;
   onMouseUp?: () => void;
   onMouseLeaveCard?: () => void;
+  searchQuery?: string;
+  searchMode?: "fuzzy" | "regex";
+  isSearchMode?: boolean;
 }
 
 // Card background colors (unified for modern design)
@@ -52,6 +55,84 @@ export const CARD_SIZE_CONFIG = {
 } as const;
 
 const IMAGE_CARD_HEIGHT = 96; // Fixed image card height
+
+type HighlightRange = { start: number; end: number };
+
+function getLineCount(content: string): number {
+  return content.split(/\r\n|\r|\n/).length;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getDisplaySearchQuery(
+  searchQuery: string,
+  searchMode: "fuzzy" | "regex",
+): string {
+  if (searchMode === "regex" && searchQuery.toLowerCase().startsWith("regx:")) {
+    return searchQuery.slice(5).trim();
+  }
+  return searchQuery.trim();
+}
+
+function getMatchRanges(
+  content: string,
+  searchQuery: string,
+  searchMode: "fuzzy" | "regex",
+): HighlightRange[] {
+  const query = getDisplaySearchQuery(searchQuery, searchMode);
+  if (!query) return [];
+
+  if (searchMode === "regex") {
+    try {
+      const pattern = new RegExp(query, "gi");
+      const ranges: HighlightRange[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(content)) !== null) {
+        if (match[0].length === 0) {
+          pattern.lastIndex += 1;
+          continue;
+        }
+        ranges.push({ start: match.index, end: match.index + match[0].length });
+      }
+      return ranges;
+    } catch {
+      return [];
+    }
+  }
+
+  const pattern = new RegExp(escapeRegExp(query), "gi");
+  const ranges: HighlightRange[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    ranges.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return ranges;
+}
+
+function getSearchPreview(
+  content: string,
+  ranges: HighlightRange[],
+  isSearchMode: boolean,
+): string {
+  if (!isSearchMode || ranges.length === 0 || !/\r\n|\r|\n/.test(content)) {
+    return content;
+  }
+
+  const firstMatch = ranges[0].start;
+  const previousLineBreak = Math.max(
+    content.lastIndexOf("\n", firstMatch - 1),
+    content.lastIndexOf("\r", firstMatch - 1),
+  );
+  const lineStart = previousLineBreak + 1;
+  const rest = content.slice(firstMatch);
+  const nextLineBreak = rest.search(/\r\n|\r|\n/);
+  const lineEnd =
+    nextLineBreak === -1 ? content.length : firstMatch + nextLineBreak;
+
+  return content.slice(lineStart, lineEnd);
+}
 
 const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
   (
@@ -84,6 +165,9 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       onMouseMove,
       onMouseUp,
       onMouseLeaveCard,
+      searchQuery = "",
+      searchMode = "fuzzy",
+      isSearchMode = false,
     },
     ref,
   ) => {
@@ -94,6 +178,17 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
     const [isHovered, setIsHovered] = React.useState(false);
     const [isDragging, setIsDragging] = React.useState(false);
     const [imageError, setImageError] = React.useState(false);
+    const lineCount = type === "text" ? getLineCount(content) : 1;
+    const fullMatchRanges =
+      type === "text" ? getMatchRanges(content, searchQuery, searchMode) : [];
+    const previewContent =
+      type === "text"
+        ? getSearchPreview(content, fullMatchRanges, isSearchMode)
+        : content;
+    const previewMatchRanges =
+      type === "text"
+        ? getMatchRanges(previewContent, searchQuery, searchMode)
+        : [];
 
     // Get card extension buttons from plugins
     const cardExtensions = useCardExtensions(
@@ -234,6 +329,59 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
+    };
+    const lineBadgeStyle: React.CSSProperties = {
+      flexShrink: 0,
+      maxWidth: "64px",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      borderRadius: "999px",
+      padding: "2px 6px",
+      fontSize: "10px",
+      fontWeight: 600,
+      lineHeight: "1.2",
+      color: isDark ? "#93c5fd" : "#2563eb",
+      backgroundColor: isDark
+        ? "rgba(59, 130, 246, 0.16)"
+        : "rgba(37, 99, 235, 0.1)",
+      border: `1px solid ${
+        isDark ? "rgba(147, 197, 253, 0.24)" : "rgba(37, 99, 235, 0.18)"
+      }`,
+    };
+
+    const highlightStyle: React.CSSProperties = {
+      borderRadius: "3px",
+      padding: "0 1px",
+      color: isDark ? "#fef3c7" : "#713f12",
+      backgroundColor: isDark
+        ? "rgba(245, 158, 11, 0.32)"
+        : "rgba(251, 191, 36, 0.45)",
+    };
+
+    const renderTextContent = () => {
+      if (previewMatchRanges.length === 0) return previewContent;
+
+      const nodes: React.ReactNode[] = [];
+      let cursor = 0;
+      previewMatchRanges.forEach((range, rangeIndex) => {
+        if (range.start > cursor) {
+          nodes.push(previewContent.slice(cursor, range.start));
+        }
+        nodes.push(
+          <mark
+            key={`${range.start}-${range.end}-${rangeIndex}`}
+            style={highlightStyle}
+          >
+            {previewContent.slice(range.start, range.end)}
+          </mark>,
+        );
+        cursor = range.end;
+      });
+      if (cursor < previewContent.length) {
+        nodes.push(previewContent.slice(cursor));
+      }
+      return nodes;
     };
 
     const imageContainerStyle: React.CSSProperties = {
@@ -421,10 +569,16 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
             </div>
           ) : (
             <p style={contentStyle} title={content}>
-              {content}
+              {renderTextContent()}
             </p>
           )}
         </div>
+
+        {type === "text" && lineCount > 1 && (
+          <span style={lineBadgeStyle}>
+            {t("clipboardCard.lineCount", { count: lineCount })}
+          </span>
+        )}
 
         {/* Action buttons - hidden by default, visible only on card hover, hidden in multi-select mode */}
         {!isMultiSelectMode && (

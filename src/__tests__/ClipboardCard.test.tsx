@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import React from 'react';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '../i18n';
@@ -22,7 +22,9 @@ describe('ClipboardCard Component', () => {
     document.body.appendChild(div);
     const root = createRoot(div);
     roots.push(root);
-    root.render(<TestWrapper>{children}</TestWrapper>);
+    act(() => {
+      root.render(<TestWrapper>{children}</TestWrapper>);
+    });
     return { div, root };
   };
 
@@ -45,7 +47,9 @@ describe('ClipboardCard Component', () => {
 
   afterEach(() => {
     for (const root of roots.splice(0)) {
-      root.unmount();
+      act(() => {
+        root.unmount();
+      });
     }
     document.body.innerHTML = '';
   });
@@ -82,16 +86,20 @@ describe('ClipboardCard Component', () => {
     const { root } = renderCard(<ClipboardCard {...defaultProps} lineHeight="small" />);
 
     // Test different line height values
-    root.render(
-      <TestWrapper>
-        <ClipboardCard {...defaultProps} lineHeight="medium" />
-      </TestWrapper>
-    );
-    root.render(
-      <TestWrapper>
-        <ClipboardCard {...defaultProps} lineHeight="large" />
-      </TestWrapper>
-    );
+    act(() => {
+      root.render(
+        <TestWrapper>
+          <ClipboardCard {...defaultProps} lineHeight="medium" />
+        </TestWrapper>
+      );
+    });
+    act(() => {
+      root.render(
+        <TestWrapper>
+          <ClipboardCard {...defaultProps} lineHeight="large" />
+        </TestWrapper>
+      );
+    });
 
     // Component accepts all line height values without error
     expect(['small', 'medium', 'large']).toContain(defaultProps.lineHeight);
@@ -101,14 +109,75 @@ describe('ClipboardCard Component', () => {
     const { root } = renderCard(<ClipboardCard {...defaultProps} type="text" />);
 
     // Test text content
-    root.render(
-      <TestWrapper>
-        <ClipboardCard {...defaultProps} type="image" content="data:image/png;base64,test" />
-      </TestWrapper>
-    );
+    act(() => {
+      root.render(
+        <TestWrapper>
+          <ClipboardCard {...defaultProps} type="image" content="data:image/png;base64,test" />
+        </TestWrapper>
+      );
+    });
 
     // Component handles both content types
     expect(['text', 'image']).toContain(defaultProps.type);
+  });
+
+
+  it('shows a line count badge for multiline text', () => {
+    const { div } = renderCard(
+      <ClipboardCard {...defaultProps} content={'one\ntwo\nthree'} />
+    );
+
+    expect(div.textContent).toContain('3 lines');
+  });
+
+  it('highlights fuzzy search matches case-insensitively', () => {
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        content="Alpha beta alpha"
+        searchQuery="alpha"
+        searchMode="fuzzy"
+        isSearchMode
+      />
+    );
+
+    const marks = Array.from(div.querySelectorAll('mark')).map(
+      (mark) => mark.textContent,
+    );
+    expect(marks).toEqual(['Alpha', 'alpha']);
+  });
+
+  it('highlights regex search matches', () => {
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        content="abc-123 xyz-456"
+        searchQuery={"regx:\\d+"}
+        searchMode="regex"
+        isSearchMode
+      />
+    );
+
+    const marks = Array.from(div.querySelectorAll('mark')).map(
+      (mark) => mark.textContent,
+    );
+    expect(marks).toEqual(['123', '456']);
+  });
+
+  it('starts multiline search preview from the first matching line', () => {
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        content={'first line\nneedle line\nlast line'}
+        searchQuery="needle"
+        searchMode="fuzzy"
+        isSearchMode
+      />
+    );
+
+    const text = div.querySelector('p')?.textContent ?? '';
+    expect(text).toContain('needle line');
+    expect(text).not.toContain('first line');
   });
 
   it('passes callback functions as props', () => {

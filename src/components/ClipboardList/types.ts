@@ -15,6 +15,7 @@ export interface ClipboardListRef {
 export interface ClipboardListProps {
   searchQuery?: string;
   searchMode?: "fuzzy" | "regex";
+  searchScope?: "current" | "global";
   lineHeight?: "small" | "medium" | "large";
   tabId?: number | null; // Current active tab ID
   onEdit?: (item: {

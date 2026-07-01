@@ -64,6 +64,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     {
       searchQuery = "",
       searchMode = "fuzzy",
+      searchScope = "current",
       lineHeight = "medium",
       tabId = null,
       onEdit,
@@ -956,7 +957,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
         return;
       }
 
-      if (defaultTabId === null) return;
+      if (searchScope === "current" && defaultTabId === null) return;
 
       searchDebounceRef.current = setTimeout(async () => {
         setIsSearching(true);
@@ -970,7 +971,10 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
             actualQuery = searchQuery.slice(5).trim();
           }
 
-          const results = await clipboard.search(actualQuery, defaultTabId);
+          const results =
+            searchScope === "global"
+              ? await clipboard.search(actualQuery)
+              : await clipboard.search(actualQuery, defaultTabId ?? undefined);
 
           if (
             searchMode === "regex" &&
@@ -1002,7 +1006,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
           clearTimeout(searchDebounceRef.current);
         }
       };
-    }, [searchQuery, searchMode, defaultTabId]);
+    }, [searchQuery, searchMode, searchScope, defaultTabId]);
 
     // ========== Scroll handling ==========
 
@@ -1408,7 +1412,10 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
                     }
                     batchItemIds={selectedIdsForBatch}
                     isDraggingItem={activeDraggedId === item.id}
-                    tabId={tabId}
+                    tabId={item.tab_id ?? tabId}
+                    searchQuery={searchQuery}
+                    searchMode={searchMode}
+                    isSearchMode={isSearchMode}
                     onBatchActionComplete={handleBatchActionComplete}
                     onClick={(e) => handleCardClick(item.id, index, e)}
                     onDoubleClick={() => handleDoubleClick(item)}
