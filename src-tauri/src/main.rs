@@ -7,7 +7,8 @@ use cliporax_lib::{
     dev_log::{install_logger, DevLogFileBackend},
     init_settings,
     plugin::{
-        commands::*, get_plugin_dir, lifecycle::registry::PluginRegistry, seed_builtin_plugins,
+        commands::*, get_plugin_dir, lifecycle::registry::PluginRegistry, market::*,
+        seed_builtin_plugins,
     },
     show_main_window, show_or_hide_main_window,
     state::WindowState,
@@ -528,6 +529,12 @@ fn main() {
             plugin_discover,
             plugin_get_state,
             plugin_read_script,
+            plugin_market_get_sources,
+            plugin_market_refresh,
+            plugin_market_get_plugins,
+            plugin_market_install,
+            plugin_market_uninstall,
+            plugin_market_get_install_status,
             // Preview window commands
             preview_create_window,
             preview_get_data,

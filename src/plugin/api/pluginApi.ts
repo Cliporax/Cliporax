@@ -11,6 +11,10 @@ import type {
   LoadResult,
   Permission,
   PluginState,
+  PluginMarketSource,
+  MarketRefreshResult,
+  InstallPluginResult,
+  MarketInstallStatus,
 } from "../types";
 
 const logger = createLogger("PluginAPI");
@@ -283,6 +287,78 @@ export const pluginApi = {
       return result;
     } catch (error) {
       logger.error("readScript() failed:", error);
+      throw error;
+    }
+  },
+
+  getMarketSources: async (): Promise<PluginMarketSource[]> => {
+    logger.debug("getMarketSources() called");
+    try {
+      return await invoke<PluginMarketSource[]>("plugin_market_get_sources");
+    } catch (error) {
+      logger.error("getMarketSources() failed:", error);
+      throw error;
+    }
+  },
+
+  refreshMarket: async (): Promise<MarketRefreshResult> => {
+    logger.debug("refreshMarket() called");
+    try {
+      const result = await invoke<MarketRefreshResult>("plugin_market_refresh");
+      logger.info("refreshMarket() returned", result.plugins.length, "plugins");
+      return result;
+    } catch (error) {
+      logger.error("refreshMarket() failed:", error);
+      throw error;
+    }
+  },
+
+  getMarketPlugins: async (): Promise<MarketRefreshResult> => {
+    logger.debug("getMarketPlugins() called");
+    try {
+      return await invoke<MarketRefreshResult>("plugin_market_get_plugins");
+    } catch (error) {
+      logger.error("getMarketPlugins() failed:", error);
+      throw error;
+    }
+  },
+
+  installFromMarket: async (pluginId: string): Promise<InstallPluginResult> => {
+    logger.debug("installFromMarket() called:", pluginId);
+    try {
+      const result = await invoke<InstallPluginResult>("plugin_market_install", {
+        request: { pluginId },
+      });
+      await notifyPluginChanged(pluginId, "install");
+      return result;
+    } catch (error) {
+      logger.error("installFromMarket() failed:", error);
+      throw error;
+    }
+  },
+
+  uninstallFromMarket: async (pluginId: string): Promise<void> => {
+    logger.debug("uninstallFromMarket() called:", pluginId);
+    try {
+      await invoke("plugin_market_uninstall", { pluginId });
+      await notifyPluginChanged(pluginId, "uninstall");
+    } catch (error) {
+      logger.error("uninstallFromMarket() failed:", error);
+      throw error;
+    }
+  },
+
+  getMarketInstallStatus: async (
+    pluginId: string,
+  ): Promise<MarketInstallStatus> => {
+    logger.debug("getMarketInstallStatus() called:", pluginId);
+    try {
+      return await invoke<MarketInstallStatus>(
+        "plugin_market_get_install_status",
+        { pluginId },
+      );
+    } catch (error) {
+      logger.error("getMarketInstallStatus() failed:", error);
       throw error;
     }
   },

@@ -161,6 +161,7 @@
     "author": "Author",
     "description": "Description",
     "permissions": "Permissions",
+    "installed": "Installed",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "refresh": "Refresh",
@@ -178,6 +179,28 @@
       "inactive": "Inactive",
       "unloaded": "Unloaded",
       "unknown": "Unknown"
+    },
+    "market": {
+      "title": "Market",
+      "loading": "Loading plugin market...",
+      "error": "Failed to load plugin market: {{message}}",
+      "cached": "Showing cached plugin market data",
+      "empty": "No market plugins available",
+      "official": "Official",
+      "builtin": "Built in",
+      "update": "Update",
+      "reinstall": "Reinstall",
+      "installSuccess": "Plugin installed",
+      "installError": "Failed to install plugin: {{message}}",
+      "uninstallSuccess": "Plugin uninstalled",
+      "uninstallError": "Failed to uninstall plugin: {{message}}",
+      "permissionCount": "{{count}} permissions",
+      "status": {
+        "notInstalled": "Not installed",
+        "installed": "Installed",
+        "updateAvailable": "Update available",
+        "incompatible": "Incompatible"
+      }
     },
     "detail": {
       "information": "Information",

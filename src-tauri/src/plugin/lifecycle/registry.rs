@@ -237,6 +237,7 @@ impl PluginRegistry {
         self.builtin_plugins.clear();
 
         let mut discovered_ids = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut entries = tokio::fs::read_dir(&self.plugin_dir).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -260,6 +261,7 @@ impl PluginRegistry {
                             if is_builtin {
                                 self.builtin_plugins.insert(id.clone());
                             }
+                            seen_ids.insert(id.clone());
 
                             self.discovered.insert(
                                 id.clone(),
@@ -278,6 +280,10 @@ impl PluginRegistry {
                 }
             }
         }
+
+        self.discovered.retain(|id, _| seen_ids.contains(id));
+        self.instances
+            .retain(|id, _| self.discovered.contains_key(id));
 
         log::info!("[Plugin] Discovered {} plugins", discovered_ids.len());
 

@@ -298,7 +298,9 @@ pub fn restore_focused_window() -> Result<(), Box<dyn std::error::Error + Send +
                         "[WindowUtils] Failed to restore macOS application focus: {}",
                         stderr.trim()
                     );
-                    return Err(format!("macOS application activation failed: {}", stderr.trim()).into());
+                    return Err(
+                        format!("macOS application activation failed: {}", stderr.trim()).into(),
+                    );
                 }
                 log::info!("[WindowUtils] Focus restored successfully (macOS)");
             }

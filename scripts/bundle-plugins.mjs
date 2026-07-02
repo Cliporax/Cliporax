@@ -31,6 +31,11 @@ async function bundlePlugins() {
     }
 
     const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    if (manifest.isBuiltin !== true) {
+      console.log(`[Plugins] Skipped non-builtin plugin: ${manifest.id || entry}`);
+      continue;
+    }
+
     const targetDir = join(BUNDLE_DIR, manifest.id || entry);
     await mkdir(targetDir, { recursive: true });
     await copyFile(manifestPath, join(targetDir, 'manifest.json'));

@@ -48,7 +48,6 @@
       "scannerShortcut": "Ctrl+Shift+Q"
     }
   },
-  "isBuiltin": true,
   "keywords": ["qrcode", "scanner", "screen", "capture", "ocr"],
   "license": "MIT"
 }

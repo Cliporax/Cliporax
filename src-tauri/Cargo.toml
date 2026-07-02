@@ -1,6 +1,6 @@
 [package]
 name = "cliporax"
-version = "1.0.4"
+version = "1.1.0"
 description = "A modern clipboard manager with privacy-first AI"
 authors = ["Cliporax Team"]
 license = "MIT"
@@ -75,6 +75,7 @@ rand = "0.8"
 # Cloud sync - UUID for device IDs
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "multipart", "query", "rustls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 ssh2 = "0.9"

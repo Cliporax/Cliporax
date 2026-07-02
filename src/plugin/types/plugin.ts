@@ -190,6 +190,91 @@ export interface PluginInfo {
   state: PluginState;
   permissions: PermissionRequest[];
   type: PluginType;
+  isBuiltin?: boolean;
+}
+
+export interface PluginMarketSource {
+  id: string;
+  name: string;
+  releaseApiUrl: string;
+  readonly: boolean;
+}
+
+export type MarketInstallStatus =
+  | "not-installed"
+  | "installed"
+  | "update-available"
+  | "incompatible";
+
+export interface MarketCompatibility {
+  platforms: Platform[];
+}
+
+export interface MarketPluginIcon {
+  path: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  dataUrl: string;
+}
+
+export interface MarketPublisher {
+  name: string;
+  url: string;
+  official: boolean;
+}
+
+export interface MarketPluginAsset {
+  name: string;
+  downloadUrl: string;
+  apiUrl: string;
+  size: number;
+  sha256: string;
+  githubAssetId?: number | null;
+  contentType: string;
+}
+
+export interface InstalledPluginVersion {
+  version: string;
+  state: PluginState;
+  isBuiltin: boolean;
+}
+
+export interface MarketPlugin {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  license: string;
+  homepage: string;
+  repository: string;
+  keywords: string[];
+  type: string;
+  permissions: string[];
+  minAppVersion: string;
+  compatibility: MarketCompatibility;
+  icon: MarketPluginIcon;
+  publisher: MarketPublisher;
+  asset: MarketPluginAsset;
+  installed?: InstalledPluginVersion | null;
+  status: MarketInstallStatus;
+}
+
+export interface MarketRefreshResult {
+  sourceId: string;
+  stale: boolean;
+  plugins: MarketPlugin[];
+}
+
+export interface InstallPluginRequest {
+  pluginId: string;
+}
+
+export interface InstallPluginResult {
+  pluginId: string;
+  version: string;
+  installed: boolean;
 }
 
 /**

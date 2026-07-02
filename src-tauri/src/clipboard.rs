@@ -827,12 +827,7 @@ impl ClipboardMonitor {
                 log::info!("[Clipboard] Notifying frontend of clipboard change");
                 changed_tab_ids.sort_unstable();
                 changed_tab_ids.dedup();
-                emit_clipboard_changed(
-                    &app_handle,
-                    changed_tab_ids,
-                    changed_item_ids,
-                    "create",
-                );
+                emit_clipboard_changed(&app_handle, changed_tab_ids, changed_item_ids, "create");
             }
         }
     }

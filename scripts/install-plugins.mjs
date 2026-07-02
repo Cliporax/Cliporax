@@ -47,9 +47,13 @@ async function installPlugins() {
     }
 
     const targetDir = join(runtimeDir, entry);
-    await mkdir(targetDir, { recursive: true });
-
     const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    if (manifest.isBuiltin === true) {
+      console.log(`[Plugins] Skipped builtin dev plugin: ${manifest.id || entry}`);
+      continue;
+    }
+
+    await mkdir(targetDir, { recursive: true });
     delete manifest.is_builtin;
     delete manifest.isBuiltin;
     await writeFile(join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2));

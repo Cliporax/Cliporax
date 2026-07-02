@@ -117,7 +117,7 @@ jobs:
         run: |
           $tag = $env:RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($tag)) {
-            $tag = "v__VERSION__"
+            $tag = "v1.1.0"
           }
 
           $previousTag = git tag --sort=-creatordate | Where-Object { $_ -ne $tag } | Select-Object -First 1
@@ -156,15 +156,17 @@ jobs:
             $changes = @("- 本次没有需要展示的主要修改。")
           }
 
-          $body = @(
-            "## 主要修改",
-            "",
-            $changes,
-            "",
-            "## 下载",
-            "",
-            "请从下方 Assets 下载对应平台的安装包或便携版。"
-          ) -join "`n"
+          $bodyLines = New-Object System.Collections.Generic.List[string]
+          $bodyLines.Add("## 主要修改")
+          $bodyLines.Add("")
+          foreach ($change in $changes) {
+            $bodyLines.Add($change)
+          }
+          $bodyLines.Add("")
+          $bodyLines.Add("## 下载")
+          $bodyLines.Add("")
+          $bodyLines.Add("请从下方 Assets 下载对应平台的安装包或便携版。")
+          $body = $bodyLines -join "`n"
 
           "body<<EOF" >> $env:GITHUB_OUTPUT
           $body >> $env:GITHUB_OUTPUT
@@ -183,8 +185,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tauriScript: npm run tauri
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v__VERSION__' }}
-          releaseName: Cliporax v__VERSION__
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}
+          releaseName: Cliporax v1.1.0
           releaseBody: ${{ steps.release-notes.outputs.body }}
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
