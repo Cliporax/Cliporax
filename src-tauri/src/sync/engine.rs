@@ -478,6 +478,16 @@ impl SyncEngine {
         prepared: &PreparedSyncRun,
     ) -> Result<SyncPhaseReport, SyncError> {
         log::info!("[Sync::Engine] Step 7: Reading local snapshot changes");
+        let deduplicated = self
+            .repository
+            .deduplicate_same_content_items(&prepared.profile)
+            .await?;
+        if deduplicated > 0 {
+            log::info!(
+                "[Sync::Engine] Removed {} duplicate local items before upload",
+                deduplicated
+            );
+        }
         let mut unsynced_changes = self
             .repository
             .list_unsynced_changes(&prepared.profile)
@@ -496,8 +506,19 @@ impl SyncEngine {
         }
 
         if unsynced_changes.is_empty() {
-            log::info!("[Sync::Engine] No unsynced changes");
-            return Ok(SyncPhaseReport::default());
+            if self
+                .remote_order_matches_local(provider, &prepared.profile)
+                .await?
+            {
+                log::info!("[Sync::Engine] No unsynced changes");
+                return Ok(SyncPhaseReport::default());
+            }
+            log::info!(
+                "[Sync::Engine] Snapshot order differs from remote; uploading repaired snapshot"
+            );
+            return self
+                .upload_snapshot(provider, &prepared.profile, &prepared.device_id)
+                .await;
         }
 
         log::info!(
@@ -516,6 +537,25 @@ impl SyncEngine {
             errors: upload_report.errors,
             ..SyncPhaseReport::default()
         })
+    }
+
+    async fn remote_order_matches_local(
+        &self,
+        provider: &dyn SyncProvider,
+        profile: &SyncProfile,
+    ) -> Result<bool, SyncError> {
+        let Some(manifest) = read_manifest(provider, "").await? else {
+            return Ok(false);
+        };
+        let Some(order_ref) = manifest.order else {
+            return Ok(false);
+        };
+        let remote_bytes = provider.get(&order_ref.path).await?;
+        let crypto_key = self.get_crypto_key(&profile.id).await.ok().flatten();
+        let decoded = decode_snapshot_file(&remote_bytes, profile, crypto_key.as_ref())?;
+        let remote_order: SnapshotOrder = serde_json::from_slice(&decoded)?;
+        let local_order = self.repository.build_snapshot_order(profile).await?;
+        Ok(remote_order.tabs == local_order.tabs)
     }
 
     async fn finalize_run(
@@ -955,4 +995,177 @@ fn decode_snapshot_file(
         SyncError::encryption("Encryption enabled but no crypto key provided".to_string())
     })?;
     decrypt(&encrypted, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use sqlx::SqlitePool;
+
+    #[derive(Default)]
+    struct MemoryProvider {
+        objects: RwLock<HashMap<String, Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl SyncProvider for MemoryProvider {
+        async fn test_connection(&self) -> Result<(), SyncError> {
+            Ok(())
+        }
+
+        async fn list(&self, _prefix: &str) -> Result<Vec<RemoteObject>, SyncError> {
+            Ok(Vec::new())
+        }
+
+        async fn stat(&self, path: &str) -> Result<Option<RemoteObject>, SyncError> {
+            let objects = self.objects.read().await;
+            Ok(objects.get(path).map(|data| RemoteObject {
+                path: path.to_string(),
+                size: data.len() as u64,
+                modified_at: None,
+                etag: None,
+            }))
+        }
+
+        async fn get(&self, path: &str) -> Result<Vec<u8>, SyncError> {
+            self.objects
+                .read()
+                .await
+                .get(path)
+                .cloned()
+                .ok_or_else(|| SyncError::provider("File not found".to_string()))
+        }
+
+        async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), SyncError> {
+            self.objects.write().await.insert(path.to_string(), data);
+            Ok(())
+        }
+
+        async fn mkdir_all(&self, _path: &str) -> Result<(), SyncError> {
+            Ok(())
+        }
+
+        async fn move_object(&self, from: &str, to: &str) -> Result<(), SyncError> {
+            let mut objects = self.objects.write().await;
+            let data = objects
+                .remove(from)
+                .ok_or_else(|| SyncError::provider("File not found".to_string()))?;
+            objects.insert(to.to_string(), data);
+            Ok(())
+        }
+
+        async fn delete(&self, path: &str) -> Result<(), SyncError> {
+            self.objects.write().await.remove(path);
+            Ok(())
+        }
+    }
+
+    fn test_profile() -> SyncProfile {
+        SyncProfile {
+            id: "profile".to_string(),
+            name: "Profile".to_string(),
+            provider: SyncProviderKind::WebDav,
+            remote_root: String::new(),
+            sync_tabs: TabSyncSelection::default(),
+            sync_plugins: PluginSyncSelection::default(),
+            encryption: EncryptionConfig::default(),
+            credential_refs: CredentialRefs::default(),
+            schedule: SyncScheduleConfig::default(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    async fn setup_order_test_pool() -> Result<SqlitePool, SyncError> {
+        let pool = SqlitePool::connect(":memory:").await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE tabs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                is_default INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE clipboard_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tab_id INTEGER,
+                is_pinned INTEGER DEFAULT 0,
+                display_order INTEGER DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE sync_item_map (
+                local_id INTEGER PRIMARY KEY,
+                item_key TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO tabs (name, is_default) VALUES ('Clipboard', 1), ('Workspace', 0)",
+        )
+        .execute(&pool)
+        .await?;
+        Ok(pool)
+    }
+
+    #[tokio::test]
+    async fn repaired_snapshot_upload_is_required_when_remote_order_omits_custom_tabs(
+    ) -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool)));
+        let provider = MemoryProvider::default();
+        let remote_order = SnapshotOrder {
+            schema_version: 1,
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            tabs: vec![SnapshotTabOrder {
+                tab_key: "default".to_string(),
+                tab_name: None,
+                pinned: Vec::new(),
+                normal: Vec::new(),
+            }],
+        };
+        provider
+            .put("order/default.json", serde_json::to_vec(&remote_order)?)
+            .await?;
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "remote-device".to_string(),
+                    updated_at: "2026-05-15T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: Vec::new(),
+                    order: Some(SnapshotFileRef {
+                        path: "order/default.json".to_string(),
+                        hash: String::new(),
+                    }),
+                })?,
+            )
+            .await?;
+
+        assert!(
+            !engine
+                .remote_order_matches_local(&provider, &test_profile())
+                .await?
+        );
+        Ok(())
+    }
 }

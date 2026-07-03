@@ -483,6 +483,44 @@ impl SyncRepository {
         Ok(pending.is_some())
     }
 
+    async fn local_content_matches_remote(
+        &self,
+        local_id: i64,
+        remote_item: &RemoteClipboardItem,
+    ) -> Result<bool, SyncError> {
+        let Some(remote_content) = remote_item.content.as_deref() else {
+            return Ok(false);
+        };
+        let local: Option<(String, String)> =
+            sqlx::query_as("SELECT type, content FROM clipboard_items WHERE id = ?")
+                .bind(local_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(local
+            .map(|(item_type, content)| {
+                item_type == remote_item.item_type && content == remote_content
+            })
+            .unwrap_or(false))
+    }
+
+    async fn auto_resolve_same_content_conflicts(&self, item_key: &str) -> Result<(), SyncError> {
+        sqlx::query(
+            r#"
+            UPDATE sync_conflicts
+            SET status = 'resolved',
+                resolution = 'auto_same_content',
+                resolved_at = datetime('now')
+            WHERE entity_type = 'clipboard_item'
+              AND entity_key = ?
+              AND status = 'pending'
+            "#,
+        )
+        .bind(item_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn create_clipboard_conflict(
         &self,
         item_key: &str,
@@ -814,14 +852,14 @@ impl SyncRepository {
     ) -> Result<SnapshotOrder, SyncError> {
         let mut sql = String::from(
             r#"
-            SELECT ci.tab_id,
+            SELECT t.id,
                    t.name,
                    COALESCE(t.is_default, 0),
                    COALESCE(ci.is_pinned, 0),
                    sim.item_key
-            FROM clipboard_items ci
-            JOIN sync_item_map sim ON sim.local_id = ci.id
-            LEFT JOIN tabs t ON t.id = ci.tab_id
+            FROM tabs t
+            LEFT JOIN clipboard_items ci ON ci.tab_id = t.id
+            LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
             "#,
         );
         if profile.sync_tabs.mode == TabSyncMode::Selected
@@ -834,16 +872,11 @@ impl SyncRepository {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(", ");
-            sql.push_str(&format!(
-                " WHERE (ci.tab_id IS NULL OR ci.tab_id NOT IN ({}))",
-                placeholders
-            ));
+            sql.push_str(&format!(" WHERE t.id NOT IN ({})", placeholders));
         }
-        sql.push_str(
-            " ORDER BY ci.tab_id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC",
-        );
+        sql.push_str(" ORDER BY t.id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC");
 
-        let mut query = sqlx::query_as::<_, (Option<i64>, Option<String>, i32, i32, String)>(&sql);
+        let mut query = sqlx::query_as::<_, (i64, String, i32, i32, Option<String>)>(&sql);
         if profile.sync_tabs.mode == TabSyncMode::Selected {
             for tab_id in &profile.sync_tabs.selected_tab_ids {
                 query = query.bind(tab_id);
@@ -853,12 +886,13 @@ impl SyncRepository {
         let rows = query.fetch_all(&self.pool).await?;
         let mut tabs: Vec<SnapshotTabOrder> = Vec::new();
         for (tab_id, tab_name, tab_is_default, is_pinned, item_key) in rows {
-            let tab_key = tab_key_for_snapshot(tab_id, tab_name.as_deref(), tab_is_default != 0);
+            let tab_key = tab_key_for_snapshot(Some(tab_id), Some(&tab_name), tab_is_default != 0);
             let tab_index = match tabs.iter().position(|tab| tab.tab_key == tab_key) {
                 Some(index) => index,
                 None => {
                     tabs.push(SnapshotTabOrder {
                         tab_key: tab_key.clone(),
+                        tab_name: (tab_is_default == 0).then_some(tab_name.clone()),
                         pinned: Vec::new(),
                         normal: Vec::new(),
                     });
@@ -866,10 +900,12 @@ impl SyncRepository {
                 }
             };
             let tab = &mut tabs[tab_index];
-            if is_pinned != 0 {
-                tab.pinned.push(item_key);
-            } else {
-                tab.normal.push(item_key);
+            if let Some(item_key) = item_key {
+                if is_pinned != 0 {
+                    tab.pinned.push(item_key);
+                } else {
+                    tab.normal.push(item_key);
+                }
             }
         }
 
@@ -1031,6 +1067,15 @@ impl SyncRepository {
 
         if let Some(local_id) = existing_local_id {
             if self.local_has_pending_change(local_id).await? {
+                if self.local_content_matches_remote(local_id, &item).await? {
+                    self.auto_resolve_same_content_conflicts(&item.item_key)
+                        .await?;
+                    log::info!(
+                        "[Sync::Repository] Auto-resolved same-content conflict for {}",
+                        item.item_key
+                    );
+                    return Ok(ApplyItemResult::Merged { local_id });
+                }
                 let conflict_id = self
                     .create_clipboard_conflict(
                         &item.item_key,
@@ -1227,21 +1272,217 @@ impl SyncRepository {
                 ApplyItemResult::Conflict { .. } | ApplyItemResult::Skipped => {}
             }
         }
+        let deduplicated = self.deduplicate_same_content_items(profile).await?;
+        if deduplicated > 0 {
+            log::info!(
+                "[Sync::Repository] Removed {} duplicate clipboard items",
+                deduplicated
+            );
+        }
         if prune_missing {
-            self.prune_items_missing_from_snapshot(&remote_keys).await?;
+            self.prune_items_missing_from_snapshot(profile, &remote_keys)
+                .await?;
         }
         Ok(applied)
     }
 
+    pub async fn deduplicate_same_content_items(
+        &self,
+        profile: &SyncProfile,
+    ) -> Result<i64, SyncError> {
+        let duplicate_groups: Vec<(Option<i64>, String, String)> = sqlx::query_as(
+            r#"
+            SELECT tab_id, type, content
+            FROM clipboard_items
+            WHERE content IS NOT NULL
+            GROUP BY tab_id, type, content
+            HAVING COUNT(*) > 1
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut removed = 0;
+
+        for (tab_id, item_type, content) in duplicate_groups {
+            if profile.sync_tabs.mode == TabSyncMode::Selected
+                && tab_id
+                    .map(|id| profile.sync_tabs.selected_tab_ids.contains(&id))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+
+            type DuplicateRow = (
+                i64,
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+            );
+            let rows: Vec<DuplicateRow> = sqlx::query_as(
+                r#"
+                SELECT ci.id,
+                       sim.item_key,
+                       sim.stable_seq,
+                       sim.remote_path,
+                       sim.last_remote_updated_at,
+                       sim.last_synced_at,
+                       EXISTS (
+                           SELECT 1
+                           FROM sync_changes sc
+                           WHERE sc.entity_type = 'clipboard_item'
+                             AND sc.entity_id = CAST(ci.id AS TEXT)
+                             AND sc.synced_at IS NULL
+                             AND sc.source IN ('local', 'sync_resolution')
+                       ) AS has_pending
+                FROM clipboard_items ci
+                LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
+                WHERE ci.tab_id IS ?
+                  AND ci.type = ?
+                  AND ci.content = ?
+                ORDER BY has_pending DESC,
+                         sim.item_key IS NULL,
+                         sim.item_key ASC,
+                         ci.updated_at DESC,
+                         ci.id ASC
+                "#,
+            )
+            .bind(tab_id)
+            .bind(&item_type)
+            .bind(&content)
+            .fetch_all(&self.pool)
+            .await?;
+            if rows.len() < 2 {
+                continue;
+            }
+
+            let winner_id = rows[0].0;
+            let canonical_mapping = rows
+                .iter()
+                .filter_map(|row| {
+                    row.1.as_ref().map(|item_key| {
+                        (
+                            item_key.clone(),
+                            row.2,
+                            row.3.clone(),
+                            row.4.clone(),
+                            row.5.clone(),
+                        )
+                    })
+                })
+                .min_by(|left, right| left.0.cmp(&right.0));
+            let loser_ids: Vec<i64> = rows.iter().skip(1).map(|row| row.0).collect();
+            let duplicate_keys: Vec<String> = rows.iter().filter_map(|row| row.1.clone()).collect();
+
+            let mut tx = self.pool.begin().await?;
+            for row in &rows {
+                sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                    .bind(row.0)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            if let Some((item_key, stable_seq, remote_path, remote_updated_at, last_synced_at)) =
+                canonical_mapping
+            {
+                sqlx::query(
+                    r#"
+                    INSERT INTO sync_item_map
+                        (local_id, item_key, stable_seq, remote_path, last_remote_updated_at, last_synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(winner_id)
+                .bind(item_key)
+                .bind(stable_seq)
+                .bind(remote_path.unwrap_or_default())
+                .bind(remote_updated_at)
+                .bind(last_synced_at)
+                .execute(&mut *tx)
+                .await?;
+            }
+            for loser_id in &loser_ids {
+                sqlx::query(
+                    r#"
+                    UPDATE sync_changes
+                    SET synced_at = datetime('now')
+                    WHERE entity_type = 'clipboard_item'
+                      AND entity_id = ?
+                      AND synced_at IS NULL
+                    "#,
+                )
+                .bind(loser_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+                    .bind(loser_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            for item_key in duplicate_keys {
+                sqlx::query(
+                    r#"
+                    UPDATE sync_conflicts
+                    SET status = 'resolved',
+                        resolution = 'auto_same_content',
+                        resolved_at = datetime('now')
+                    WHERE entity_type = 'clipboard_item'
+                      AND entity_key = ?
+                      AND status = 'pending'
+                    "#,
+                )
+                .bind(item_key)
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query(
+                r#"
+                INSERT INTO sync_changes
+                    (entity_type, entity_id, operation, item_key, source, changed_at)
+                VALUES (
+                    'clipboard_item',
+                    ?,
+                    'deduplicate',
+                    (SELECT item_key FROM sync_item_map WHERE local_id = ?),
+                    'sync_resolution',
+                    datetime('now')
+                )
+                "#,
+            )
+            .bind(winner_id.to_string())
+            .bind(winner_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            removed += loser_ids.len() as i64;
+        }
+
+        Ok(removed)
+    }
+
     async fn prune_items_missing_from_snapshot(
         &self,
+        profile: &SyncProfile,
         remote_keys: &std::collections::HashSet<String>,
     ) -> Result<(), SyncError> {
-        let local_mappings: Vec<(i64, String)> =
-            sqlx::query_as("SELECT local_id, item_key FROM sync_item_map")
-                .fetch_all(&self.pool)
-                .await?;
-        for (local_id, item_key) in local_mappings {
+        let local_mappings: Vec<(i64, String, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT sim.local_id, sim.item_key, ci.tab_id
+            FROM sync_item_map sim
+            JOIN clipboard_items ci ON ci.id = sim.local_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (local_id, item_key, tab_id) in local_mappings {
+            if profile.sync_tabs.mode == TabSyncMode::Selected
+                && tab_id
+                    .map(|id| profile.sync_tabs.selected_tab_ids.contains(&id))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             if remote_keys.contains(&item_key) {
                 continue;
             }
@@ -1264,7 +1505,12 @@ impl SyncRepository {
         prune_missing_tabs: bool,
     ) -> Result<(), SyncError> {
         for tab_order in &order.tabs {
-            let tab_id = local_id_for_tab_key(&tab_order.tab_key, &self.pool).await?;
+            let tab_id = local_id_for_order_tab(
+                &tab_order.tab_key,
+                tab_order.tab_name.as_deref(),
+                &self.pool,
+            )
+            .await?;
             self.apply_order_group(tab_id, true, &tab_order.pinned)
                 .await?;
             self.apply_order_group(tab_id, false, &tab_order.normal)
@@ -1426,6 +1672,34 @@ async fn local_id_for_tab_key(
         return Ok(existing.map(|(id,)| id));
     }
     Ok(None)
+}
+
+async fn local_id_for_order_tab(
+    tab_key: &str,
+    tab_name: Option<&str>,
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<i64>, SyncError> {
+    if tab_key == "default" {
+        return default_tab_id(pool).await;
+    }
+
+    let portable_name = normalize_remote_tab_name(tab_name).or_else(|| {
+        tab_key
+            .strip_prefix("tab-name:")
+            .and_then(|name| normalize_remote_tab_name(Some(name)))
+    });
+    if let Some(name) = portable_name {
+        if let Some(id) = find_tab_id_by_name(&name, pool).await? {
+            return Ok(Some(id));
+        }
+        let result = sqlx::query("INSERT INTO tabs (name) VALUES (?)")
+            .bind(name)
+            .execute(pool)
+            .await?;
+        return Ok(Some(result.last_insert_rowid()));
+    }
+
+    local_id_for_tab_key(tab_key, pool).await
 }
 
 async fn default_tab_id(pool: &sqlx::SqlitePool) -> Result<Option<i64>, SyncError> {
@@ -1656,7 +1930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_remote_item_preserves_distinct_items_with_same_hash() {
+    async fn snapshot_apply_deduplicates_same_content_from_different_devices() {
         let pool = setup_sync_test_db().await;
         let repository = SyncRepository::new(pool.clone());
         let profile = test_profile();
@@ -1677,6 +1951,17 @@ mod tests {
             )
             .await
             .unwrap();
+        repository
+            .apply_snapshot_items(
+                &profile,
+                vec![
+                    remote_item("device_b_1_1", "same content", "same-hash"),
+                    remote_item("device_c_1_1", "same content", "same-hash"),
+                ],
+                false,
+            )
+            .await
+            .unwrap();
 
         let item_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM clipboard_items")
             .fetch_one(&pool)
@@ -1686,9 +1971,27 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
+        let canonical_key: (String,) = sqlx::query_as("SELECT item_key FROM sync_item_map LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let pending_resolution: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM sync_changes
+            WHERE operation = 'deduplicate'
+              AND source = 'sync_resolution'
+              AND synced_at IS NULL
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-        assert_eq!(item_count.0, 2);
-        assert_eq!(map_count.0, 2);
+        assert_eq!(item_count.0, 1);
+        assert_eq!(map_count.0, 1);
+        assert_eq!(canonical_key.0, "device_b_1_1");
+        assert_eq!(pending_resolution.0, 1);
     }
 
     #[tokio::test]
@@ -1712,7 +2015,7 @@ mod tests {
         repository
             .apply_remote_item(
                 &profile,
-                remote_item("device_c_1_1", "same content", "same-hash"),
+                remote_item("device_c_1_1", "different content", "different-hash"),
                 None,
             )
             .await
@@ -1744,6 +2047,88 @@ mod tests {
 
         assert_eq!(remaining_count.0, 1);
         assert!(first_exists.is_none());
+    }
+
+    #[tokio::test]
+    async fn same_content_pending_conflict_is_auto_resolved() {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let item = remote_item("device_b_1_1", "same content", "same-hash");
+        let local_id = match repository
+            .apply_remote_item(&profile, item.clone(), None)
+            .await
+            .unwrap()
+        {
+            ApplyItemResult::Created { local_id } => local_id,
+            other => panic!("unexpected apply result: {:?}", other),
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO sync_changes
+                (entity_type, entity_id, operation, source, changed_at)
+            VALUES ('clipboard_item', ?, 'update', 'local', datetime('now'))
+            "#,
+        )
+        .bind(local_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO sync_conflicts
+                (entity_type, entity_key, local_payload, remote_payload, reason, status)
+            VALUES ('clipboard_item', ?, '{}', '{}', 'test', 'pending')
+            "#,
+        )
+        .bind(&item.item_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = repository
+            .apply_remote_item(&profile, item, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            ApplyItemResult::Merged {
+                local_id: merged_id
+            } if merged_id == local_id
+        ));
+
+        let conflict: (String, Option<String>) = sqlx::query_as(
+            "SELECT status, resolution FROM sync_conflicts WHERE entity_key = 'device_b_1_1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(conflict.0, "resolved");
+        assert_eq!(conflict.1.as_deref(), Some("auto_same_content"));
+    }
+
+    #[tokio::test]
+    async fn same_content_in_different_tabs_remains_distinct() {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let mut first = remote_item("device_b_1_1", "same content", "same-hash");
+        first.tab_key = Some("tab-name:first".to_string());
+        first.tab_name = Some("First".to_string());
+        let mut second = remote_item("device_c_1_1", "same content", "same-hash");
+        second.tab_key = Some("tab-name:second".to_string());
+        second.tab_name = Some("Second".to_string());
+
+        repository
+            .apply_snapshot_items(&profile, vec![first, second], false)
+            .await
+            .unwrap();
+
+        let item_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM clipboard_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(item_count.0, 2);
     }
 
     #[tokio::test]
@@ -1903,6 +2288,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_round_trip_syncs_named_and_empty_tabs_across_different_local_ids(
+    ) -> Result<(), SyncError> {
+        let source_pool = setup_sync_test_db().await;
+        let source = SyncRepository::new(source_pool.clone());
+        let profile = test_profile();
+
+        let research_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Research')")
+            .execute(&source_pool)
+            .await?
+            .last_insert_rowid();
+        sqlx::query("INSERT INTO tabs (name) VALUES ('Empty Workspace')")
+            .execute(&source_pool)
+            .await?;
+
+        for (content, tab_id) in [("default item", 1), ("research item", research_id)] {
+            sqlx::query(
+                r#"
+                INSERT INTO clipboard_items
+                    (type, content, tab_id, is_sensitive, is_pinned, display_order, created_at, updated_at)
+                VALUES ('text', ?, ?, 0, 0, 0, datetime('now'), datetime('now'))
+                "#,
+            )
+            .bind(content)
+            .bind(tab_id)
+            .execute(&source_pool)
+            .await?;
+        }
+
+        let items = source.list_snapshot_items(&profile, "device_a").await?;
+        let order = source.build_snapshot_order(&profile).await?;
+        assert!(order
+            .tabs
+            .iter()
+            .any(|tab| tab.tab_name.as_deref() == Some("Empty Workspace")));
+
+        let target_pool = setup_sync_test_db().await;
+        let target = SyncRepository::new(target_pool.clone());
+        let colliding_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Unrelated')")
+            .execute(&target_pool)
+            .await?
+            .last_insert_rowid();
+        assert_eq!(colliding_id, research_id);
+
+        target.apply_snapshot_items(&profile, items, false).await?;
+        target.apply_snapshot_order(&profile, &order, false).await?;
+
+        let tabs: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM tabs ORDER BY id")
+            .fetch_all(&target_pool)
+            .await?;
+        assert!(tabs.iter().any(|(_, name)| name == "Research"));
+        assert!(tabs.iter().any(|(_, name)| name == "Empty Workspace"));
+
+        let research_item_tab: (String,) = sqlx::query_as(
+            r#"
+            SELECT t.name
+            FROM clipboard_items ci
+            JOIN tabs t ON t.id = ci.tab_id
+            WHERE ci.content = 'research item'
+            "#,
+        )
+        .fetch_one(&target_pool)
+        .await?;
+        assert_eq!(research_item_tab.0, "Research");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_order_without_tab_name_still_creates_empty_tab() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let order: SnapshotOrder = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "updated_at": "2026-05-15T00:00:00Z",
+            "tabs": [{
+                "tab_key": "tab-name:legacy workspace",
+                "pinned": [],
+                "normal": []
+            }]
+        }))?;
+
+        repository
+            .apply_snapshot_order(&profile, &order, false)
+            .await?;
+
+        let exists: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tabs WHERE name = 'legacy workspace'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(exists.0, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn selected_scope_pruning_preserves_items_in_excluded_tabs() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let excluded_tab_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Local Only')")
+            .execute(&pool)
+            .await?
+            .last_insert_rowid();
+
+        let included_id = sqlx::query(
+            r#"
+            INSERT INTO clipboard_items
+                (type, content, tab_id, is_sensitive, is_pinned, created_at, updated_at)
+            VALUES ('text', 'stale included', 1, 0, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .execute(&pool)
+        .await?
+        .last_insert_rowid();
+        let excluded_id = sqlx::query(
+            r#"
+            INSERT INTO clipboard_items
+                (type, content, tab_id, is_sensitive, is_pinned, created_at, updated_at)
+            VALUES ('text', 'local only', ?, 0, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(excluded_tab_id)
+        .execute(&pool)
+        .await?
+        .last_insert_rowid();
+
+        for (local_id, item_key) in [(included_id, "included-key"), (excluded_id, "excluded-key")] {
+            sqlx::query(
+                r#"
+                INSERT INTO sync_item_map
+                    (local_id, item_key, stable_seq, remote_path, last_synced_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                "#,
+            )
+            .bind(local_id)
+            .bind(item_key)
+            .bind(local_id)
+            .bind(format!("items/{item_key}.json"))
+            .execute(&pool)
+            .await?;
+        }
+
+        let mut profile = test_profile();
+        profile.sync_tabs.mode = TabSyncMode::Selected;
+        profile.sync_tabs.selected_tab_ids = vec![excluded_tab_id];
+
+        repository
+            .apply_snapshot_items(&profile, Vec::new(), true)
+            .await?;
+
+        let remaining: Vec<(String,)> =
+            sqlx::query_as("SELECT content FROM clipboard_items ORDER BY id")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(remaining, vec![("local only".to_string(),)]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn all_scope_keeps_remote_new_tab_after_order_apply() -> Result<(), SyncError> {
         let pool = setup_sync_test_db().await;
         let repository = SyncRepository::new(pool.clone());
@@ -1922,6 +2464,7 @@ mod tests {
                     updated_at: "2026-05-15T00:00:00Z".to_string(),
                     tabs: vec![SnapshotTabOrder {
                         tab_key: "tab-name:research".to_string(),
+                        tab_name: Some("Research".to_string()),
                         pinned: Vec::new(),
                         normal: vec!["device_b_1_1".to_string()],
                     }],
@@ -1962,6 +2505,7 @@ mod tests {
                     updated_at: "2026-05-15T00:00:00Z".to_string(),
                     tabs: vec![SnapshotTabOrder {
                         tab_key: "default".to_string(),
+                        tab_name: None,
                         pinned: Vec::new(),
                         normal: Vec::new(),
                     }],
@@ -2028,6 +2572,7 @@ mod tests {
                     updated_at: "2026-05-15T00:00:00Z".to_string(),
                     tabs: vec![SnapshotTabOrder {
                         tab_key: "default".to_string(),
+                        tab_name: None,
                         pinned: Vec::new(),
                         normal: vec!["device_a_1_1".to_string()],
                     }],

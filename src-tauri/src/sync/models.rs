@@ -360,7 +360,7 @@ pub struct SnapshotItemShard {
     pub items: Vec<RemoteClipboardItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotOrder {
     pub schema_version: u32,
     pub updated_at: String,
@@ -368,9 +368,11 @@ pub struct SnapshotOrder {
     pub tabs: Vec<SnapshotTabOrder>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotTabOrder {
     pub tab_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_name: Option<String>,
     #[serde(default)]
     pub pinned: Vec<String>,
     #[serde(default)]

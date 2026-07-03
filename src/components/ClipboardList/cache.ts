@@ -47,18 +47,23 @@ export class ItemTypeCache {
     this.pruneCache(index);
   }
 
-  // Insert a new item at the top, index 0, and shift all existing indexes by +1
-  insertAtTop(type: "text" | "image" | "file"): void {
+  // Insert a new item at an index and shift all following indexes by +1
+  insertAt(index: number, type: "text" | "image" | "file"): void {
     const newTypeMap = new Map<number, "text" | "image" | "file">();
 
     this.typeMap.forEach((t, idx) => {
-      newTypeMap.set(idx + 1, t);
+      newTypeMap.set(idx >= index ? idx + 1 : idx, t);
     });
 
-    newTypeMap.set(0, type);
+    newTypeMap.set(index, type);
     this.typeMap = newTypeMap;
     this.dirty = true;
-    this.pruneCache(0);
+    this.pruneCache(index);
+  }
+
+  // Insert a new item at the top, index 0, and shift all existing indexes by +1
+  insertAtTop(type: "text" | "image" | "file"): void {
+    this.insertAt(0, type);
   }
 
   // Get height by type
@@ -363,39 +368,45 @@ export class ClipboardCacheManager {
     }
   }
 
-  // Insert a new item at the top, index 0, and shift all existing indexes by +1
-  insertAtTop(item: any): void {
-    // Shift all existing indexes by +1
+  // Insert a new item at an index and shift all following indexes by +1
+  insertAt(index: number, item: any): void {
     const newCache = new Map<number, any>();
     const newIdToIndex = new Map<number, number>();
 
     this.cache.forEach((cachedItem, idx) => {
-      newCache.set(idx + 1, cachedItem);
+      const newIndex = idx >= index ? idx + 1 : idx;
+      newCache.set(newIndex, cachedItem);
       if (cachedItem.id !== undefined) {
-        newIdToIndex.set(cachedItem.id, idx + 1);
+        newIdToIndex.set(cachedItem.id, newIndex);
       }
     });
 
-    // Place the new item at index 0
-    newCache.set(0, item);
+    newCache.set(index, item);
     if (item.id !== undefined) {
-      newIdToIndex.set(item.id, 0);
+      newIdToIndex.set(item.id, index);
     }
 
     this.cache = newCache;
     this.idToIndex = newIdToIndex;
 
-    // Update loadedRanges: shift all ranges by +1, then add the new range [0,0]
-    this.loadedRanges = this.loadedRanges.map((range) => ({
-      start: range.start + 1,
-      end: range.end + 1,
-    }));
-    this.loadedRanges.unshift({ start: 0, end: 0 });
+    this.loadedRanges = this.loadedRanges.map((range) => {
+      if (range.end < index) return range;
+      if (range.start >= index) {
+        return { start: range.start + 1, end: range.end + 1 };
+      }
+      return { start: range.start, end: range.end + 1 };
+    });
+    this.loadedRanges.push({ start: index, end: index });
     this.mergeRanges();
 
     if (this.cache.size > this.maxSize) {
-      this.pruneCache(0);
+      this.pruneCache(index);
     }
+  }
+
+  // Insert a new item at the top, index 0, and shift all existing indexes by +1
+  insertAtTop(item: any): void {
+    this.insertAt(0, item);
   }
 
   private mergeRanges(): void {

@@ -297,23 +297,43 @@ export function useDataLoading({
 
       const latestItem = await clipboard.getLatest(defaultTabId);
       if (latestItem && latestItem.id !== null && latestItem.id !== undefined) {
+        const getInsertionIndex = () => {
+          if (latestItem.is_pinned) return 0;
+
+          let index = 0;
+          while (cacheManagerRef.current.getItem(index)?.is_pinned) {
+            index++;
+          }
+          return index;
+        };
+
         // Check whether this item is already in cache; it may be a duplicate moved to the top
         const existingIndex = cacheManagerRef.current.getIndexById(
           latestItem.id,
         );
 
         if (existingIndex !== undefined && existingIndex === 0) {
-          // This item is already at index 0; no update needed
-          logger.debug("[ClipboardList] Item already at top, skipping update");
+          // The backend may update an existing item without changing its ID.
+          // Replace the cached record so content and metadata do not stay stale.
+          cacheManagerRef.current.addItems([latestItem], 0);
+          typeCacheRef.current.setType(0, latestItem.type);
+          const realCount = await clipboard.getTotalCount(defaultTabId);
+          setTotalCount(realCount);
+          setCacheVersion((prev) => prev + 1);
+          logger.debug("[ClipboardList] Refreshed cached item at top");
           return;
         }
 
         if (existingIndex !== undefined) {
-          // Existing item was moved to the top; refresh the full list directly
+          cacheManagerRef.current.removeAtIndex(existingIndex);
+          typeCacheRef.current.removeAtIndex(existingIndex);
+          const insertionIndex = getInsertionIndex();
+          cacheManagerRef.current.insertAt(insertionIndex, latestItem);
+          typeCacheRef.current.insertAt(insertionIndex, latestItem.type);
+          setCacheVersion((prev) => prev + 1);
           logger.info(
-            "[ClipboardList] Existing item moved to top, refreshing list",
+            `[ClipboardList] Moved cached item to index ${insertionIndex}`,
           );
-          refreshList();
           return;
         }
 
@@ -322,6 +342,26 @@ export function useDataLoading({
         if (firstCachedItem && firstCachedItem.id === latestItem.id) {
           // Latest item is already at the top of cache; skip
           logger.debug("[ClipboardList] Latest item already cached at top");
+          return;
+        }
+
+        if (firstCachedItem?.is_pinned && !latestItem.is_pinned) {
+          const insertionIndex = getInsertionIndex();
+          const cachedItem = cacheManagerRef.current.getItem(insertionIndex);
+
+          // Only insert when the end of the pinned section is loaded. If it is
+          // outside the viewport, updating the count is sufficient.
+          if (cachedItem || insertionIndex >= totalCount) {
+            cacheManagerRef.current.insertAt(insertionIndex, latestItem);
+            typeCacheRef.current.insertAt(insertionIndex, latestItem.type);
+          }
+
+          const realCount = await clipboard.getTotalCount(defaultTabId);
+          setTotalCount(realCount);
+          setCacheVersion((prev) => prev + 1);
+          logger.info(
+            `[ClipboardList] Inserted new item after ${insertionIndex} pinned items`,
+          );
           return;
         }
 
@@ -345,6 +385,7 @@ export function useDataLoading({
     }
   }, [
     defaultTabId,
+    totalCount,
     isAutoCaptureTab,
     isMultiDraggingRef,
     cacheManagerRef,

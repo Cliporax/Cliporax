@@ -154,6 +154,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_clipboard_repository_latest_ignores_pinned_list_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let default_tab = TabRepository::get_default_tab(&pool).await?;
+        let tab_id = default_tab.id.ok_or("default tab has no ID")?;
+
+        let pinned_id = ClipboardRepository::create(
+            &pool,
+            ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: "Pinned item".to_string(),
+                content_hash: None,
+                metadata: None,
+                tags: None,
+                tab_id: Some(tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(1),
+            },
+        )
+        .await?;
+        let latest_id = ClipboardRepository::create(
+            &pool,
+            ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: "Latest unpinned item".to_string(),
+                content_hash: None,
+                metadata: None,
+                tags: None,
+                tab_id: Some(tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            },
+        )
+        .await?;
+
+        let visible_items = ClipboardRepository::get_by_tab(&pool, tab_id, 10, 0).await?;
+        assert_eq!(visible_items[0].id, Some(pinned_id));
+
+        let latest = ClipboardRepository::get_latest_by_tab(&pool, tab_id)
+            .await?
+            .ok_or("latest item was not found")?;
+        assert_eq!(latest.id, Some(latest_id));
+        assert_eq!(latest.content, "Latest unpinned item");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_clipboard_repository_move_to_tab_places_item_at_target_top(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;

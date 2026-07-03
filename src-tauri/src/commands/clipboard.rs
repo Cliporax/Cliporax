@@ -135,9 +135,8 @@ pub async fn clipboard_get_latest(
     log::info!("[Command] clipboard_get_latest called - tab_id: {}", tab_id);
     validate_positive_id("tab_id", tab_id)?;
 
-    match ClipboardRepository::get_by_tab(&db, tab_id, 1, 0).await {
-        Ok(items) => {
-            let item = items.into_iter().next();
+    match ClipboardRepository::get_latest_by_tab(&db, tab_id).await {
+        Ok(item) => {
             if let Some(ref i) = item {
                 log::info!(
                     "[Command] clipboard_get_latest returned item id: {}, type: {}",

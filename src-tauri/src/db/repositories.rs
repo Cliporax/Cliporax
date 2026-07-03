@@ -496,6 +496,20 @@ impl ClipboardRepository {
         result
     }
 
+    pub async fn get_latest_by_tab(pool: &Db, tab_id: i64) -> Result<Option<ClipboardItem>, Error> {
+        sqlx::query_as::<_, ClipboardItem>(
+            r#"
+            SELECT * FROM clipboard_items
+            WHERE tab_id = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(tab_id)
+        .fetch_optional(pool)
+        .await
+    }
+
     pub async fn toggle_pin(pool: &Db, id: i64, is_pinned: i32) -> Result<(), Error> {
         log::info!(
             "[ClipboardRepository] toggle_pin called - id: {}, is_pinned: {}",
