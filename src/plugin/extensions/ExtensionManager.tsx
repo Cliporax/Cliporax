@@ -30,7 +30,8 @@ export type ExtensionPointType =
   | "sidebar"
   | "preview"
   | "context-menu"
-  | "toolbar";
+  | "toolbar"
+  | "content-tab";
 
 /**
  * Extension data for card extension point
@@ -64,6 +65,8 @@ export interface ExtensionContext {
 export interface RegisteredExtension {
   id: string;
   pluginId: string;
+  pluginName: string;
+  pluginVersion: string;
   pointType: ExtensionPointType;
   component: string;
   config: Record<string, unknown>;
@@ -204,8 +207,9 @@ const PluginDomExtension: React.FC<{
     const extensionContext: ExtensionContext = {
       ...context,
       plugin: {
-        ...context.plugin,
         id: ext.pluginId,
+        name: ext.pluginName,
+        version: ext.pluginVersion,
       },
     };
 
@@ -232,8 +236,15 @@ const PluginDomExtension: React.FC<{
     <span
       ref={hostRef}
       style={{
-        display: ext.pointType === "sidebar" ? "block" : "inline-flex",
-        width: ext.pointType === "sidebar" ? "100%" : undefined,
+        display:
+          ext.pointType === "sidebar" || ext.pointType === "content-tab"
+            ? "block"
+            : "inline-flex",
+        width:
+          ext.pointType === "sidebar" || ext.pointType === "content-tab"
+            ? "100%"
+            : undefined,
+        height: ext.pointType === "content-tab" ? "100%" : undefined,
       }}
     />
   );
@@ -400,6 +411,8 @@ export const ExtensionManagerProvider: React.FC<{
               const registered: RegisteredExtension = {
                 id: `${plugin.id}:${ext.point}`,
                 pluginId: plugin.id,
+                pluginName: plugin.name,
+                pluginVersion: plugin.version,
                 pointType: ext.point as ExtensionPointType,
                 component: ext.component,
                 config: pluginConfig,
@@ -476,6 +489,16 @@ export const ExtensionManagerProvider: React.FC<{
       const position = cardData.position;
 
       if (ext.pointType !== "card" || position !== "action" || !item) {
+        if (ext.pointType === "content-tab") {
+          return (
+            <PluginDomExtension
+              key={ext.id}
+              ext={ext}
+              data={data}
+              context={context}
+            />
+          );
+        }
         return null;
       }
 
@@ -686,5 +709,54 @@ export const useCardExtensions = (
 export const PluginSidebarExtensions: React.FC<{
   theme: "light" | "dark";
 }> = ({ theme }) => <SidebarExtensions theme={theme} />;
+
+export interface ContentTabExtension {
+  id: string;
+  pluginId: string;
+  title: string;
+  component: string;
+  priority: number;
+}
+
+export const useContentTabExtensions = (): ContentTabExtension[] => {
+  const { getExtensions } = useExtensionManager();
+  return getExtensions("content-tab").map((extension) => ({
+    id: `plugin:${extension.pluginId}:${extension.component}`,
+    pluginId: extension.pluginId,
+    title: extension.pluginName,
+    component: extension.component,
+    priority: extension.priority,
+  }));
+};
+
+export const PluginContentTab: React.FC<{
+  tabId: string;
+  theme: "light" | "dark";
+}> = ({ tabId, theme }) => {
+  const { getExtensions } = useExtensionManager();
+  const extension = getExtensions("content-tab").find(
+    (candidate) =>
+      `plugin:${candidate.pluginId}:${candidate.component}` === tabId,
+  );
+  if (!extension) return null;
+
+  return (
+    <div className="h-full w-full overflow-hidden">
+      <PluginDomExtension
+        ext={extension}
+        data={{ tabId }}
+        context={{
+          theme,
+          settings: extension.config,
+          plugin: {
+            id: extension.pluginId,
+            name: extension.pluginName,
+            version: extension.pluginVersion,
+          },
+        }}
+      />
+    </div>
+  );
+};
 
 export default ExtensionManagerContext;

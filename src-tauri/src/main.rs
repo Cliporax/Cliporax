@@ -5,6 +5,7 @@ use cliporax_lib::{
     commands::*,
     db::init_database,
     dev_log::{install_logger, DevLogFileBackend},
+    file_sync::{commands::*, FileSyncService},
     init_settings,
     plugin::{
         commands::*, get_plugin_dir, lifecycle::registry::PluginRegistry, market::*,
@@ -164,7 +165,8 @@ fn main() {
 
                 // Store state (wrapped in Arc for management)
                 app_handle.manage(db.clone());
-                app_handle.manage(Arc::new(clipboard_monitor));
+                let clipboard_monitor = Arc::new(clipboard_monitor);
+                app_handle.manage(clipboard_monitor.clone());
 
                 // Initialize and register secret store for sync credentials
                 let secret_store = Arc::new(SecretStore::new(db.clone()));
@@ -205,8 +207,8 @@ fn main() {
                     }
                 }
                 let sync_service = Arc::new(SyncService::new(
-                    sync_repository,
-                    secret_store,
+                    sync_repository.clone(),
+                    secret_store.clone(),
                     sync_engine.clone(),
                     plugin_registry.clone(),
                     app_handle.clone(),
@@ -214,6 +216,25 @@ fn main() {
                 app_handle.manage(plugin_registry);
                 app_handle.manage(sync_service.clone());
                 tokio::spawn(sync_service.run_scheduler_loop());
+
+                let file_sync_service = Arc::new(
+                    FileSyncService::new(
+                        db.clone(),
+                        sync_repository,
+                        sync_engine,
+                        secret_store,
+                        clipboard_monitor,
+                        app_handle.clone(),
+                    )
+                    .map_err(|error| {
+                        log::error!("[Main] Failed to initialize File Sync: {}", error);
+                        Box::<dyn std::error::Error>::from(error)
+                    })?,
+                );
+                app_handle.manage(file_sync_service.clone());
+                tokio::spawn(async move {
+                    file_sync_service.resume_pending().await;
+                });
                 log::info!("Plugin system initialized");
 
                 Ok::<(), Box<dyn std::error::Error>>(())
@@ -562,6 +583,19 @@ fn main() {
             sync_get_tab_options,
             sync_get_plugin_options,
             sync_get_log_entries,
+            // File Sync market plugin commands
+            file_sync_get_config,
+            file_sync_set_profile,
+            file_sync_profile_options,
+            file_sync_list,
+            file_sync_enqueue_clipboard_item,
+            file_sync_clipboard_item_status,
+            file_sync_confirm,
+            file_sync_retry,
+            file_sync_cancel,
+            file_sync_refresh,
+            file_sync_copy,
+            file_sync_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

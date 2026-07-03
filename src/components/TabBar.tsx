@@ -11,6 +11,7 @@ import { useUIStore } from "../stores/uiStore";
 import { createLogger } from "../utils/logger";
 import { useToast } from "./Toast";
 import { useConfirm } from "./ConfirmDialog";
+import { useContentTabExtensions } from "../plugin/extensions";
 
 const logger = createLogger("TabBar");
 const CONTEXT_MENU_PADDING = 8;
@@ -56,13 +57,16 @@ export function TabBar() {
   const {
     tabs,
     activeTabId,
+    activePluginTabId,
     isLoading,
     loadTabs,
     createTab,
     deleteTab,
     renameTab,
     setActiveTab,
+    setActivePluginTab,
   } = useTabStore();
+  const pluginTabs = useContentTabExtensions();
   const { setSearchQuery } = useUIStore();
   const toast = useToast();
   const { confirm: askConfirm } = useConfirm();
@@ -78,6 +82,15 @@ export function TabBar() {
     tabId: number;
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (
+      activePluginTabId &&
+      !pluginTabs.some((tab) => tab.id === activePluginTabId)
+    ) {
+      setActivePluginTab(null);
+    }
+  }, [activePluginTabId, pluginTabs, setActivePluginTab]);
 
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
@@ -352,7 +365,7 @@ export function TabBar() {
               group flex items-center px-2.5 py-1 rounded-md cursor-pointer transition-colors
               text-xs font-medium select-none
               ${
-                tab.id === activeTabId
+                tab.id === activeTabId && activePluginTabId === null
                   ? "bg-indigo-500 dark:bg-indigo-600 text-white"
                   : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
               }
@@ -396,6 +409,29 @@ export function TabBar() {
               </button>
             )}
           </div>
+        ))}
+
+        {pluginTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => {
+              closeContextMenu();
+              setActivePluginTab(tab.id);
+              setSearchQuery("");
+            }}
+            className={`
+              flex items-center px-2.5 py-1 rounded-md cursor-pointer transition-colors
+              text-xs font-medium select-none whitespace-nowrap
+              ${
+                tab.id === activePluginTabId
+                  ? "bg-indigo-500 dark:bg-indigo-600 text-white"
+                  : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              }
+            `}
+          >
+            {tab.title}
+          </button>
         ))}
 
         {/* Add Tab Button */}

@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod db;
 pub mod dev_log;
+pub mod file_sync;
 pub mod plugin;
 pub mod portable;
 pub mod settings;
@@ -18,6 +19,7 @@ pub use sync::commands::*;
 pub use sync::secrets::SecretStore;
 
 pub use dev_log::{install_logger, DevLogFileBackend};
+pub use file_sync::FileSyncService;
 
 pub use clipboard::ClipboardMonitor;
 pub use db::{init_database, Db};

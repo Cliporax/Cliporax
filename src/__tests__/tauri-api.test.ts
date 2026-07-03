@@ -267,6 +267,51 @@ describe("Tauri API Tests", () => {
     });
   });
 
+  describe("File Sync API", () => {
+    it("uses the official plugin identity when enqueueing a clipboard item", async () => {
+      mockInvoke.mockResolvedValue({ entry_ids: ["entry123"] });
+
+      const result = await tauriApi.fileSync.enqueueClipboardItem(42);
+
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "file_sync_enqueue_clipboard_item",
+        {
+          pluginId: "com.cliporax.file-sync",
+          itemId: 42,
+        },
+      );
+      expect(result.entry_ids).toEqual(["entry123"]);
+    });
+
+    it("propagates a backend confirmation-state error", async () => {
+      mockInvoke.mockRejectedValue(
+        new Error("Entry is not waiting for confirmation"),
+      );
+
+      await expect(tauriApi.fileSync.confirm("entry123")).rejects.toThrow(
+        "Entry is not waiting for confirmation",
+      );
+    });
+
+    it("uses the official plugin identity when checking a file item", async () => {
+      mockInvoke.mockResolvedValue({
+        visible: true,
+        can_enqueue: false,
+        reason: "Already in File Sync",
+      });
+
+      await tauriApi.fileSync.clipboardItemStatus(42);
+
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "file_sync_clipboard_item_status",
+        {
+          pluginId: "com.cliporax.file-sync",
+          itemId: 42,
+        },
+      );
+    });
+  });
+
   describe("Window API", () => {
     it("should minimize window successfully", async () => {
       mockInvoke.mockResolvedValue(undefined);

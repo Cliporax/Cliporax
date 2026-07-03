@@ -127,7 +127,7 @@ fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<(usize, usize, Vec<
     }
 }
 
-fn parse_file_list(content: &str) -> Vec<PathBuf> {
+pub(crate) fn parse_file_list(content: &str) -> Vec<PathBuf> {
     if let Ok(paths) = serde_json::from_str::<Vec<String>>(content) {
         return paths
             .into_iter()

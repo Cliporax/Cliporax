@@ -55,9 +55,7 @@ interface FormState {
   remoteRoot: string;
   sftpPort: number;
   authMethod: "password" | "privateKey";
-  tabMode: SyncMode;
   selectedTabs: number[];
-  pluginMode: SyncMode;
   selectedPlugins: string[];
   encryptionEnabled: boolean;
   uploadSensitiveItems: boolean;
@@ -78,10 +76,8 @@ const DEFAULT_FORM: FormState = {
   remoteRoot: "/Cliporax/v1",
   sftpPort: 22,
   authMethod: "password",
-  tabMode: "selected",
-  selectedTabs: [1, 2],
-  pluginMode: "selected",
-  selectedPlugins: ["com.cliporax.qrcode"],
+  selectedTabs: [],
+  selectedPlugins: [],
   encryptionEnabled: false,
   uploadSensitiveItems: false,
   syncOnStartup: true,
@@ -264,9 +260,7 @@ const formFromProfile = (profile: SyncProfile): FormState => {
         : provider === "webdav"
           ? webdavRemote?.remoteRoot ?? PROVIDER_DEFAULTS.webdav.remoteRoot
           : profile.remote_root,
-    tabMode: profile.sync_tabs.mode,
-    selectedTabs: profile.sync_tabs.selected_tab_ids,
-    pluginMode: profile.sync_plugins.mode,
+    selectedTabs: profile.sync_tabs.mode === "all" ? [] : profile.sync_tabs.selected_tab_ids,
     selectedPlugins: profile.sync_plugins.selected_plugin_ids,
     encryptionEnabled: profile.encryption.enabled,
     syncOnStartup: profile.schedule.sync_on_startup,
@@ -567,15 +561,12 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
               ? buildSftpRemoteRoot(form.serverUrl, form.sftpPort, form.remoteRoot)
               : form.remoteRoot.trim().replace(/^\/+/, "") || PROVIDER_DEFAULTS[form.provider].remoteRoot,
         sync_tabs: {
-          mode: form.tabMode,
-          selected_tab_ids: form.tabMode === "all" ? [] : form.selectedTabs,
+          mode: form.selectedTabs.length === 0 ? "all" : "selected",
+          selected_tab_ids: form.selectedTabs,
         },
         sync_plugins: {
           mode: "selected",
-          selected_plugin_ids:
-            form.pluginMode === "all"
-              ? pluginOptions.map((plugin) => plugin.id)
-              : form.selectedPlugins,
+          selected_plugin_ids: form.selectedPlugins,
           include_plugin_bundles: false,
           include_granted_permissions: false,
         },
@@ -1227,28 +1218,17 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
               {t("cloudSync.scope.tabsDesc")}
             </p>
           </div>
-          <div className="w-48">
-            {renderSegmented<SyncMode>(
-              form.tabMode,
-              [
-                { value: "all", label: t("cloudSync.scope.all") },
-                { value: "selected", label: t("cloudSync.scope.selected") },
-              ],
-              (next) => updateForm("tabMode", next),
-            )}
-          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {tabOptions.map((tab) => {
-            const checked = form.tabMode === "all" || form.selectedTabs.includes(tab.id);
+            const checked = !form.selectedTabs.includes(tab.id);
             return (
               <button
                 key={tab.id}
                 type="button"
-                disabled={form.tabMode === "all"}
                 onClick={() => toggleTab(tab.id)}
-                className="flex min-h-14 items-center justify-between rounded-lg px-3 text-left transition-all disabled:cursor-default"
+                className="flex min-h-14 items-center justify-between rounded-lg px-3 text-left transition-all"
                 style={{
                   backgroundColor: checked ? palette.panelStrong : palette.panelSoft,
                   border: `1px solid ${checked ? palette.borderStrong : palette.border}`,
@@ -1278,29 +1258,17 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
               {t("cloudSync.scope.pluginsDesc")}
             </p>
           </div>
-          <div className="w-48">
-            {renderSegmented<SyncMode>(
-              form.pluginMode,
-              [
-                { value: "all", label: t("cloudSync.scope.all") },
-                { value: "selected", label: t("cloudSync.scope.selected") },
-              ],
-              (next) => updateForm("pluginMode", next),
-            )}
-          </div>
         </div>
 
         <div className="space-y-2">
           {pluginOptions.map((plugin) => {
-            const checked =
-              form.pluginMode === "all" || form.selectedPlugins.includes(plugin.id);
+            const checked = !form.selectedPlugins.includes(plugin.id);
             return (
               <button
                 key={plugin.id}
                 type="button"
-                disabled={form.pluginMode === "all"}
                 onClick={() => togglePlugin(plugin.id)}
-                className="flex min-h-12 w-full items-center justify-between rounded-lg px-3 text-left transition-all disabled:cursor-default"
+                className="flex min-h-12 w-full items-center justify-between rounded-lg px-3 text-left transition-all"
                 style={{
                   backgroundColor: checked ? palette.panelStrong : palette.panelSoft,
                   border: `1px solid ${checked ? palette.borderStrong : palette.border}`,
@@ -1752,19 +1720,33 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={resetDraft}
-                className="flex h-9 items-center gap-2 rounded-lg px-3 text-sm"
-                style={{
-                  backgroundColor: palette.panelSoft,
-                  border: `1px solid ${palette.border}`,
-                  color: palette.text,
-                }}
-              >
-                <RotateCcw size={15} />
-                {t("cloudSync.actions.resetDraft")}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={resetDraft}
+                  className="flex h-9 items-center gap-2 rounded-lg px-3 text-sm"
+                  style={{
+                    backgroundColor: palette.panelSoft,
+                    border: `1px solid ${palette.border}`,
+                    color: palette.text,
+                  }}
+                >
+                  <RotateCcw size={15} />
+                  {t("cloudSync.actions.resetDraft")}
+                </button>
+                <button
+                  type="button"
+                  onClick={saveProfile}
+                  className="flex h-9 items-center gap-2 rounded-lg px-3 text-sm"
+                  style={{
+                    backgroundColor: palette.accent,
+                    color: "#ffffff",
+                  }}
+                >
+                  <Check size={15} />
+                  {t("common.save")}
+                </button>
+              </div>
             </div>
           </div>
 

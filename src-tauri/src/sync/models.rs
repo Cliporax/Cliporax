@@ -327,6 +327,7 @@ pub struct RemoteClipboardItem {
 pub struct SnapshotManifest {
     pub schema_version: u32,
     pub app: String,
+    #[serde(default)]
     pub generation: i64,
     pub device_id: String,
     pub updated_at: String,
@@ -610,7 +611,7 @@ pub struct CleanupReport {
 
 #[cfg(test)]
 mod tests {
-    use super::SyncProviderKind;
+    use super::{SnapshotManifest, SyncProviderKind};
 
     #[test]
     fn webdav_provider_serializes_to_frontend_value() -> Result<(), serde_json::Error> {
@@ -623,6 +624,24 @@ mod tests {
     fn webdav_provider_reads_legacy_snake_case_value() -> Result<(), serde_json::Error> {
         let provider: SyncProviderKind = serde_json::from_str("\"web_dav\"")?;
         assert_eq!(provider, SyncProviderKind::WebDav);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_manifest_reads_legacy_missing_generation() -> Result<(), serde_json::Error> {
+        let manifest: SnapshotManifest = serde_json::from_str(
+            r#"{
+              "schema_version": 2,
+              "app": "Cliporax",
+              "device_id": "old-device",
+              "updated_at": "2026-01-01T00:00:00Z",
+              "item_shard_size": 500,
+              "item_shards": [],
+              "order": null
+            }"#,
+        )?;
+
+        assert_eq!(manifest.generation, 0);
         Ok(())
     }
 }

@@ -14,7 +14,9 @@ export { PluginDetailModal } from "./components/PluginDetailModal";
 export { PermissionPrompt } from "./components/PermissionPrompt";
 export {
   ExtensionManagerProvider,
+  PluginContentTab,
   PluginSidebarExtensions,
   useExtensionManager,
   useCardExtensions,
+  useContentTabExtensions,
 } from "./extensions";

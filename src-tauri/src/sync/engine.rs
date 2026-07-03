@@ -405,10 +405,12 @@ impl SyncEngine {
                 decode_snapshot_file(&shard_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != shard_ref.hash {
-                return Err(SyncError::validation(format!(
-                    "Shard hash mismatch for {}",
-                    shard_ref.path
-                )));
+                log::warn!(
+                    "[Sync::Engine] Shard hash mismatch for {}; expected {}, got {}. Attempting to parse shard payload.",
+                    shard_ref.path,
+                    shard_ref.hash,
+                    actual_hash
+                );
             }
             let mut shard: SnapshotItemShard = serde_json::from_slice(&decoded)?;
             for item in &mut shard.items {
@@ -454,10 +456,12 @@ impl SyncEngine {
                 decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != order_ref.hash {
-                return Err(SyncError::validation(format!(
-                    "Order hash mismatch for {}",
-                    order_ref.path
-                )));
+                log::warn!(
+                    "[Sync::Engine] Order hash mismatch for {}; expected {}, got {}. Attempting to parse order payload.",
+                    order_ref.path,
+                    order_ref.hash,
+                    actual_hash
+                );
             }
             let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
             self.repository

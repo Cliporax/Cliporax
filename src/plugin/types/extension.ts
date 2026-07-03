@@ -19,6 +19,7 @@ export type ExtensionPointType =
   | "preview"
   | "context-menu"
   | "toolbar"
+  | "content-tab"
   | `custom:${string}`;
 
 /**
@@ -183,4 +184,15 @@ export interface SidebarData {
 
   /** Position */
   position: "left" | "right" | "bottom";
+}
+
+export interface ContentTabData {
+  /** Stable navigation ID owned by the host */
+  tabId: string;
+  /** User-visible title */
+  title: string;
+  /** Optional icon name */
+  icon?: string;
+  /** Sort order */
+  order?: number;
 }

@@ -142,7 +142,7 @@ impl SyncRepository {
                 config_json = excluded.config_json,
                 credential_refs_json = excluded.credential_refs_json,
                 updated_at = datetime('now')
-            "#
+            "#,
         )
         .bind(&profile.id)
         .bind(&profile.name)
@@ -171,10 +171,46 @@ impl SyncRepository {
 
     /// Delete a sync profile
     pub async fn delete_profile(&self, profile_id: &str) -> Result<(), SyncError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM file_sync_chunks WHERE entry_id IN (SELECT id FROM file_sync_entries WHERE profile_id = ?)",
+        )
+        .bind(profile_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "DELETE FROM file_sync_cache WHERE entry_id IN (SELECT id FROM file_sync_entries WHERE profile_id = ?)",
+        )
+        .bind(profile_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("DELETE FROM file_sync_entries WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM file_sync_remote_cursors WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM file_sync_profile_seq WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM file_sync_tombstones WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "UPDATE file_sync_settings SET default_profile_id = NULL, updated_at = datetime('now') WHERE default_profile_id = ?",
+        )
+        .bind(profile_id)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query("DELETE FROM sync_profiles WHERE id = ?")
             .bind(profile_id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        transaction.commit().await?;
 
         log::info!("[Sync::Repository] Deleted profile: {}", profile_id);
         Ok(())
@@ -495,13 +531,23 @@ impl SyncRepository {
     ) -> Result<(), SyncError> {
         sqlx::query(
             r#"
-            INSERT INTO sync_changes (entity_type, entity_id, operation, item_key, source, changed_at)
-            VALUES ('clipboard_item', ?, ?, ?, ?, datetime('now'))
-            "#
+            INSERT INTO sync_changes
+                (entity_type, entity_id, operation, item_key, source, changed_at, synced_at)
+            VALUES (
+                'clipboard_item',
+                ?,
+                ?,
+                ?,
+                ?,
+                datetime('now'),
+                CASE WHEN ? = 'remote_apply' THEN datetime('now') ELSE NULL END
+            )
+            "#,
         )
         .bind(entity_id)
         .bind(operation)
         .bind(item_key)
+        .bind(source)
         .bind(source)
         .execute(&self.pool)
         .await?;
@@ -582,12 +628,12 @@ impl SyncRepository {
             .collect();
 
         if profile.sync_tabs.mode == TabSyncMode::Selected {
-            let selected = &profile.sync_tabs.selected_tab_ids;
+            let excluded = &profile.sync_tabs.selected_tab_ids;
             changes.retain(|change| {
                 change.entity_type != "clipboard_item"
                     || change
                         .tab_id
-                        .map(|id| selected.contains(&id))
+                        .map(|id| !excluded.contains(&id))
                         .unwrap_or(true)
             });
         }
@@ -629,10 +675,9 @@ impl SyncRepository {
             "#,
         );
 
-        if profile.sync_tabs.mode == TabSyncMode::Selected {
-            if profile.sync_tabs.selected_tab_ids.is_empty() {
-                return Ok(Vec::new());
-            }
+        if profile.sync_tabs.mode == TabSyncMode::Selected
+            && !profile.sync_tabs.selected_tab_ids.is_empty()
+        {
             let placeholders = profile
                 .sync_tabs
                 .selected_tab_ids
@@ -640,7 +685,10 @@ impl SyncRepository {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(", ");
-            sql.push_str(&format!(" WHERE ci.tab_id IN ({})", placeholders));
+            sql.push_str(&format!(
+                " WHERE (ci.tab_id IS NULL OR ci.tab_id NOT IN ({}))",
+                placeholders
+            ));
         }
 
         sql.push_str(" ORDER BY COALESCE(sim.stable_seq, ci.id), ci.id");
@@ -776,14 +824,9 @@ impl SyncRepository {
             LEFT JOIN tabs t ON t.id = ci.tab_id
             "#,
         );
-        if profile.sync_tabs.mode == TabSyncMode::Selected {
-            if profile.sync_tabs.selected_tab_ids.is_empty() {
-                return Ok(SnapshotOrder {
-                    schema_version: 1,
-                    updated_at: chrono::Utc::now().to_rfc3339(),
-                    tabs: Vec::new(),
-                });
-            }
+        if profile.sync_tabs.mode == TabSyncMode::Selected
+            && !profile.sync_tabs.selected_tab_ids.is_empty()
+        {
             let placeholders = profile
                 .sync_tabs
                 .selected_tab_ids
@@ -791,7 +834,10 @@ impl SyncRepository {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(", ");
-            sql.push_str(&format!(" WHERE ci.tab_id IN ({})", placeholders));
+            sql.push_str(&format!(
+                " WHERE (ci.tab_id IS NULL OR ci.tab_id NOT IN ({}))",
+                placeholders
+            ));
         }
         sql.push_str(
             " ORDER BY ci.tab_id, ci.is_pinned DESC, ci.display_order ASC, ci.updated_at DESC",
@@ -860,11 +906,9 @@ impl SyncRepository {
             "#,
         );
 
-        if profile.sync_tabs.mode == TabSyncMode::Selected {
-            if profile.sync_tabs.selected_tab_ids.is_empty() {
-                return Ok(0);
-            }
-
+        if profile.sync_tabs.mode == TabSyncMode::Selected
+            && !profile.sync_tabs.selected_tab_ids.is_empty()
+        {
             let placeholders = profile
                 .sync_tabs
                 .selected_tab_ids
@@ -872,7 +916,10 @@ impl SyncRepository {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(", ");
-            sql.push_str(&format!(" AND ci.tab_id IN ({})", placeholders));
+            sql.push_str(&format!(
+                " AND (ci.tab_id IS NULL OR ci.tab_id NOT IN ({}))",
+                placeholders
+            ));
         }
 
         sql.push_str(" ORDER BY ci.updated_at DESC LIMIT 1000");
@@ -1280,6 +1327,14 @@ impl SyncRepository {
                 UPDATE clipboard_items
                 SET display_order = ?, is_pinned = ?, tab_id = ?, updated_at = updated_at
                 WHERE id = (SELECT local_id FROM sync_item_map WHERE item_key = ?)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sync_changes sc
+                      WHERE sc.entity_type = 'clipboard_item'
+                        AND sc.entity_id = CAST(clipboard_items.id AS TEXT)
+                        AND sc.synced_at IS NULL
+                        AND sc.source IN ('local', 'sync_resolution')
+                  )
                 "#,
             )
             .bind(display_order)
@@ -1794,6 +1849,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_tab_scope_excludes_only_listed_tabs() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let excluded_tab_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Excluded')")
+            .execute(&pool)
+            .await?
+            .last_insert_rowid();
+        let included_tab_id = sqlx::query("INSERT INTO tabs (name) VALUES ('Included Later')")
+            .execute(&pool)
+            .await?
+            .last_insert_rowid();
+
+        for (content, tab_id) in [
+            ("default item", 1),
+            ("excluded item", excluded_tab_id),
+            ("included later item", included_tab_id),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO clipboard_items
+                    (type, content, tab_id, is_sensitive, is_pinned, display_order, created_at, updated_at)
+                VALUES ('text', ?, ?, 0, 0, 0, datetime('now'), datetime('now'))
+                "#,
+            )
+            .bind(content)
+            .bind(tab_id)
+            .execute(&pool)
+            .await?;
+        }
+
+        let mut profile = test_profile();
+        profile.sync_tabs.mode = TabSyncMode::Selected;
+        profile.sync_tabs.selected_tab_ids = vec![excluded_tab_id];
+
+        let items = repository.list_snapshot_items(&profile, "device_a").await?;
+        let contents: std::collections::HashSet<&str> = items
+            .iter()
+            .filter_map(|item| item.content.as_deref())
+            .collect();
+
+        assert!(contents.contains("default item"));
+        assert!(contents.contains("included later item"));
+        assert!(!contents.contains("excluded item"));
+
+        let order = repository.build_snapshot_order(&profile).await?;
+        let tab_keys: std::collections::HashSet<&str> =
+            order.tabs.iter().map(|tab| tab.tab_key.as_str()).collect();
+        assert!(tab_keys.contains("default"));
+        assert!(tab_keys.contains("tab-name:included later"));
+        assert!(!tab_keys.contains("tab-name:excluded"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn all_scope_keeps_remote_new_tab_after_order_apply() -> Result<(), SyncError> {
         let pool = setup_sync_test_db().await;
         let repository = SyncRepository::new(pool.clone());
@@ -1866,6 +1975,74 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(deleted_count.0, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_order_does_not_override_pending_local_tab_move() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let test_tab_id = sqlx::query("INSERT INTO tabs (name) VALUES ('test')")
+            .execute(&pool)
+            .await?
+            .last_insert_rowid();
+        let item_id = sqlx::query(
+            r#"
+            INSERT INTO clipboard_items
+                (type, content, tab_id, is_sensitive, is_pinned, display_order, created_at, updated_at)
+            VALUES ('text', 'moved local item', ?, 0, 1, -1000000, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(test_tab_id)
+        .execute(&pool)
+        .await?
+        .last_insert_rowid();
+        sqlx::query(
+            r#"
+            INSERT INTO sync_item_map
+                (local_id, item_key, stable_seq, remote_path, last_synced_at)
+            VALUES (?, 'device_a_1_1', 1, 'items/device_a_1_1.json', datetime('now'))
+            "#,
+        )
+        .bind(item_id)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO sync_changes
+                (entity_type, entity_id, operation, tab_id, source, changed_at)
+            VALUES ('clipboard_item', ?, 'tab_change', ?, 'local', datetime('now'))
+            "#,
+        )
+        .bind(item_id.to_string())
+        .bind(test_tab_id)
+        .execute(&pool)
+        .await?;
+
+        repository
+            .apply_snapshot_order(
+                &profile,
+                &SnapshotOrder {
+                    schema_version: 1,
+                    updated_at: "2026-05-15T00:00:00Z".to_string(),
+                    tabs: vec![SnapshotTabOrder {
+                        tab_key: "default".to_string(),
+                        pinned: Vec::new(),
+                        normal: vec!["device_a_1_1".to_string()],
+                    }],
+                },
+                false,
+            )
+            .await?;
+
+        let stored: (Option<i64>, i32) =
+            sqlx::query_as("SELECT tab_id, is_pinned FROM clipboard_items WHERE id = ?")
+                .bind(item_id)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(stored.0, Some(test_tab_id));
+        assert_eq!(stored.1, 1);
         Ok(())
     }
 

@@ -222,6 +222,8 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
     log::info!("[Database] Creating sync tables...");
     create_sync_tables(pool).await?;
     log::info!("[Database] Sync tables created");
+    create_file_sync_tables(pool).await?;
+    log::info!("[Database] File sync tables created");
 
     log::debug!("[Database] Inserting default tab if not exists...");
     // Insert default tab if not exists
@@ -553,4 +555,194 @@ async fn create_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
 
     log::info!("[Database] sync indexes created");
     Ok(())
+}
+
+async fn create_file_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            default_profile_id TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (default_profile_id) REFERENCES sync_profiles(id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_entries (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            origin_device_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            source_path TEXT,
+            cache_path TEXT,
+            total_size INTEGER NOT NULL DEFAULT 0,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            revision INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL,
+            confirmed INTEGER NOT NULL DEFAULT 0,
+            manifest_hash TEXT,
+            manifest_path TEXT,
+            remote_event_path TEXT,
+            error TEXT,
+            synced_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            deleted_at DATETIME,
+            FOREIGN KEY (profile_id) REFERENCES sync_profiles(id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_chunks (
+            entry_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            file_index INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            plaintext_hash TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            staging_path TEXT,
+            uploaded INTEGER NOT NULL DEFAULT 0,
+            downloaded INTEGER NOT NULL DEFAULT 0,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (entry_id, revision, file_index, chunk_index),
+            FOREIGN KEY (entry_id) REFERENCES file_sync_entries(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_remote_cursors (
+            profile_id TEXT NOT NULL,
+            remote_device_id TEXT NOT NULL,
+            last_seq INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (profile_id, remote_device_id),
+            FOREIGN KEY (profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_profile_seq (
+            profile_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            last_seq INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (profile_id, device_id),
+            FOREIGN KEY (profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_tombstones (
+            profile_id TEXT NOT NULL,
+            entry_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (profile_id, entry_id),
+            FOREIGN KEY (profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS file_sync_cache (
+            entry_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+            protected_until DATETIME NOT NULL,
+            PRIMARY KEY (entry_id, revision),
+            FOREIGN KEY (entry_id) REFERENCES file_sync_entries(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_file_sync_entries_profile_status ON file_sync_entries(profile_id, status, updated_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_file_sync_chunks_pending ON file_sync_chunks(entry_id, revision, uploaded, chunk_index)",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod file_sync_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_sync_sequences_are_scoped_per_profile_and_device() -> Result<(), sqlx::Error> {
+        let pool = sqlx::SqlitePool::connect(":memory:").await?;
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+        create_sync_tables(&pool).await?;
+        create_file_sync_tables(&pool).await?;
+        for profile_id in ["profile-a", "profile-b"] {
+            sqlx::query(
+                "INSERT INTO sync_profiles (id, name, provider, remote_root, config_json) VALUES (?, ?, 'webdav', '/', '{}')",
+            )
+            .bind(profile_id)
+            .bind(profile_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO file_sync_profile_seq (profile_id, device_id, last_seq) VALUES (?, 'device-a', 1)",
+            )
+            .bind(profile_id)
+            .execute(&pool)
+            .await?;
+        }
+
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM file_sync_profile_seq")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 2);
+
+        sqlx::query("DELETE FROM sync_profiles WHERE id = 'profile-a'")
+            .execute(&pool)
+            .await?;
+        let remaining = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM file_sync_profile_seq WHERE profile_id = 'profile-a'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(remaining, 0);
+        Ok(())
+    }
 }

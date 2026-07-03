@@ -1,10 +1,21 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TabBar } from "../components/TabBar";
 
 const mockSetSearchQuery = vi.fn();
 const mockSetActiveTab = vi.fn();
+const mockSetActivePluginTab = vi.fn();
+let mockActivePluginTabId: string | null = null;
+let mockPluginTabs = [
+  {
+    id: "plugin:com.cliporax.file-sync:FileSyncView",
+    pluginId: "com.cliporax.file-sync",
+    title: "File Sync",
+    component: "FileSyncView",
+    priority: 20,
+  },
+];
 
 vi.mock("../stores/tabStore", () => ({
   useTabStore: () => ({
@@ -13,13 +24,19 @@ vi.mock("../stores/tabStore", () => ({
       { id: 2, name: "Work", is_default: false },
     ],
     activeTabId: 1,
+    activePluginTabId: mockActivePluginTabId,
     isLoading: false,
     loadTabs: vi.fn(),
     createTab: vi.fn(),
     deleteTab: vi.fn(),
     renameTab: vi.fn(),
     setActiveTab: mockSetActiveTab,
+    setActivePluginTab: mockSetActivePluginTab,
   }),
+}));
+
+vi.mock("../plugin/extensions", () => ({
+  useContentTabExtensions: () => mockPluginTabs,
 }));
 
 vi.mock("../stores/uiStore", () => ({
@@ -53,6 +70,20 @@ const setViewport = (width: number, height: number) => {
 };
 
 describe("TabBar", () => {
+  beforeEach(() => {
+    mockActivePluginTabId = null;
+    mockPluginTabs = [
+      {
+        id: "plugin:com.cliporax.file-sync:FileSyncView",
+        pluginId: "com.cliporax.file-sync",
+        title: "File Sync",
+        component: "FileSyncView",
+        priority: 20,
+      },
+    ];
+    vi.clearAllMocks();
+  });
+
   it("keeps the rename context menu inside viewport boundaries", () => {
     setViewport(800, 600);
     render(<TabBar />);
@@ -83,6 +114,30 @@ describe("TabBar", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: /rename/i })).toBeNull();
+    });
+  });
+
+  it("switches to a plugin content tab without changing the clipboard tab", () => {
+    render(<TabBar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "File Sync" }));
+
+    expect(mockSetActivePluginTab).toHaveBeenCalledWith(
+      "plugin:com.cliporax.file-sync:FileSyncView",
+    );
+    expect(mockSetActiveTab).not.toHaveBeenCalled();
+    expect(mockSetSearchQuery).toHaveBeenCalledWith("");
+  });
+
+  it("falls back to the clipboard tab when the active plugin tab disappears", async () => {
+    mockActivePluginTabId =
+      "plugin:com.cliporax.file-sync:FileSyncView";
+    mockPluginTabs = [];
+
+    render(<TabBar />);
+
+    await waitFor(() => {
+      expect(mockSetActivePluginTab).toHaveBeenCalledWith(null);
     });
   });
 });

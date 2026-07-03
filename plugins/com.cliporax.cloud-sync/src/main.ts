@@ -1283,7 +1283,7 @@ async function loadProfileData(
     const tabSelect = createSelect(
       [
         { value: "all", label: "All Tabs" },
-        { value: "selected", label: "Selected Tabs" },
+        { value: "selected", label: "Custom Tabs" },
       ],
       profile.sync_tabs.mode,
       theme,
@@ -1345,6 +1345,9 @@ async function updateProfile(profileId: string, theme: string, container: HTMLEl
 
     profile.remote_root = (document.getElementById("cloud-sync-edit-root") as HTMLInputElement)?.value || profile.remote_root;
     profile.sync_tabs.mode = (document.getElementById("cloud-sync-edit-tabs") as HTMLSelectElement)?.value as "all" | "selected";
+    if (profile.sync_tabs.mode === "all") {
+      profile.sync_tabs.selected_tab_ids = [];
+    }
 
     await invoke("sync_profile_update", { profile });
     removeExistingModal();

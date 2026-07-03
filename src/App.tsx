@@ -18,6 +18,7 @@ import { useTheme } from "./contexts/ThemeContext";
 import {
   PluginProvider,
   ExtensionManagerProvider,
+  PluginContentTab,
   PluginSidebarExtensions,
 } from "./plugin";
 import { createLogger } from "./utils/logger";
@@ -65,7 +66,7 @@ function App() {
   }, []);
 
   // Initialize tabs on mount
-  const { loadTabs, activeTabId } = useTabStore();
+  const { loadTabs, activeTabId, activePluginTabId } = useTabStore();
   
   useEffect(() => {
     if (backendReady && !isSettingsWindow && !isPreviewWindow) {
@@ -478,20 +479,27 @@ function App() {
 
         <main className="flex-1 overflow-hidden relative">
           <PluginSidebarExtensions theme={isDark ? "dark" : "light"} />
-          <ClipboardList
-            ref={clipboardListRef}
-            tabId={activeTabId}
-            searchQuery={searchQuery}
-            searchMode={searchMode}
-            searchScope={searchScope}
-            lineHeight={generalSettings.lineHeight}
-            refreshTrigger={listRefreshTrigger}
-            onEdit={(item) => {
-              logger.info("Opening editor for item:", item.id);
-              openEditor(item);
-            }}
-            onMultiSelectChange={handleMultiSelectChange}
-          />
+          {activePluginTabId ? (
+            <PluginContentTab
+              tabId={activePluginTabId}
+              theme={isDark ? "dark" : "light"}
+            />
+          ) : (
+            <ClipboardList
+              ref={clipboardListRef}
+              tabId={activeTabId}
+              searchQuery={searchQuery}
+              searchMode={searchMode}
+              searchScope={searchScope}
+              lineHeight={generalSettings.lineHeight}
+              refreshTrigger={listRefreshTrigger}
+              onEdit={(item) => {
+                logger.info("Opening editor for item:", item.id);
+                openEditor(item);
+              }}
+              onMultiSelectChange={handleMultiSelectChange}
+            />
+          )}
         </main>
 
         <TabBar />

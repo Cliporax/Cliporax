@@ -272,11 +272,11 @@
     },
     "scope": {
       "title": "Sync scope",
-      "description": "Clipboard upload is filtered by selected tabs; remote downloads map by tabName. Plugin sync covers config and active state only, never code bundles or granted permissions.",
+      "description": "Checked tabs are synchronized. Unchecked tabs are explicitly kept out of sync; new tabs are checked by default.",
       "tabs": "Tabs",
-      "tabsDesc": "Choose which clipboard spaces are included.",
+      "tabsDesc": "Turn off only the clipboard spaces that should not sync.",
       "plugins": "Plugin config",
-      "pluginsDesc": "Only selected plugin config and state are synchronized.",
+      "pluginsDesc": "Checked plugin config and state are synchronized. Unchecked plugins are explicitly kept out of sync.",
       "all": "All",
       "selected": "Selected",
       "itemCount": "{{count}} items"

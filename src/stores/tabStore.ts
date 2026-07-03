@@ -6,6 +6,7 @@ interface TabState {
   // State
   tabs: Tab[];
   activeTabId: number | null;
+  activePluginTabId: string | null;
   isLoading: boolean;
 
   // Actions
@@ -14,6 +15,7 @@ interface TabState {
   deleteTab: (id: number) => Promise<void>;
   renameTab: (id: number, name: string) => Promise<void>;
   setActiveTab: (tabId: number) => void;
+  setActivePluginTab: (tabId: string | null) => void;
   getAutoCaptureTabs: () => Tab[];
 }
 
@@ -21,6 +23,7 @@ export const useTabStore = create<TabState>((set, get) => ({
   // Initial state
   tabs: [],
   activeTabId: null,
+  activePluginTabId: null,
   isLoading: false,
 
   // Actions
@@ -108,7 +111,11 @@ export const useTabStore = create<TabState>((set, get) => ({
   },
 
   setActiveTab: (tabId: number) => {
-    set({ activeTabId: tabId });
+    set({ activeTabId: tabId, activePluginTabId: null });
+  },
+
+  setActivePluginTab: (tabId: string | null) => {
+    set({ activePluginTabId: tabId });
   },
 
   getAutoCaptureTabs: () => {

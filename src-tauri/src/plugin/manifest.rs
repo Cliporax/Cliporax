@@ -165,6 +165,7 @@ impl PluginManifest {
                     | ExtensionPoint::Card
                     | ExtensionPoint::Sidebar
                     | ExtensionPoint::Preview
+                    | ExtensionPoint::ContentTab
             ) {
                 return Err(ManifestError::ValidationFailed(
                     "Custom extension points are not allowed".to_string(),
@@ -327,6 +328,8 @@ pub enum ExtensionPoint {
     Sidebar,
     /// Preview extension
     Preview,
+    /// Main window content tab extension
+    ContentTab,
     /// Custom extension point
     Custom(String),
 }
@@ -449,6 +452,46 @@ mod tests {
         assert_eq!(manifest.plugin_type, PluginType::Transform);
         assert_eq!(manifest.permissions.len(), 1);
         assert_eq!(manifest.main, "main.js"); // default value
+    }
+
+    #[test]
+    fn content_tab_extension_is_valid_for_market_ui_shells() {
+        let manifest_result = PluginManifest::from_json(
+            r#"
+            {
+              "id": "com.cliporax.file-sync",
+              "name": "File Sync",
+              "version": "0.1.0",
+              "description": "File sync UI",
+              "author": { "name": "Cliporax" },
+              "type": "transform",
+              "permissions": [
+                {
+                  "permission": "ui:extension",
+                  "reason": "Add a content tab",
+                  "required": true
+                }
+              ],
+              "extensions": [
+                {
+                  "point": "content-tab",
+                  "component": "FileSyncView",
+                  "priority": 20
+                }
+              ],
+              "market": { "type": "sync" }
+            }
+            "#,
+        );
+        let Ok(manifest) = manifest_result else {
+            panic!("runtime market manifest should parse");
+        };
+
+        assert!(
+            manifest.validate().is_ok(),
+            "content-tab extension should validate"
+        );
+        assert_eq!(manifest.extensions[0].point, ExtensionPoint::ContentTab);
     }
 
     #[test]
