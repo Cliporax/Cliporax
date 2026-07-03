@@ -177,6 +177,11 @@ Set these repository secrets before creating a macOS release:
 - `APPLE_PASSWORD`: app-specific password for the Apple ID.
 - `APPLE_TEAM_ID`: Apple Developer team ID.
 
+If any secret is missing, release CI still compiles both macOS targets and
+uploads unsigned `.app` ZIPs as workflow artifacts for inspection. It does not
+attach an unsigned DMG to the GitHub release, because downloaded unsigned DMGs
+are rejected by Gatekeeper. Add all six secrets to publish macOS release assets.
+
 ## Roadmap Notes
 
 - Plugin system: discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.

@@ -1983,9 +1983,13 @@ fn file_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
 #[cfg(windows)]
 fn file_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     use std::os::windows::fs::MetadataExt;
+    // volume_serial_number/file_index are still unstable on the stable
+    // toolchain used by release CI. Creation time is a stable, per-entry
+    // value on Windows and, together with size/mtime checks, detects path
+    // replacement without requiring nightly Rust.
     Some((
-        u64::from(metadata.volume_serial_number()?),
-        metadata.file_index()?,
+        metadata.creation_time(),
+        u64::from(metadata.file_attributes()),
     ))
 }
 

@@ -85,7 +85,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Validate macOS signing secrets
+      - name: Detect macOS signing secrets
+        id: mac-signing
         if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
@@ -104,9 +105,16 @@ jobs:
           done
 
           if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Missing macOS signing/notarization secrets: %s\n' "${missing[*]}" >&2
-            printf 'Unsigned macOS DMGs are blocked by Gatekeeper as damaged when downloaded from GitHub.\n' >&2
-            exit 1
+            printf 'available=false\n' >> "$GITHUB_OUTPUT"
+            printf 'Missing macOS signing/notarization secrets: %s\n' "${missing[*]}"
+            printf 'A compile-check .app archive will be uploaded as a workflow artifact; no unsigned DMG will be published.\n'
+            {
+              printf '### macOS release asset skipped\n\n'
+              printf 'Missing signing/notarization secrets: `%s`.\n\n' "${missing[*]}"
+              printf 'The unsigned `.app` artifact is for CI inspection only and is not attached to the GitHub release.\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'available=true\n' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate release notes
@@ -173,6 +181,7 @@ jobs:
           "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Build and upload Tauri bundles
+        if: ${{ !startsWith(matrix.platform, 'macos') || steps.mac-signing.outputs.available == 'true' }}
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -193,6 +202,28 @@ jobs:
           generateReleaseNotes: true
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
           args: ${{ matrix.args }}
+
+      - name: Build unsigned macOS app for compile verification
+        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
+        shell: bash
+        run: npm run tauri build -- --target "${{ matrix.target }}" --bundles app
+
+      - name: Archive unsigned macOS app
+        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
+        shell: bash
+        run: |
+          app_path="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Cliporax.app"
+          archive_path="src-tauri/target/${{ matrix.target }}/release/Cliporax_${{ matrix.target }}_unsigned.zip"
+          test -d "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive_path"
+
+      - name: Upload unsigned macOS compile artifact
+        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cliporax-${{ matrix.target }}-unsigned
+          path: src-tauri/target/${{ matrix.target }}/release/Cliporax_${{ matrix.target }}_unsigned.zip
+          if-no-files-found: error
 
       - name: Package Windows portable app
         if: matrix.platform == 'windows-latest'
