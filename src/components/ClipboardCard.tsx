@@ -20,6 +20,7 @@ interface ClipboardCardProps {
   batchItemIds?: Set<number>;
   isDraggingItem?: boolean; // Whether the current card is being dragged
   tabId?: number | null; // Current tab ID for context menu
+  metadata?: string | null; // JSON metadata including source_host
   onBatchActionComplete?: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -201,6 +202,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       batchItemIds,
       isDraggingItem = false,
       tabId,
+      metadata,
       onBatchActionComplete,
       onClick,
       onDoubleClick,
@@ -245,6 +247,17 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
         : [];
     const titleContent =
       type === "text" ? truncateText(content, TITLE_PREVIEW_LIMIT) : content;
+
+    // Parse metadata JSON to extract source_host
+    const sourceHost = React.useMemo(() => {
+      if (!metadata) return null;
+      try {
+        const parsed = JSON.parse(metadata);
+        return parsed.source_host || null;
+      } catch {
+        return null;
+      }
+    }, [metadata]);
 
     // Get card extension buttons from plugins
     const cardExtensions = useCardExtensions(
@@ -636,11 +649,39 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
           </span>
         )}
 
+        {/* Source host badge */}
+        {sourceHost && (
+          <span
+            style={{
+              flexShrink: 0,
+              maxWidth: "96px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              borderRadius: "999px",
+              padding: "2px 6px",
+              fontSize: "10px",
+              fontWeight: 600,
+              lineHeight: "1.2",
+              color: isDark ? "#a5b4fc" : "#6366f1",
+              backgroundColor: isDark
+                ? "rgba(99, 102, 241, 0.16)"
+                : "rgba(99, 102, 241, 0.1)",
+              border: `1px solid ${
+                isDark ? "rgba(165, 180, 252, 0.24)" : "rgba(99, 102, 241, 0.18)"
+              }`,
+            }}
+            title={sourceHost}
+          >
+            🖥 {sourceHost}
+          </span>
+        )}
+
         {/* Action buttons - hidden by default, visible only on card hover, hidden in multi-select mode */}
         {!isMultiSelectMode && (
           <div style={actionsStyle}>
-            {/* Edit button - only for text type */}
-            {type === "text" && onEdit && (
+            {/* Edit button - for text and file types */}
+            {(type === "text" || type === "file") && onEdit && (
               <button
                 style={{
                   ...buttonStyle,

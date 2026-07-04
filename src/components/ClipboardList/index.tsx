@@ -1413,6 +1413,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
                     batchItemIds={selectedIdsForBatch}
                     isDraggingItem={activeDraggedId === item.id}
                     tabId={item.tab_id ?? tabId}
+                    metadata={item.metadata}
                     searchQuery={searchQuery}
                     searchMode={searchMode}
                     isSearchMode={isSearchMode}

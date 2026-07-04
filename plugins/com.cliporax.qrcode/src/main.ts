@@ -13,7 +13,7 @@ interface PluginContext {
 
 interface ClipboardItem {
   id: string;
-  type: "text" | "image";
+  type: "text" | "image" | "file";
   content: string;
   pinned?: boolean;
   created_at?: string;
@@ -282,7 +282,7 @@ const plugin: Plugin = {
         const position = props.data?.position;
         const theme = props.context?.theme || "dark";
 
-        if (!item || item.type !== "text" || position !== "action") {
+        if (!item || (item.type !== "text" && item.type !== "file") || position !== "action") {
           return null;
         }
 
@@ -293,7 +293,7 @@ const plugin: Plugin = {
         const props = data as ExtensionProps;
         const item = props.data?.item;
         const position = props.data?.position;
-        return item?.type === "text" && position === "action";
+        return (item?.type === "text" || item?.type === "file") && position === "action";
       },
     },
   },

@@ -20,7 +20,6 @@
     {
       "point": "card",
       "component": "QRCodeButton",
-      "condition": "item.type === 'text'",
       "priority": 10
     }
   ],

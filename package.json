@@ -12,7 +12,7 @@
     "plugins:build:release": "node scripts/build-plugins.mjs --release",
     "plugins:bundle": "npm run plugins:build:release && node scripts/bundle-plugins.mjs",
     "plugins:install": "node scripts/install-plugins.mjs",
-    "plugins:dev": "npm run plugins:build && npm run plugins:install",
+    "plugins:dev": "npm run plugins:build && node scripts/bundle-plugins.mjs && npm run plugins:install",
     "cli:prepare": "node scripts/prepare-cli-bin.mjs",
     "cli:prepare:release": "node scripts/prepare-cli-bin.mjs --release",
     "tauri:dev": "tauri dev",

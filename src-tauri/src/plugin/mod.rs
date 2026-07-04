@@ -27,7 +27,7 @@ use tauri::Manager;
 /// Default plugin directory name
 pub const PLUGIN_DIR_NAME: &str = "plugins";
 pub const BUILTIN_PLUGIN_RESOURCE_DIR: &str = "builtin-plugins";
-const BUILTIN_PLUGIN_IDS: &[&str] = &["com.cliporax.cloud-sync"];
+const BUILTIN_PLUGIN_IDS: &[&str] = &["com.cliporax.cloud-sync", "com.cliporax.file-sync"];
 
 /// Get the plugin directory path
 pub fn get_plugin_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {

@@ -121,6 +121,28 @@ describe('ClipboardCard Component', () => {
     expect(['text', 'image']).toContain(defaultProps.type);
   });
 
+  it('allows file items to be edited like text items', () => {
+    const onEdit = vi.fn();
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        type="file"
+        content="/tmp/example.txt"
+        onEdit={onEdit}
+      />,
+    );
+
+    const editButton = Array.from(div.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('📝'),
+    );
+    expect(editButton).toBeTruthy();
+
+    act(() => {
+      editButton?.click();
+    });
+    expect(onEdit).toHaveBeenCalledOnce();
+  });
+
 
   it('shows a line count badge for multiline text', () => {
     const { div } = renderCard(

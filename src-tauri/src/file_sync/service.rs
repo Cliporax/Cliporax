@@ -238,7 +238,7 @@ impl FileSyncService {
                 .map_err(db_error)?;
         let (item_type, content) =
             row.ok_or_else(|| "Clipboard item no longer exists".to_string())?;
-        if item_type != "file" {
+        if !is_clipboard_file_reference(&item_type, &content) {
             return Err("Only clipboard file items can be synchronized".to_string());
         }
 
@@ -310,7 +310,7 @@ impl FileSyncService {
                 reason: None,
             });
         };
-        if item_type != "file" {
+        if !is_clipboard_file_reference(&item_type, &content) {
             return Ok(FileSyncClipboardItemStatus {
                 visible: false,
                 can_enqueue: false,
@@ -1654,6 +1654,24 @@ impl FileSyncService {
     }
 }
 
+fn is_clipboard_file_reference(item_type: &str, content: &str) -> bool {
+    if item_type == "file" {
+        return true;
+    }
+    if item_type != "text" {
+        return false;
+    }
+
+    let mut lines = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    first.starts_with("file://") && lines.all(|line| line.starts_with("file://"))
+}
+
 fn public_entry(row: EntryRow, progress: i64) -> FileSyncEntry {
     FileSyncEntry {
         id: row.id,
@@ -2482,6 +2500,33 @@ mod tests {
         assert!(is_next_remote_sequence(41, 42));
         assert!(!is_next_remote_sequence(0, 2));
         assert!(!is_next_remote_sequence(i64::MAX, i64::MIN));
+    }
+
+    #[test]
+    fn accepts_only_pure_file_uri_text_items() {
+        assert!(is_clipboard_file_reference(
+            "text",
+            "file:///tmp/first\nfile:///tmp/second"
+        ));
+        assert!(!is_clipboard_file_reference(
+            "text",
+            "open file:///tmp/first"
+        ));
+        assert!(!is_clipboard_file_reference("text", ""));
+    }
+
+    #[test]
+    fn parses_existing_file_uri_text() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let file = temp.path().join("file sync.txt");
+        std::fs::write(&file, b"content")?;
+        let uri = format!(
+            "file://{}",
+            urlencoding::encode(file.to_string_lossy().as_ref())
+        );
+
+        assert_eq!(parse_file_list(&uri), vec![file]);
+        Ok(())
     }
 
     #[test]

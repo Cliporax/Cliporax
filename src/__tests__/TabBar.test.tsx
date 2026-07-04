@@ -129,6 +129,17 @@ describe("TabBar", () => {
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
   });
 
+  it("opens File Sync when a file item requests it", () => {
+    render(<TabBar />);
+
+    window.dispatchEvent(new CustomEvent("cliporax:open-file-sync"));
+
+    expect(mockSetActivePluginTab).toHaveBeenCalledWith(
+      "plugin:com.cliporax.file-sync:FileSyncView",
+    );
+    expect(mockSetSearchQuery).toHaveBeenCalledWith("");
+  });
+
   it("falls back to the clipboard tab when the active plugin tab disappears", async () => {
     mockActivePluginTabId =
       "plugin:com.cliporax.file-sync:FileSyncView";

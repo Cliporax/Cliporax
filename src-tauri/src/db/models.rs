@@ -82,5 +82,6 @@ pub struct Metadata {
     pub source: String,
     pub source_app: String,
     pub window_title: String,
+    pub source_host: String,
     pub timestamp: String,
 }

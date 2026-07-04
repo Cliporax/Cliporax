@@ -5,6 +5,8 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
     ExtendedColorType, ImageEncoder,
 };
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
 use regex::Regex;
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -108,6 +110,20 @@ fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::looks_like_file_uri_list;
+
+    #[test]
+    fn recognizes_only_pure_file_uri_text() {
+        assert!(looks_like_file_uri_list("file:///tmp/one\nfile:///tmp/two"));
+        assert!(!looks_like_file_uri_list(
+            "open file:///tmp/one in the file manager"
+        ));
+        assert!(!looks_like_file_uri_list(""));
+    }
+}
+
 fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<(usize, usize, Vec<u8>)> {
     #[cfg(target_os = "windows")]
     {
@@ -131,7 +147,7 @@ pub(crate) fn parse_file_list(content: &str) -> Vec<PathBuf> {
     if let Ok(paths) = serde_json::from_str::<Vec<String>>(content) {
         return paths
             .into_iter()
-            .map(PathBuf::from)
+            .filter_map(|value| clipboard_path_from_value(&value))
             .filter(|path| path.exists())
             .collect();
     }
@@ -140,9 +156,38 @@ pub(crate) fn parse_file_list(content: &str) -> Vec<PathBuf> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
+        .filter_map(clipboard_path_from_value)
         .filter(|path| path.exists())
         .collect()
+}
+
+fn clipboard_path_from_value(value: &str) -> Option<PathBuf> {
+    let Some(encoded_path) = value.strip_prefix("file://") else {
+        return Some(PathBuf::from(value));
+    };
+    let decoded = urlencoding::decode(encoded_path).ok()?.into_owned();
+
+    #[cfg(target_os = "windows")]
+    let decoded =
+        if decoded.as_bytes().first() == Some(&b'/') && decoded.as_bytes().get(2) == Some(&b':') {
+            decoded[1..].to_string()
+        } else {
+            decoded
+        };
+
+    let path = PathBuf::from(decoded);
+    path.is_absolute().then_some(path)
+}
+
+fn looks_like_file_uri_list(content: &str) -> bool {
+    let mut lines = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    first.starts_with("file://") && lines.all(|line| line.starts_with("file://"))
 }
 
 #[cfg(target_os = "linux")]
@@ -156,22 +201,73 @@ fn paths_from_uri_list(uri_list: &str) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| {
-            if let Some(path) = line.strip_prefix("file://") {
-                urlencoding::decode(path)
-                    .ok()
-                    .map(|decoded| decoded.into_owned())
-            } else {
-                None
-            }
-        })
-        .filter(|path| PathBuf::from(path).exists())
+        .filter_map(clipboard_path_from_value)
+        .filter(|path| path.exists())
+        .map(|path| path.to_string_lossy().into_owned())
         .collect()
 }
 
 #[cfg(target_os = "windows")]
 fn get_windows_clipboard_sequence_number() -> u32 {
     unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+#[cfg(target_os = "windows")]
+async fn get_windows_file_list() -> Option<Vec<String>> {
+    let mut command = tokio::process::Command::new("powershell");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }",
+        ])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_millis(800), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    existing_absolute_paths(&output.stdout, output.status.success())
+}
+
+#[cfg(target_os = "macos")]
+fn get_macos_clipboard_change_count() -> i64 {
+    NSPasteboard::generalPasteboard().changeCount() as i64
+}
+
+#[cfg(target_os = "macos")]
+fn get_macos_file_list() -> Option<Vec<String>> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let items = pasteboard.pasteboardItems()?;
+    let mut paths = Vec::new();
+    for item in items.iter() {
+        let Some(file_url) = item.stringForType(unsafe { NSPasteboardTypeFileURL }) else {
+            continue;
+        };
+        let Some(path) = clipboard_path_from_value(&file_url.to_string()) else {
+            continue;
+        };
+        if path.is_absolute() && path.exists() {
+            paths.push(path.to_string_lossy().into_owned());
+        }
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+#[cfg(target_os = "windows")]
+fn existing_absolute_paths(bytes: &[u8], successful: bool) -> Option<Vec<String>> {
+    if !successful || bytes.is_empty() {
+        return None;
+    }
+    let paths = String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.exists())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then_some(paths)
 }
 
 #[cfg(target_os = "linux")]
@@ -234,6 +330,8 @@ pub struct ClipboardMonitor {
     last_processed_image_hash: Arc<Mutex<String>>,
     #[cfg(target_os = "windows")]
     last_windows_clipboard_sequence: Arc<Mutex<u32>>,
+    #[cfg(target_os = "macos")]
+    last_macos_clipboard_change_count: Arc<Mutex<i64>>,
     #[cfg(target_os = "linux")]
     last_linux_clipboard_timestamp: Arc<Mutex<String>>,
 }
@@ -249,10 +347,27 @@ impl Clone for ClipboardMonitor {
             last_processed_image_hash: self.last_processed_image_hash.clone(),
             #[cfg(target_os = "windows")]
             last_windows_clipboard_sequence: self.last_windows_clipboard_sequence.clone(),
+            #[cfg(target_os = "macos")]
+            last_macos_clipboard_change_count: self.last_macos_clipboard_change_count.clone(),
             #[cfg(target_os = "linux")]
             last_linux_clipboard_timestamp: self.last_linux_clipboard_timestamp.clone(),
         }
     }
+}
+
+fn get_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 impl ClipboardMonitor {
@@ -266,6 +381,8 @@ impl ClipboardMonitor {
             last_processed_image_hash: Arc::new(Mutex::new(String::new())),
             #[cfg(target_os = "windows")]
             last_windows_clipboard_sequence: Arc::new(Mutex::new(0)),
+            #[cfg(target_os = "macos")]
+            last_macos_clipboard_change_count: Arc::new(Mutex::new(0)),
             #[cfg(target_os = "linux")]
             last_linux_clipboard_timestamp: Arc::new(Mutex::new(String::new())),
         })
@@ -289,6 +406,8 @@ impl ClipboardMonitor {
         let last_processed_image_hash = self.last_processed_image_hash.clone();
         #[cfg(target_os = "windows")]
         let last_windows_clipboard_sequence = self.last_windows_clipboard_sequence.clone();
+        #[cfg(target_os = "macos")]
+        let last_macos_clipboard_change_count = self.last_macos_clipboard_change_count.clone();
         #[cfg(target_os = "linux")]
         let last_linux_clipboard_timestamp = self.last_linux_clipboard_timestamp.clone();
 
@@ -313,6 +432,11 @@ impl ClipboardMonitor {
                     if current_sequence != 0 {
                         *last_windows_clipboard_sequence.lock().await = current_sequence;
                     }
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    *last_macos_clipboard_change_count.lock().await =
+                        get_macos_clipboard_change_count();
                 }
                 continue;
             }
@@ -342,6 +466,19 @@ impl ClipboardMonitor {
                 }
             };
 
+            #[cfg(target_os = "macos")]
+            let macos_clipboard_changed = {
+                let current_count = get_macos_clipboard_change_count();
+                let mut last_count = last_macos_clipboard_change_count.lock().await;
+                if *last_count != 0 && *last_count == current_count {
+                    continue;
+                }
+                *last_count = current_count;
+                *last_processed_image_hash.lock().await = String::new();
+                *last_image_hash.lock().await = String::new();
+                true
+            };
+
             // Try to get text first (fast check)
             let mut current_text = {
                 let mut clip = clipboard.lock().await;
@@ -349,7 +486,10 @@ impl ClipboardMonitor {
             };
 
             #[cfg(target_os = "linux")]
-            let linux_clipboard_timestamp = if current_text.is_empty() {
+            let possible_linux_file_list = looks_like_file_uri_list(&current_text);
+
+            #[cfg(target_os = "linux")]
+            let linux_clipboard_timestamp = if current_text.is_empty() || possible_linux_file_list {
                 self.get_linux_clipboard_timestamp().await
             } else {
                 None
@@ -365,7 +505,7 @@ impl ClipboardMonitor {
 
             // Linux fallback for text
             #[cfg(target_os = "linux")]
-            let linux_targets = if current_text.is_empty() {
+            let linux_targets = if current_text.is_empty() || possible_linux_file_list {
                 self.get_linux_clipboard_targets().await
             } else {
                 None
@@ -373,18 +513,45 @@ impl ClipboardMonitor {
 
             #[cfg(target_os = "linux")]
             let mut current_file_content = String::new();
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            let mut current_file_content = String::new();
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
             let current_file_content = String::new();
 
             #[cfg(target_os = "linux")]
-            if current_text.is_empty() {
+            if current_text.is_empty() || possible_linux_file_list {
                 if let Some(paths) = self
                     .try_get_linux_file_list_with_targets(linux_targets.as_deref())
                     .await
                 {
                     current_file_content = paths.join("\n");
+                    current_text.clear();
                     log::info!(
                         "[Clipboard] Linux file list detected, files: {}",
+                        paths.len()
+                    );
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            if windows_clipboard_changed {
+                if let Some(paths) = get_windows_file_list().await {
+                    current_file_content = paths.join("\n");
+                    current_text.clear();
+                    log::info!(
+                        "[Clipboard] Windows file list detected, files: {}",
+                        paths.len()
+                    );
+                }
+            }
+
+            #[cfg(target_os = "macos")]
+            if macos_clipboard_changed {
+                if let Some(paths) = get_macos_file_list() {
+                    current_file_content = paths.join("\n");
+                    current_text.clear();
+                    log::info!(
+                        "[Clipboard] macOS file list detected, files: {}",
                         paths.len()
                     );
                 }
@@ -1051,6 +1218,7 @@ impl ClipboardMonitor {
             source: std::env::consts::OS.to_string(),
             source_app,
             window_title,
+            source_host: get_hostname(),
             timestamp: chrono::Utc::now().to_rfc3339(),
         }
     }

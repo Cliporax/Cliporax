@@ -94,6 +94,7 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.24", features = ["elcapitan"] }
+objc2-app-kit = "0.3.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

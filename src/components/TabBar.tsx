@@ -17,6 +17,8 @@ const logger = createLogger("TabBar");
 const CONTEXT_MENU_PADDING = 8;
 const CONTEXT_MENU_MIN_WIDTH = 128;
 const CONTEXT_MENU_FALLBACK_HEIGHT = 36;
+const OPEN_FILE_SYNC_EVENT = "cliporax:open-file-sync";
+const FILE_SYNC_TAB_ID = "plugin:com.cliporax.file-sync:FileSyncView";
 
 interface ContextMenuPosition {
   x: number;
@@ -95,6 +97,18 @@ export function TabBar() {
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
   }, []);
+
+  useEffect(() => {
+    const openFileSync = () => {
+      if (!pluginTabs.some((tab) => tab.id === FILE_SYNC_TAB_ID)) return;
+      closeContextMenu();
+      setActivePluginTab(FILE_SYNC_TAB_ID);
+      setSearchQuery("");
+    };
+
+    window.addEventListener(OPEN_FILE_SYNC_EVENT, openFileSync);
+    return () => window.removeEventListener(OPEN_FILE_SYNC_EVENT, openFileSync);
+  }, [closeContextMenu, pluginTabs, setActivePluginTab, setSearchQuery]);
 
   const isInsideContextMenu = useCallback((target: EventTarget | null) => {
     return Boolean(
@@ -175,13 +189,17 @@ export function TabBar() {
   const handleTabClick = useCallback(
     (tabId: number) => {
       closeContextMenu();
-      if (tabId === activeTabId) return;
+      // If a plugin tab is active, always allow switching to a native tab.
+      // Without the activePluginTabId check, clicking the same native tab
+      // that was active before the plugin tab was selected would return
+      // early (activeTabId hasn't been cleared), leaving the plugin tab active.
+      if (tabId === activeTabId && !activePluginTabId) return;
 
       setActiveTab(tabId);
       setSearchQuery(""); // Clear search on tab switch
       logger.info("Tab switched to:", tabId);
     },
-    [activeTabId, closeContextMenu, setActiveTab, setSearchQuery],
+    [activeTabId, activePluginTabId, closeContextMenu, setActiveTab, setSearchQuery],
   );
 
   const handleCreateTab = useCallback(async () => {
