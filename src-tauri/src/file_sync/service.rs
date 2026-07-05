@@ -611,43 +611,70 @@ impl FileSyncService {
         let entry = self.load_entry(entry_id).await?;
         if matches!(
             entry.status.as_str(),
-            "queued" | "scanning" | "preparing" | "uploading" | "downloading"
+            "scanning" | "preparing" | "uploading" | "downloading"
         ) {
             return Err("Cancel or finish the active transfer before deleting it".to_string());
         }
-        let profile = self
-            .sync_repository
-            .get_profile(&entry.profile_id)
-            .await
-            .map_err(safe_sync_error)?;
-        let provider = self
-            .provider_factory
-            .build(&profile)
-            .await
-            .map_err(safe_sync_error)?;
-        let key = self.crypto_key(&profile).await?;
-        let local_device_id = self
-            .sync_repository
-            .get_or_create_device_id()
-            .await
-            .map_err(safe_sync_error)?;
-        let seq = self
-            .next_sequence(&entry.profile_id, &local_device_id)
-            .await?;
-        let event = FileSyncRemoteEvent {
-            schema_version: FILE_SYNC_SCHEMA_VERSION,
-            device_id: local_device_id.clone(),
-            seq,
-            operation: "delete".to_string(),
-            entry_id: entry.id.clone(),
-            revision: entry.revision,
-            changed_at: chrono::Utc::now().to_rfc3339(),
-            entry: None,
-        };
-        self.publish_event(provider.as_ref(), &event, key.as_ref())
-            .await?;
-        self.store_cursor(&entry.profile_id, &local_device_id, seq)
-            .await?;
+
+        let uploaded_chunks = self.uploaded_chunk_count(&entry.id, entry.revision).await?;
+        if may_have_remote_artifacts(&entry, uploaded_chunks) {
+            let profile = self
+                .sync_repository
+                .get_profile(&entry.profile_id)
+                .await
+                .map_err(safe_sync_error)?;
+            let provider = self
+                .provider_factory
+                .build(&profile)
+                .await
+                .map_err(safe_sync_error)?;
+            let key = self.crypto_key(&profile).await?;
+            provider
+                .delete(&remote_entry_root(&entry.id))
+                .await
+                .map_err(safe_sync_error)?;
+            let local_device_id = self
+                .sync_repository
+                .get_or_create_device_id()
+                .await
+                .map_err(safe_sync_error)?;
+            let seq = self
+                .next_sequence(&entry.profile_id, &local_device_id)
+                .await?;
+            let event = FileSyncRemoteEvent {
+                schema_version: FILE_SYNC_SCHEMA_VERSION,
+                device_id: local_device_id.clone(),
+                seq,
+                operation: "delete".to_string(),
+                entry_id: entry.id.clone(),
+                revision: entry.revision,
+                changed_at: chrono::Utc::now().to_rfc3339(),
+                entry: None,
+            };
+            self.publish_event(provider.as_ref(), &event, key.as_ref())
+                .await?;
+            self.store_cursor(&entry.profile_id, &local_device_id, seq)
+                .await?;
+        }
+
+        self.mark_entry_deleted(&entry).await?;
+        self.cleanup_local_entry_files(&entry.id).await;
+        self.emit_changed(vec![entry_id.to_string()], "deleted");
+        Ok(())
+    }
+
+    async fn uploaded_chunk_count(&self, entry_id: &str, revision: i64) -> Result<i64, String> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM file_sync_chunks WHERE entry_id = ? AND revision = ? AND uploaded = 1",
+        )
+        .bind(entry_id)
+        .bind(revision)
+        .fetch_one(&self.db)
+        .await
+        .map_err(db_error)
+    }
+
+    async fn mark_entry_deleted(&self, entry: &EntryRow) -> Result<(), String> {
         sqlx::query(
             r#"
             INSERT INTO file_sync_tombstones (profile_id, entry_id, revision, deleted_at)
@@ -658,18 +685,28 @@ impl FileSyncService {
             "#,
         )
         .bind(&entry.profile_id)
-        .bind(entry_id)
+        .bind(&entry.id)
         .bind(entry.revision)
         .execute(&self.db)
         .await
         .map_err(db_error)?;
         sqlx::query(
-            "UPDATE file_sync_entries SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            r#"
+            UPDATE file_sync_entries
+            SET status = 'deleted',
+                deleted_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?
+            "#,
         )
-        .bind(entry_id)
+        .bind(&entry.id)
         .execute(&self.db)
         .await
         .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn cleanup_local_entry_files(&self, entry_id: &str) {
         for directory in [
             self.data_root.join("staging").join(entry_id),
             self.data_root.join("cache").join(entry_id),
@@ -678,8 +715,6 @@ impl FileSyncService {
                 let _ = tokio::fs::remove_dir_all(directory).await;
             }
         }
-        self.emit_changed(vec![entry_id.to_string()], "deleted");
-        Ok(())
     }
 
     pub async fn resume_pending(self: &Arc<Self>) {
@@ -2327,6 +2362,18 @@ fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn remote_entry_root(entry_id: &str) -> String {
+    format!("{}/entries/{}", REMOTE_ROOT, entry_id)
+}
+
+fn may_have_remote_artifacts(entry: &EntryRow, uploaded_chunk_count: i64) -> bool {
+    uploaded_chunk_count > 0
+        || matches!(entry.status.as_str(), "synced" | "ready" | "remote")
+        || entry.synced_at.is_some()
+        || (matches!(entry.status.as_str(), "failed" | "cancelled")
+            && entry.manifest_hash.is_some())
+}
+
 fn to_i64(value: u64, label: &str) -> Result<i64, String> {
     i64::try_from(value).map_err(|_| format!("{} is too large", label))
 }
@@ -2500,6 +2547,32 @@ mod tests {
         assert!(is_next_remote_sequence(41, 42));
         assert!(!is_next_remote_sequence(0, 2));
         assert!(!is_next_remote_sequence(i64::MAX, i64::MIN));
+    }
+
+    #[test]
+    fn delete_remote_artifact_detection_covers_unsynced_and_failed_entries() {
+        let mut entry = test_entry();
+        entry.status = "queued".to_string();
+        assert!(!may_have_remote_artifacts(&entry, 0));
+
+        entry.status = "failed".to_string();
+        assert!(!may_have_remote_artifacts(&entry, 0));
+        assert!(may_have_remote_artifacts(&entry, 1));
+
+        entry.manifest_hash = Some("0".repeat(64));
+        assert!(may_have_remote_artifacts(&entry, 0));
+    }
+
+    #[test]
+    fn synced_remote_entries_are_deleted_from_their_entry_root() {
+        let mut entry = test_entry();
+        entry.status = "synced".to_string();
+
+        assert!(may_have_remote_artifacts(&entry, 0));
+        assert_eq!(
+            remote_entry_root(&entry.id),
+            "file-sync/v1/entries/entry123"
+        );
     }
 
     #[test]

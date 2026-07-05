@@ -340,7 +340,10 @@ impl SyncEngine {
         provider: &dyn SyncProvider,
     ) -> Result<PreparedSyncRun, SyncError> {
         log::info!("[Sync::Engine] Step 1: Loading profile {}", profile_id);
-        let profile = self.repository.get_profile(profile_id).await?;
+        let mut profile = self.repository.get_profile(profile_id).await?;
+        self.repository
+            .prune_missing_tab_scope_ids(&mut profile)
+            .await?;
         if profile.encryption.enabled && !self.is_profile_unlocked(profile_id).await {
             return Err(SyncError::Encryption(
                 "Encrypted profile is locked. Unlock it before syncing.".to_string(),
@@ -388,11 +391,59 @@ impl SyncEngine {
             return Ok(report);
         };
 
-        if manifest.device_id == prepared.device_id {
+        let crypto_key = self.get_crypto_key(profile_id).await.ok().flatten();
+        let is_same_device_snapshot = manifest.device_id == prepared.device_id;
+        let mut remote_order = None;
+        let mut missing_same_device_tab_keys = HashSet::new();
+
+        if let Some(order_ref) = &manifest.order {
+            let order_bytes = provider.get(&order_ref.path).await.map_err(|e| {
+                SyncError::provider(format!(
+                    "Failed to download order {}: {}",
+                    order_ref.path, e
+                ))
+            })?;
+            let decoded =
+                decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
+            let actual_hash = sha256_hex(&decoded);
+            if actual_hash != order_ref.hash {
+                log::warn!(
+                    "[Sync::Engine] Order hash mismatch for {}; expected {}, got {}. Attempting to parse order payload.",
+                    order_ref.path,
+                    order_ref.hash,
+                    actual_hash
+                );
+            }
+            let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
+            if is_same_device_snapshot {
+                let local_order = self
+                    .repository
+                    .build_snapshot_order(&prepared.profile)
+                    .await?;
+                let local_tab_keys: HashSet<&str> = local_order
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.tab_key.as_str())
+                    .collect();
+                missing_same_device_tab_keys = order
+                    .tabs
+                    .iter()
+                    .filter(|tab| !local_tab_keys.contains(tab.tab_key.as_str()))
+                    .map(|tab| tab.tab_key.clone())
+                    .collect();
+                if missing_same_device_tab_keys.is_empty() {
+                    return Ok(report);
+                }
+                log::info!(
+                    "[Sync::Engine] Same-device snapshot contains {} missing local tabs; applying those tabs",
+                    missing_same_device_tab_keys.len()
+                );
+            }
+            remote_order = Some(order);
+        } else if is_same_device_snapshot {
             return Ok(report);
         }
 
-        let crypto_key = self.get_crypto_key(profile_id).await.ok().flatten();
         let mut remote_items = Vec::new();
         for shard_ref in &manifest.item_shards {
             let shard_bytes = provider.get(&shard_ref.path).await.map_err(|e| {
@@ -436,36 +487,41 @@ impl SyncEngine {
             remote_items.extend(shard.items);
         }
 
-        let prune_missing = !self
-            .repository
-            .has_unsynced_changes(&prepared.profile)
-            .await?;
+        if is_same_device_snapshot {
+            remote_items.retain(|item| {
+                item.tab_key
+                    .as_deref()
+                    .map(|tab_key| missing_same_device_tab_keys.contains(tab_key))
+                    .unwrap_or(false)
+            });
+        }
+
+        let prune_missing = !is_same_device_snapshot
+            && !self
+                .repository
+                .has_unsynced_changes(&prepared.profile)
+                .await?;
         report.items_downloaded = self
             .repository
             .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
             .await?;
 
-        if let Some(order_ref) = &manifest.order {
-            let order_bytes = provider.get(&order_ref.path).await.map_err(|e| {
-                SyncError::provider(format!(
-                    "Failed to download order {}: {}",
-                    order_ref.path, e
-                ))
-            })?;
-            let decoded =
-                decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
-            let actual_hash = sha256_hex(&decoded);
-            if actual_hash != order_ref.hash {
-                log::warn!(
-                    "[Sync::Engine] Order hash mismatch for {}; expected {}, got {}. Attempting to parse order payload.",
-                    order_ref.path,
-                    order_ref.hash,
-                    actual_hash
-                );
-            }
-            let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
+        if let Some(order) = remote_order {
+            let order_to_apply = if is_same_device_snapshot {
+                SnapshotOrder {
+                    schema_version: order.schema_version,
+                    updated_at: order.updated_at,
+                    tabs: order
+                        .tabs
+                        .into_iter()
+                        .filter(|tab| missing_same_device_tab_keys.contains(&tab.tab_key))
+                        .collect(),
+                }
+            } else {
+                order
+            };
             self.repository
-                .apply_snapshot_order(&prepared.profile, &order, prune_missing)
+                .apply_snapshot_order(&prepared.profile, &order_to_apply, prune_missing)
                 .await?;
         }
 
@@ -1095,9 +1151,16 @@ mod tests {
             r#"
             CREATE TABLE clipboard_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL DEFAULT 'text',
+                content TEXT,
+                content_hash TEXT,
+                metadata TEXT,
+                tags TEXT,
                 tab_id INTEGER,
+                is_sensitive INTEGER DEFAULT 0,
                 is_pinned INTEGER DEFAULT 0,
                 display_order INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -1108,7 +1171,29 @@ mod tests {
             r#"
             CREATE TABLE sync_item_map (
                 local_id INTEGER PRIMARY KEY,
-                item_key TEXT NOT NULL
+                item_key TEXT NOT NULL UNIQUE,
+                stable_seq INTEGER,
+                remote_path TEXT,
+                last_remote_updated_at DATETIME,
+                last_synced_at DATETIME
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE sync_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                item_key TEXT,
+                tab_id INTEGER,
+                plugin_id TEXT,
+                source TEXT DEFAULT 'local',
+                changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                synced_at DATETIME
             )
             "#,
         )
@@ -1166,6 +1251,118 @@ mod tests {
                 .remote_order_matches_local(&provider, &test_profile())
                 .await?
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn same_device_snapshot_applies_missing_empty_tabs() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool.clone())));
+        let provider = MemoryProvider::default();
+        let remote_order = SnapshotOrder {
+            schema_version: 1,
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            tabs: vec![
+                SnapshotTabOrder {
+                    tab_key: "default".to_string(),
+                    tab_name: None,
+                    pinned: Vec::new(),
+                    normal: Vec::new(),
+                },
+                SnapshotTabOrder {
+                    tab_key: "tab-name:research".to_string(),
+                    tab_name: Some("Research".to_string()),
+                    pinned: Vec::new(),
+                    normal: Vec::new(),
+                },
+            ],
+        };
+        let order_json = serde_json::to_vec(&remote_order)?;
+        let remote_item = RemoteClipboardItem {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            item_key: "remote_research_item".to_string(),
+            stable_seq: 1,
+            device_id: "device_a".to_string(),
+            local_id: None,
+            item_type: "text".to_string(),
+            content: Some("research note".to_string()),
+            blob_path: None,
+            blob_mime: None,
+            content_hash: Some("research-hash".to_string()),
+            created_at: "2026-05-15T00:00:00Z".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            tab_key: Some("tab-name:research".to_string()),
+            tab_name: Some("Research".to_string()),
+            tags: Vec::new(),
+            is_pinned: false,
+            is_sensitive: false,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            revision: 0,
+            last_modified_by: "device_a".to_string(),
+            deleted: false,
+        };
+        let shard = SnapshotItemShard {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            start: 1,
+            end: 100,
+            items: vec![remote_item],
+        };
+        let shard_json = serde_json::to_vec(&shard)?;
+        provider
+            .put("order/default.json", order_json.clone())
+            .await?;
+        provider
+            .put("items/00000001-00000100.json", shard_json.clone())
+            .await?;
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "device_a".to_string(),
+                    updated_at: "2026-05-15T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: vec![SnapshotShardRef {
+                        path: "items/00000001-00000100.json".to_string(),
+                        start: 1,
+                        end: 100,
+                        count: 1,
+                        hash: sha256_hex(&shard_json),
+                    }],
+                    order: Some(SnapshotFileRef {
+                        path: "order/default.json".to_string(),
+                        hash: sha256_hex(&order_json),
+                    }),
+                })?,
+            )
+            .await?;
+
+        let prepared = PreparedSyncRun {
+            profile: test_profile(),
+            device_id: "device_a".to_string(),
+        };
+        engine
+            .pull_remote_changes("profile", &provider, &prepared)
+            .await?;
+
+        let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tabs WHERE name = 'Research'")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(exists.0, 1);
+        let stored: (String,) = sqlx::query_as(
+            r#"
+            SELECT ci.content
+            FROM clipboard_items ci
+            JOIN tabs t ON t.id = ci.tab_id
+            WHERE t.name = 'Research'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(stored.0, "research note");
         Ok(())
     }
 }

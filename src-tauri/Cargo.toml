@@ -65,7 +65,7 @@ semver = "1"
 urlencoding = "2.1"
 # TypeScript type generation (optional, only for export-types feature)
 ts-rs = { version = "8.0", features = ["serde-compat"], optional = true }
-# Cloud sync - WebDAV (reqwest with rustls)
+# Cloud sync - WebDAV (reqwest with native-tls, uses the OS TLS stack)
 # Cloud sync - Secret management
 secrecy = "0.8"
 # Cloud sync - Encryption
@@ -74,7 +74,7 @@ argon2 = { version = "0.5", features = ["std"] }
 rand = "0.8"
 # Cloud sync - UUID for device IDs
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.13.3", default-features = false, features = ["json", "multipart", "query", "rustls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "multipart", "query", "native-tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Cross-platform advisory file locking while creating immutable sync snapshots.
 fs2 = "0.4"

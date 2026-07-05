@@ -157,6 +157,61 @@ impl SyncRepository {
         Ok(())
     }
 
+    /// Drop tab scope ids that no longer exist locally before a sync run.
+    ///
+    /// Tab ids are local database identities. If a profile still references a
+    /// deleted tab id, a remote tab created during pull can reuse that id and
+    /// be treated as excluded. Pruning stale ids keeps remote-only tabs synced
+    /// by default.
+    pub async fn prune_missing_tab_scope_ids(
+        &self,
+        profile: &mut SyncProfile,
+    ) -> Result<(), SyncError> {
+        if profile.sync_tabs.mode != TabSyncMode::Selected
+            || profile.sync_tabs.selected_tab_ids.is_empty()
+        {
+            return Ok(());
+        }
+
+        let placeholders = profile
+            .sync_tabs
+            .selected_tab_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT id FROM tabs WHERE id IN ({})", placeholders);
+        let mut query = sqlx::query_as::<_, (i64,)>(&sql);
+        for tab_id in &profile.sync_tabs.selected_tab_ids {
+            query = query.bind(tab_id);
+        }
+        let existing_ids: std::collections::HashSet<i64> = query
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|(id,)| id)
+            .collect();
+
+        let original_len = profile.sync_tabs.selected_tab_ids.len();
+        profile
+            .sync_tabs
+            .selected_tab_ids
+            .retain(|tab_id| existing_ids.contains(tab_id));
+
+        if profile.sync_tabs.selected_tab_ids.len() == original_len {
+            return Ok(());
+        }
+        if profile.sync_tabs.selected_tab_ids.is_empty() {
+            profile.sync_tabs.mode = TabSyncMode::All;
+        }
+        self.upsert_profile(profile.clone()).await?;
+        log::info!(
+            "[Sync::Repository] Pruned stale tab sync scope ids for profile {}",
+            profile.id
+        );
+        Ok(())
+    }
+
     /// Update persisted profile pause state without disturbing credentials.
     pub async fn set_profile_paused(
         &self,
@@ -418,13 +473,35 @@ impl SyncRepository {
     }
 
     async fn find_local_id_by_item_key(&self, item_key: &str) -> Result<Option<i64>, SyncError> {
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT local_id FROM sync_item_map WHERE item_key = ?")
-                .bind(item_key)
-                .fetch_optional(&self.pool)
-                .await?;
+        let existing: Option<(i64, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT sim.local_id, ci.id
+            FROM sync_item_map sim
+            LEFT JOIN clipboard_items ci ON ci.id = sim.local_id
+            WHERE sim.item_key = ?
+            "#,
+        )
+        .bind(item_key)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        Ok(existing.map(|(local_id,)| local_id))
+        let Some((local_id, existing_item_id)) = existing else {
+            return Ok(None);
+        };
+
+        if existing_item_id.is_some() {
+            return Ok(Some(local_id));
+        }
+
+        sqlx::query("DELETE FROM sync_item_map WHERE item_key = ?")
+            .bind(item_key)
+            .execute(&self.pool)
+            .await?;
+        log::warn!(
+            "[Sync::Repository] Removed stale item mapping for missing local item {}",
+            local_id
+        );
+        Ok(None)
     }
 
     async fn upsert_item_mapping_with_stable_seq(
@@ -2108,6 +2185,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_item_recreates_missing_local_item_from_stale_mapping() {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let item = remote_item("device_b_1_1", "original content", "original-hash");
+        let local_id = match repository
+            .apply_remote_item(&profile, item.clone(), None)
+            .await
+            .unwrap()
+        {
+            ApplyItemResult::Created { local_id } => local_id,
+            other => panic!("unexpected apply result: {:?}", other),
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO sync_changes
+                (entity_type, entity_id, operation, item_key, source, changed_at)
+            VALUES ('clipboard_item', ?, 'update', ?, 'local', datetime('now'))
+            "#,
+        )
+        .bind(local_id.to_string())
+        .bind(&item.item_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+            .bind(local_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = repository
+            .apply_remote_item(
+                &profile,
+                remote_item("device_b_1_1", "remote content", "remote-hash"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let new_local_id = match result {
+            ApplyItemResult::Created { local_id } => local_id,
+            other => panic!("unexpected apply result: {:?}", other),
+        };
+        assert_ne!(new_local_id, local_id);
+
+        let row: (i64, String) = sqlx::query_as(
+            r#"
+            SELECT sim.local_id, ci.content
+            FROM sync_item_map sim
+            JOIN clipboard_items ci ON ci.id = sim.local_id
+            WHERE sim.item_key = ?
+            "#,
+        )
+        .bind(&item.item_key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let conflict_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE entity_key = ? AND status = 'pending'",
+        )
+        .bind(&item.item_key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.0, new_local_id);
+        assert_eq!(row.1, "remote content");
+        assert_eq!(conflict_count.0, 0);
+    }
+
+    #[tokio::test]
     async fn same_content_in_different_tabs_remains_distinct() {
         let pool = setup_sync_test_db().await;
         let repository = SyncRepository::new(pool.clone());
@@ -2284,6 +2434,39 @@ mod tests {
         assert!(tab_keys.contains("default"));
         assert!(tab_keys.contains("tab-name:included later"));
         assert!(!tab_keys.contains("tab-name:excluded"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_tab_scope_ids_do_not_exclude_remote_only_tabs() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let mut profile = test_profile();
+        profile.sync_tabs.mode = TabSyncMode::Selected;
+        profile.sync_tabs.selected_tab_ids = vec![2];
+        repository.upsert_profile(profile).await?;
+
+        let mut profile = repository.get_profile("profile").await?;
+        repository.prune_missing_tab_scope_ids(&mut profile).await?;
+
+        assert_eq!(profile.sync_tabs.mode, TabSyncMode::All);
+        assert!(profile.sync_tabs.selected_tab_ids.is_empty());
+        let persisted = repository.get_profile("profile").await?;
+        assert_eq!(persisted.sync_tabs.mode, TabSyncMode::All);
+        assert!(persisted.sync_tabs.selected_tab_ids.is_empty());
+
+        let mut remote = remote_item("device_b_1_1", "remote tab item", "remote-tab-hash");
+        remote.tab_key = Some("tab-name:research".to_string());
+        remote.tab_name = Some("Research".to_string());
+        repository
+            .apply_remote_item(&persisted, remote, None)
+            .await?;
+
+        let order = repository.build_snapshot_order(&persisted).await?;
+        assert!(order
+            .tabs
+            .iter()
+            .any(|tab| tab.tab_key == "tab-name:research"));
         Ok(())
     }
 
