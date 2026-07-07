@@ -523,6 +523,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
         <div
           ref={ref}
           data-item-id={id}
+          data-testid={`clipboard-card-${id}`}
           style={cardStyle}
         onMouseEnter={() => setIsHovered(true)}
         onMouseDown={(e) => {
@@ -683,6 +684,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
             {/* Edit button - for text and file types */}
             {(type === "text" || type === "file") && onEdit && (
               <button
+                data-testid={`clipboard-card-${id}-edit`}
                 style={{
                   ...buttonStyle,
                   color: isDark ? "#94a3b8" : "#71717a",

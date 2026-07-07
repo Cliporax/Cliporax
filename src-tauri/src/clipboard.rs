@@ -113,6 +113,10 @@ fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
 #[cfg(test)]
 mod tests {
     use super::looks_like_file_uri_list;
+    #[cfg(target_os = "linux")]
+    use super::{file_uri_from_path, linux_file_clipboard_payload};
+    #[cfg(target_os = "linux")]
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn recognizes_only_pure_file_uri_text() {
@@ -121,6 +125,20 @@ mod tests {
             "open file:///tmp/one in the file manager"
         ));
         assert!(!looks_like_file_uri_list(""));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn encodes_linux_file_clipboard_targets() {
+        let path = PathBuf::from("/tmp/file with # and 中文.txt");
+        let uri = "file:///tmp/file%20with%20%23%20and%20%E4%B8%AD%E6%96%87.txt";
+        assert_eq!(file_uri_from_path(Path::new(&path)), uri);
+
+        let payload = linux_file_clipboard_payload(&[path.clone()]);
+        assert_eq!(payload.uri_list, format!("{uri}\r\n"));
+        assert_eq!(payload.gnome_copy, format!("copy\n{uri}"));
+        assert_eq!(payload.kde_copy, "0");
+        assert_eq!(payload.plain_text, path.to_string_lossy());
     }
 }
 
@@ -192,7 +210,79 @@ fn looks_like_file_uri_list(content: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn file_uri_from_path(path: &Path) -> String {
-    format!("file://{}", path.to_string_lossy().replace('\\', "/"))
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let encoded = normalized
+        .split('/')
+        .map(urlencoding::encode)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("file://{encoded}")
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LinuxFileClipboardPayload {
+    uri_list: String,
+    gnome_copy: String,
+    kde_copy: String,
+    plain_text: String,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_file_clipboard_payload(paths: &[PathBuf]) -> LinuxFileClipboardPayload {
+    let uris = paths
+        .iter()
+        .map(|path| file_uri_from_path(path))
+        .collect::<Vec<_>>();
+    LinuxFileClipboardPayload {
+        uri_list: format!("{}\r\n", uris.join("\r\n")),
+        gnome_copy: format!("copy\n{}", uris.join("\n")),
+        kde_copy: "0".to_string(),
+        plain_text: paths
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_linux_file_clipboard(payload: LinuxFileClipboardPayload) -> Result<(), String> {
+    use gtk::{TargetEntry, TargetFlags};
+
+    const GNOME_COPY: u32 = 0;
+    const URI_LIST: u32 = 1;
+    const KDE_COPY: u32 = 2;
+    const PLAIN_TEXT: u32 = 3;
+
+    let targets = [
+        TargetEntry::new(
+            "x-special/gnome-copied-files",
+            TargetFlags::empty(),
+            GNOME_COPY,
+        ),
+        TargetEntry::new("text/uri-list", TargetFlags::empty(), URI_LIST),
+        TargetEntry::new(
+            "application/x-kde-cutselection",
+            TargetFlags::empty(),
+            KDE_COPY,
+        ),
+        TargetEntry::new("text/plain;charset=utf-8", TargetFlags::empty(), PLAIN_TEXT),
+    ];
+    let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+    let success = clipboard.set_with_data(&targets, move |_clipboard, selection, info| {
+        let bytes = match info {
+            GNOME_COPY => payload.gnome_copy.as_bytes(),
+            URI_LIST => payload.uri_list.as_bytes(),
+            KDE_COPY => payload.kde_copy.as_bytes(),
+            PLAIN_TEXT => payload.plain_text.as_bytes(),
+            _ => return,
+        };
+        selection.set(&selection.target(), 8, bytes);
+    });
+    success
+        .then_some(())
+        .ok_or_else(|| "GTK rejected the file clipboard data".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -334,6 +424,8 @@ pub struct ClipboardMonitor {
     last_macos_clipboard_change_count: Arc<Mutex<i64>>,
     #[cfg(target_os = "linux")]
     last_linux_clipboard_timestamp: Arc<Mutex<String>>,
+    #[cfg(target_os = "linux")]
+    linux_app_handle: Arc<std::sync::Mutex<Option<tauri::AppHandle>>>,
 }
 
 impl Clone for ClipboardMonitor {
@@ -351,6 +443,8 @@ impl Clone for ClipboardMonitor {
             last_macos_clipboard_change_count: self.last_macos_clipboard_change_count.clone(),
             #[cfg(target_os = "linux")]
             last_linux_clipboard_timestamp: self.last_linux_clipboard_timestamp.clone(),
+            #[cfg(target_os = "linux")]
+            linux_app_handle: self.linux_app_handle.clone(),
         }
     }
 }
@@ -385,7 +479,16 @@ impl ClipboardMonitor {
             last_macos_clipboard_change_count: Arc::new(Mutex::new(0)),
             #[cfg(target_os = "linux")]
             last_linux_clipboard_timestamp: Arc::new(Mutex::new(String::new())),
+            #[cfg(target_os = "linux")]
+            linux_app_handle: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_app_handle(&self, app_handle: tauri::AppHandle) {
+        if let Ok(mut handle) = self.linux_app_handle.lock() {
+            *handle = Some(app_handle);
+        }
     }
 
     pub async fn mark_internal_change(&self) {
@@ -1422,34 +1525,21 @@ impl ClipboardMonitor {
 
         #[cfg(target_os = "linux")]
         {
-            use std::io::Write;
-            use std::process::Stdio;
-
-            let uri_list = paths
-                .iter()
-                .map(|path| file_uri_from_path(path.as_path()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut child = Command::new("xclip")
-                .arg("-selection")
-                .arg("clipboard")
-                .arg("-t")
-                .arg("text/uri-list")
-                .arg("-in")
-                .stdin(Stdio::piped())
-                .spawn()?;
-
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(uri_list.as_bytes())?;
-            }
-
-            let status = child.wait()?;
-            if status.success() {
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                Ok(())
-            } else {
-                Err(format!("xclip file write failed: {}", status).into())
-            }
+            let app_handle = self
+                .linux_app_handle
+                .lock()
+                .map_err(|_| "Linux clipboard app handle lock is poisoned")?
+                .clone()
+                .ok_or("Linux clipboard app handle is unavailable")?;
+            let payload = linux_file_clipboard_payload(&paths);
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            app_handle.run_on_main_thread(move || {
+                let _ = sender.send(set_linux_file_clipboard(payload));
+            })?;
+            receiver
+                .await
+                .map_err(|_| "Linux clipboard main-thread task was cancelled")?
+                .map_err(Into::into)
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

@@ -182,6 +182,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
 
   return (
     <div
+      data-testid="content-editor"
       className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-xl transition-colors duration-300"
       style={{
         backgroundColor: isDark ? "rgba(0,0,0,0.4)" : "rgba(0,0,0,0.2)",
@@ -244,6 +245,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
         {/* Editor */}
         <div className="p-3 overflow-hidden">
           <textarea
+            data-testid="content-editor-textarea"
             ref={textareaRef}
             value={editedContent}
             onChange={(e) => setEditedContent(e.target.value)}

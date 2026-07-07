@@ -48,6 +48,7 @@ export const StatusOverlay: React.FC<StatusOverlayProps> = ({
       {/* No search results */}
       {isSearchMode && searchResults.length === 0 && !isSearching && (
         <div
+          data-testid="clipboard-no-results"
           style={{
             position: "absolute",
             top: "50%",
@@ -69,6 +70,7 @@ export const StatusOverlay: React.FC<StatusOverlayProps> = ({
       {/* Empty state */}
       {totalCount === 0 && !isLoading && !isSearchMode && (
         <div
+          data-testid="clipboard-empty-state"
           style={{
             position: "absolute",
             top: "50%",

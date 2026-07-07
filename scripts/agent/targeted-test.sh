@@ -63,15 +63,36 @@ run() {
   ran=1
 }
 
+needs_e2e=0
+needs_native_smoke=0
+
 if printf '%s\n' "$files" | rg '^src-tauri/src/sync/|^src-tauri/Cargo\.(toml|lock)$' >/dev/null; then
   run cargo test --manifest-path src-tauri/Cargo.toml sync::
 elif printf '%s\n' "$files" | rg '^src-tauri/src/.*\.rs$' >/dev/null; then
   run cargo test --manifest-path src-tauri/Cargo.toml
 fi
 
-if printf '%s\n' "$files" | rg '^src/.*\.(ts|tsx)$|^package(-lock)?\.json$|^tsconfig' >/dev/null; then
+if printf '%s\n' "$files" | rg '^src-tauri/src/(commands/|main\.rs)|^src-tauri/tauri\.conf\.json|^src-tauri/capabilities/' >/dev/null; then
+  needs_e2e=1
+  needs_native_smoke=1
+fi
+
+if printf '%s\n' "$files" | rg '^src/.*\.(ts|tsx)$|^package(-lock)?\.json$|^tsconfig|^vite\.config\.ts$|^playwright\.config\.ts$|^tests/e2e/' >/dev/null; then
   run npx tsc --noEmit
   run npm run test:run
+  needs_e2e=1
+fi
+
+if printf '%s\n' "$files" | rg '^src/lib/tauri-api\.ts$' >/dev/null; then
+  needs_native_smoke=1
+fi
+
+if [ "$needs_e2e" -eq 1 ]; then
+  run npm run test:e2e
+fi
+
+if [ "$needs_native_smoke" -eq 1 ] && [ "${CLIPORAX_NATIVE_SMOKE:-0}" = "1" ]; then
+  run scripts/agent/tauri-smoke.sh
 fi
 
 if printf '%s\n' "$files" | rg '^plugins/com\.cliporax\.cloud-sync/' >/dev/null; then

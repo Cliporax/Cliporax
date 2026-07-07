@@ -50,6 +50,9 @@ release
 # stores test coverage
 coverage
 .nyc_output
+test-results/
+playwright-report/
+artifacts/
 
 # IDE - VSCode
 .vscode/*

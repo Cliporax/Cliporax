@@ -584,6 +584,7 @@ dependencies = [
  "dirs 5.0.1",
  "env_logger",
  "fs2",
+ "gtk",
  "image",
  "lazy_static",
  "log",

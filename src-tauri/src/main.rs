@@ -149,6 +149,8 @@ fn main() {
                     log::error!("[Main] ERROR: Failed to create clipboard monitor: {}", e);
                     Box::<dyn std::error::Error>::from(e.to_string())
                 })?;
+                #[cfg(target_os = "linux")]
+                clipboard_monitor.set_app_handle(app_handle.clone());
 
                 // Start clipboard monitoring in background
                 let db_clone = db.clone();

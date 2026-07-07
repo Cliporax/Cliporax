@@ -228,6 +228,7 @@ const TitleBar: React.FC = () => {
 
         {/* Settings Button */}
         <button
+          data-testid="settings-button"
           onClick={async () => {
             logger.debug("Opening settings window");
             try {

@@ -657,6 +657,7 @@ const Settings: React.FC<SettingsProps> = ({
           ].map((option) => (
             <button
               key={option.value}
+              data-testid={`settings-theme-${option.value}`}
               onClick={() => {
                 const themeValue = option.value as GeneralSettings["theme"];
                 const newGeneral = { ...generalSettings, theme: themeValue };
@@ -839,6 +840,7 @@ const Settings: React.FC<SettingsProps> = ({
           ].map((option) => (
             <button
               key={option.value}
+              data-testid={`settings-line-height-${option.value}`}
               onClick={async () => {
                 const newHeight = option.value as GeneralSettings["lineHeight"];
                 const newGeneral = {
@@ -1493,6 +1495,7 @@ const Settings: React.FC<SettingsProps> = ({
 
   return (
     <div
+      data-testid="settings-panel"
       className={
         isWindow
           ? "w-full h-full flex flex-col overflow-hidden"

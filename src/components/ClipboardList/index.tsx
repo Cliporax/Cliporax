@@ -1342,6 +1342,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     return (
       <div
+        data-testid="clipboard-list"
         style={{
           display: "flex",
           width: "100%",
@@ -1352,6 +1353,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       >
         {/* Main scroll area - hide native scrollbar */}
         <div
+          data-testid="clipboard-scroll-container"
           ref={containerRef}
           onScroll={handleScroll}
           onWheelCapture={handleWheelCapture}

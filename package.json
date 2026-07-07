@@ -26,7 +26,12 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "debug:e2e": "playwright test --trace on --headed",
+    "debug:e2e:ui": "playwright test --ui",
+    "auto-debug": "scripts/agent/auto-debug.sh",
+    "tauri:smoke": "scripts/agent/tauri-smoke.sh"
   },
   "keywords": [],
   "author": {
@@ -35,6 +40,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/cli": "^2.11.2",
     "@testing-library/jest-dom": "^6.9.1",

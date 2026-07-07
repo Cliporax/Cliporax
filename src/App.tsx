@@ -357,6 +357,7 @@ function App() {
   ) : (
     <ExtensionManagerProvider>
       <div
+        data-testid="app-shell"
         className="flex flex-col h-screen w-screen transition-colors duration-300"
         style={{
           border: isDark
@@ -439,6 +440,7 @@ function App() {
                   style={{ color: isDark ? "#94a3b8" : "#8a8a88" }}
                 />
                 <input
+                  data-testid="search-input"
                   ref={searchInputRef}
                   type="text"
                   placeholder={t("app.searchPlaceholder")}
