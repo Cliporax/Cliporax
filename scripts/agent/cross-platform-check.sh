@@ -84,7 +84,15 @@ else
   pass 'No obvious hard-coded Rust path assembly found'
 fi
 
-section '7. Rust clippy'
+section "7. Windows shell child-process window scan"
+if rg -n -U -P "(Command::new\(\"(?:powershell|cmd(?:\\.exe)?)\"\)|tokio::process::Command::new\(\"(?:powershell|cmd(?:\\.exe)?)\"\))(?:(?!creation_flags\((?:CREATE_NO_WINDOW|0x08000000)\)).|\n){0,900}\.(?:status|output|spawn)\(" src-tauri/src --glob "*.rs" > /tmp/cliporax_windows_shell_windows.txt 2>/dev/null; then
+  cat /tmp/cliporax_windows_shell_windows.txt
+  fail "Windows powershell/cmd child process may show a console window; use CREATE_NO_WINDOW"
+else
+  pass "Windows powershell/cmd child processes hide console windows"
+fi
+
+section "8. Rust clippy"
 if (cd src-tauri && cargo clippy -- -D warnings) >/tmp/cliporax_clippy.txt 2>&1; then
   pass 'cargo clippy passed'
 else
@@ -92,7 +100,7 @@ else
   fail 'cargo clippy failed'
 fi
 
-section '8. TypeScript typecheck'
+section '9. TypeScript typecheck'
 if npx tsc --noEmit >/tmp/cliporax_tsc.txt 2>&1; then
   pass 'TypeScript typecheck passed'
 else
@@ -100,7 +108,7 @@ else
   fail 'TypeScript typecheck failed'
 fi
 
-section '9. New unwrap/expect in diff'
+section '10. New unwrap/expect in diff'
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   if git diff -U0 HEAD -- '*.rs' 2>/dev/null | rg '^\+.*\.(unwrap\(\)|expect\()' >/tmp/cliporax_new_unwrap.txt 2>/dev/null; then
     cat /tmp/cliporax_new_unwrap.txt

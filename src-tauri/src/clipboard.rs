@@ -10,6 +10,8 @@ use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
 use regex::Regex;
 use serde_json;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as _;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,8 +19,13 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
+#[cfg(target_os = "windows")]
+use tokio::os::windows::process::CommandExt as _;
 use tokio::sync::Mutex;
 use tokio::time::interval;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 lazy_static::lazy_static! {
     static ref SENSITIVE_REGEX: Regex = Regex::new(r"(?i)(password|code|otp|验证码|secret|key)").unwrap();
@@ -309,9 +316,12 @@ async fn get_windows_file_list() -> Option<Vec<String>> {
         .args([
             "-NoProfile",
             "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-Command",
             "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }",
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_millis(800), command.output())
         .await
@@ -1489,8 +1499,12 @@ impl ClipboardMonitor {
             let script = format!("Set-Clipboard -LiteralPath @({})", quoted_paths);
             let status = Command::new("powershell")
                 .arg("-NoProfile")
+                .arg("-NonInteractive")
+                .arg("-WindowStyle")
+                .arg("Hidden")
                 .arg("-Command")
                 .arg(script)
+                .creation_flags(CREATE_NO_WINDOW)
                 .status()?;
             if status.success() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
