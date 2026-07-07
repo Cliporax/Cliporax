@@ -95,12 +95,6 @@ if [ "$needs_native_smoke" -eq 1 ] && [ "${CLIPORAX_NATIVE_SMOKE:-0}" = "1" ]; t
   run scripts/agent/tauri-smoke.sh
 fi
 
-if printf '%s\n' "$files" | rg '^plugins/com\.cliporax\.cloud-sync/' >/dev/null; then
-  if [ -f plugins/com.cliporax.cloud-sync/package.json ]; then
-    run npm --prefix plugins/com.cliporax.cloud-sync run build
-  fi
-fi
-
 if [ "$ran" -eq 0 ]; then
   echo 'No targeted test mapping matched these files.'
 fi

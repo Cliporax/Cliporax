@@ -89,6 +89,17 @@ describe("Tauri API Tests", () => {
 
       expect(mockInvoke).toHaveBeenCalledWith("tabs_delete", { id: tabId });
     });
+
+    it("should rename tab successfully", async () => {
+      const tabId = 2;
+      const name = "Work";
+
+      mockInvoke.mockResolvedValue(undefined);
+
+      await tauriApi.tabs.rename(tabId, name);
+
+      expect(mockInvoke).toHaveBeenCalledWith("tabs_rename", { id: tabId, name });
+    });
   });
 
   describe("Clipboard API", () => {

@@ -23,10 +23,6 @@ else
   pass 'No obvious package artifact in status'
 fi
 
-if printf '%s\n' "$status" | rg 'plugins/com\.cliporax\.cloud-sync/package-lock\.json' >/dev/null && [ -f plugins/com.cliporax.cloud-sync/yarn.lock ]; then
-  warn 'package-lock.json present while cloud-sync plugin uses yarn.lock'
-fi
-
 if printf '%s\n' "$status" | rg '^A  .*bridge|^A  .*bridge-api|^A  .*\.env\.bridge' >/dev/null; then
   warn 'Bridge-related files are staged; confirm user asked for bridge work'
 fi

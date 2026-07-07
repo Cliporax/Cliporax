@@ -1,6 +1,6 @@
 # Cliporax Plugin System Design
 
-This document describes the local plugin system used by Cliporax: package layout, manifests, permissions, lifecycle, backend IPC, frontend extension points, and the current implementation roadmap.
+This document describes the plugin system used by Cliporax: market package layout, manifests, permissions, lifecycle, backend IPC, frontend extension points, and the current implementation roadmap.
 
 ## 1. Goals
 
@@ -8,7 +8,7 @@ The plugin system is designed to let users extend clipboard workflows without gi
 
 Key goals:
 
-- Keep plugin packages local and inspectable.
+- Keep installed plugin packages local and inspectable.
 - Require explicit permission declarations in `manifest.json`.
 - Keep permissions least-privilege and auditable.
 - Support UI extension points such as card actions and settings panels.
@@ -17,22 +17,25 @@ Key goals:
 
 Non-goals for the current implementation:
 
-- A hosted plugin marketplace.
-- Automatic remote download and update flows.
+- Keeping official plugin source copies inside the main app repository.
 - Running arbitrary native binaries as plugins.
 - Granting unrestricted filesystem, clipboard, or network access.
 
 ## 2. High-Level Architecture
 
 ```text
-plugins/
+CliporaxPlugins/plugins/
 └── com.example.myplugin/
     ├── manifest.json
     ├── main.js
     ├── assets/
-    ├── src/
-    ├── package.json
-    └── tsconfig.json
+    └── src/
+
+app-data/plugins/
+└── com.example.myplugin/
+    ├── manifest.json
+    ├── main.js
+    └── assets/
 
 src-tauri/src/plugin/
 ├── manifest.rs
@@ -60,7 +63,7 @@ Plugins move through a small set of explicit states:
 
 | State | Meaning |
 | --- | --- |
-| `Discovered` | The package exists under `plugins/`. |
+| `Discovered` | The package exists under the app data `plugins/` directory. |
 | `Validated` | The manifest was parsed and passed validation. |
 | `Loaded` | Metadata and script content are available to the runtime. |
 | `PendingPermission` | Required permissions have not been granted yet. |
@@ -68,7 +71,7 @@ Plugins move through a small set of explicit states:
 | `Inactive` | The plugin is installed but disabled. |
 | `Unloaded` | Runtime state has been released. |
 
-Lifecycle operations are exposed through Tauri commands. The frontend should call the typed wrappers in `src/lib/tauri-api.ts` instead of raw `invoke` calls.
+Lifecycle operations are exposed through Tauri commands. The frontend should call the typed wrappers in `src/plugin/api/pluginApi.ts` instead of raw `invoke` calls.
 
 ## 4. Manifest Format
 
@@ -309,7 +312,7 @@ Important backend responsibilities:
 - Serve plugin metadata and scripts over IPC.
 - Avoid logging secrets, credentials, or full clipboard content.
 
-Persistent plugin state is stored in `plugins/.plugin_state.json`. On startup, the app discovers plugin directories, reads saved state, restores enabled plugins, restores granted permissions, and loads active plugins.
+Persistent plugin state is stored in the app data plugin directory as `.plugin_state.json`. On startup, the app discovers plugin directories, reads saved state, restores enabled plugins, restores granted permissions, and loads active plugins.
 
 ## 9. Frontend Integration
 

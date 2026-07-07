@@ -30,7 +30,10 @@ async function installPlugins() {
   const runtimeDir = getRuntimePluginDir();
   await mkdir(runtimeDir, { recursive: true });
 
-  const entries = await readdir(PLUGINS_DIR);
+  const entries = await readdir(PLUGINS_DIR).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
   let installed = 0;
 
   for (const entry of entries) {

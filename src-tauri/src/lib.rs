@@ -29,12 +29,3 @@ pub use window_utils::{
     force_focus_window, hide_main_window, record_focused_window, restore_and_paste,
     restore_focused_window, show_main_window, show_or_hide_main_window, simulate_paste,
 };
-
-// Global variables have moved to WindowState; exports are kept for legacy compatibility
-// TODO: Remove these exports after the migration is complete
-pub use state::window_state::CONTEXT_MENU_OPEN;
-pub use state::window_state::PASTE_IN_PROGRESS;
-pub use state::window_state::SHORTCUT_IN_PROGRESS;
-pub use state::window_state::WINDOW_DRAGGING;
-pub use state::window_state::WINDOW_PINNED;
-pub use state::window_state::WINDOW_RESIZING;

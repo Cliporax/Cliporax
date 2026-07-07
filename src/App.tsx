@@ -96,7 +96,7 @@ function App() {
     exitMultiSelectMode,
   } = useUIStore();
 
-  // General settings (still in local state for now, can be moved to settingsStore)
+  // Settings stay local to the window and are synchronized through useSettingsSync.
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(
     () => loadSettings().general,
   );

@@ -2,8 +2,8 @@
  * Plugin API - IPC wrappers for plugin system
  */
 
-import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { invokeIpc } from "../../utils/ipc-command";
 import { createLogger } from "../../utils/logger";
 import type {
   PluginInfo,
@@ -48,96 +48,95 @@ export const pluginApi = {
    * Get all discovered plugins
    */
   getAll: async (): Promise<PluginInfo[]> => {
-    logger.debug("getAll() called");
-    try {
-      const result = await invoke<PluginInfo[]>("plugin_get_all");
-      logger.debug("getAll() returned", result.length, "plugins");
-      return result;
-    } catch (error) {
-      logger.error("getAll() failed:", error);
-      throw error;
-    }
+    return invokeIpc<PluginInfo[]>({
+      logger,
+      label: "getAll",
+      command: "plugin_get_all",
+      onSuccess: (result) =>
+        logger.debug("getAll() returned", result.length, "plugins"),
+    });
   },
 
   /**
    * Get plugin detail
    */
   getDetail: async (pluginId: string): Promise<PluginDetail> => {
-    logger.debug("getDetail() called:", pluginId);
-    try {
-      const result = await invoke<PluginDetail>("plugin_get_detail", {
+    return invokeIpc<PluginDetail>({
+      logger,
+      label: "getDetail",
+      command: "plugin_get_detail",
+      args: {
         pluginId,
-      });
-      logger.debug("getDetail() returned:", result.manifest.name);
-      return result;
-    } catch (error) {
-      logger.error("getDetail() failed:", error);
-      throw error;
-    }
+      },
+      logArgs: [pluginId],
+      onSuccess: (result) =>
+        logger.debug("getDetail() returned:", result.manifest.name),
+    });
   },
 
   /**
    * Load a plugin
    */
   load: async (pluginId: string): Promise<LoadResult> => {
-    logger.debug("load() called:", pluginId);
-    try {
-      const result = await invoke<LoadResult>("plugin_load", { pluginId });
-      if ("success" in result) {
-        logger.info("load() success:", pluginId);
-      } else {
-        logger.info("load() requires permissions:", pluginId);
-      }
-      return result;
-    } catch (error) {
-      logger.error("load() failed:", error);
-      throw error;
-    }
+    return invokeIpc<LoadResult>({
+      logger,
+      label: "load",
+      command: "plugin_load",
+      args: { pluginId },
+      logArgs: [pluginId],
+      onSuccess: (result) => {
+        if ("success" in result) {
+          logger.info("load() success:", pluginId);
+        } else {
+          logger.info("load() requires permissions:", pluginId);
+        }
+      },
+    });
   },
 
   /**
    * Activate a plugin
    */
   activate: async (pluginId: string): Promise<void> => {
-    logger.debug("activate() called:", pluginId);
-    try {
-      await invoke("plugin_activate", { pluginId });
-      logger.info("activate() success:", pluginId);
-      await notifyPluginChanged(pluginId, "activate");
-    } catch (error) {
-      logger.error("activate() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "activate",
+      command: "plugin_activate",
+      args: { pluginId },
+      logArgs: [pluginId],
+      onSuccess: () => logger.info("activate() success:", pluginId),
+    });
+    await notifyPluginChanged(pluginId, "activate");
   },
 
   /**
    * Deactivate a plugin
    */
   deactivate: async (pluginId: string): Promise<void> => {
-    logger.debug("deactivate() called:", pluginId);
-    try {
-      await invoke("plugin_deactivate", { pluginId });
-      logger.info("deactivate() success:", pluginId);
-      await notifyPluginChanged(pluginId, "deactivate");
-    } catch (error) {
-      logger.error("deactivate() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "deactivate",
+      command: "plugin_deactivate",
+      args: { pluginId },
+      logArgs: [pluginId],
+      onSuccess: () => logger.info("deactivate() success:", pluginId),
+    });
+    await notifyPluginChanged(pluginId, "deactivate");
   },
 
   /**
    * Unload a plugin
    */
   unload: async (pluginId: string): Promise<void> => {
-    logger.debug("unload() called:", pluginId);
-    try {
-      await invoke("plugin_unload", { pluginId });
-      logger.info("unload() success:", pluginId);
-      await notifyPluginChanged(pluginId, "unload");
-    } catch (error) {
-      logger.error("unload() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "unload",
+      command: "plugin_unload",
+      args: { pluginId },
+      logArgs: [pluginId],
+      onSuccess: () => logger.info("unload() success:", pluginId),
+    });
+    await notifyPluginChanged(pluginId, "unload");
   },
 
   /**
@@ -147,43 +146,43 @@ export const pluginApi = {
     pluginId: string,
     permission: string,
   ): Promise<void> => {
-    logger.debug("grantPermission() called:", pluginId, permission);
-    try {
-      await invoke("plugin_grant_permission", { pluginId, permission });
-      logger.info("grantPermission() success:", pluginId, permission);
-    } catch (error) {
-      logger.error("grantPermission() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "grantPermission",
+      command: "plugin_grant_permission",
+      args: { pluginId, permission },
+      logArgs: [pluginId, permission],
+      onSuccess: () =>
+        logger.info("grantPermission() success:", pluginId, permission),
+    });
   },
 
   /**
    * Get plugin configuration
    */
   getConfig: async (pluginId: string): Promise<unknown> => {
-    logger.debug("getConfig() called:", pluginId);
-    try {
-      const result = await invoke("plugin_get_config", { pluginId });
-      return result;
-    } catch (error) {
-      logger.error("getConfig() failed:", error);
-      throw error;
-    }
+    return invokeIpc<unknown>({
+      logger,
+      label: "getConfig",
+      command: "plugin_get_config",
+      args: { pluginId },
+      logArgs: [pluginId],
+    });
   },
 
   /**
    * Update plugin configuration
    */
   updateConfig: async (pluginId: string, config: unknown): Promise<void> => {
-    logger.debug("updateConfig() called:", pluginId);
-    try {
-      await invoke("plugin_update_config", { pluginId, config });
-      logger.info("updateConfig() success:", pluginId);
-      await notifyPluginChanged(pluginId, "update-config");
-    } catch (error) {
-      logger.error("updateConfig() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "updateConfig",
+      command: "plugin_update_config",
+      args: { pluginId, config },
+      logArgs: [pluginId],
+      onSuccess: () => logger.info("updateConfig() success:", pluginId),
+    });
+    await notifyPluginChanged(pluginId, "update-config");
   },
 
   updateShortcut: async (
@@ -191,176 +190,156 @@ export const pluginApi = {
     oldShortcut: string | null,
     newShortcut: string,
   ): Promise<void> => {
-    logger.debug("updateShortcut() called:", pluginId, oldShortcut, newShortcut);
-    try {
-      await invoke("plugin_shortcut_update", {
+    await invokeIpc<void>({
+      logger,
+      label: "updateShortcut",
+      command: "plugin_shortcut_update",
+      args: {
         pluginId,
         oldShortcut: oldShortcut ? toTauriShortcut(oldShortcut) : null,
         newShortcut: toTauriShortcut(newShortcut),
-      });
-      logger.info("updateShortcut() success:", pluginId);
-    } catch (error) {
-      logger.error("updateShortcut() failed:", error);
-      throw error;
-    }
+      },
+      logArgs: [pluginId, oldShortcut, newShortcut],
+      onSuccess: () => logger.info("updateShortcut() success:", pluginId),
+    });
   },
 
   unregisterShortcut: async (
     pluginId: string,
     shortcut: string,
   ): Promise<void> => {
-    logger.debug("unregisterShortcut() called:", pluginId, shortcut);
-    try {
-      await invoke("plugin_shortcut_unregister", {
+    await invokeIpc<void>({
+      logger,
+      label: "unregisterShortcut",
+      command: "plugin_shortcut_unregister",
+      args: {
         pluginId,
         shortcut: toTauriShortcut(shortcut),
-      });
-      logger.info("unregisterShortcut() success:", pluginId);
-    } catch (error) {
-      logger.error("unregisterShortcut() failed:", error);
-      throw error;
-    }
+      },
+      logArgs: [pluginId, shortcut],
+      onSuccess: () => logger.info("unregisterShortcut() success:", pluginId),
+    });
   },
 
   /**
    * Get all permission definitions
    */
   getPermissionDefinitions: async (): Promise<Permission[]> => {
-    logger.debug("getPermissionDefinitions() called");
-    try {
-      const result = await invoke<Permission[]>(
-        "plugin_get_permission_definitions",
-      );
-      logger.debug(
-        "getPermissionDefinitions() returned",
-        result.length,
-        "permissions",
-      );
-      return result;
-    } catch (error) {
-      logger.error("getPermissionDefinitions() failed:", error);
-      throw error;
-    }
+    return invokeIpc<Permission[]>({
+      logger,
+      label: "getPermissionDefinitions",
+      command: "plugin_get_permission_definitions",
+      onSuccess: (result) =>
+        logger.debug(
+          "getPermissionDefinitions() returned",
+          result.length,
+          "permissions",
+        ),
+    });
   },
 
   /**
    * Discover plugins
    */
   discover: async (): Promise<string[]> => {
-    logger.debug("discover() called");
-    try {
-      const result = await invoke<string[]>("plugin_discover");
-      logger.info("discover() found", result.length, "plugins");
-      return result;
-    } catch (error) {
-      logger.error("discover() failed:", error);
-      throw error;
-    }
+    return invokeIpc<string[]>({
+      logger,
+      label: "discover",
+      command: "plugin_discover",
+      onSuccess: (result) =>
+        logger.info("discover() found", result.length, "plugins"),
+    });
   },
 
   /**
    * Get plugin state
    */
   getState: async (pluginId: string): Promise<PluginState> => {
-    logger.debug("getState() called:", pluginId);
-    try {
-      const result = await invoke<PluginState>("plugin_get_state", {
-        pluginId,
-      });
-      return result;
-    } catch (error) {
-      logger.error("getState() failed:", error);
-      throw error;
-    }
+    return invokeIpc<PluginState>({
+      logger,
+      label: "getState",
+      command: "plugin_get_state",
+      args: { pluginId },
+      logArgs: [pluginId],
+    });
   },
 
   /**
    * Read plugin script content
    */
   readScript: async (pluginId: string): Promise<string> => {
-    logger.debug("readScript() called:", pluginId);
-    try {
-      const result = await invoke<string>("plugin_read_script", {
-        pluginId,
-      });
-      logger.info("readScript() success, length:", result.length);
-      return result;
-    } catch (error) {
-      logger.error("readScript() failed:", error);
-      throw error;
-    }
+    return invokeIpc<string>({
+      logger,
+      label: "readScript",
+      command: "plugin_read_script",
+      args: { pluginId },
+      logArgs: [pluginId],
+      onSuccess: (result) =>
+        logger.info("readScript() success, length:", result.length),
+    });
   },
 
   getMarketSources: async (): Promise<PluginMarketSource[]> => {
-    logger.debug("getMarketSources() called");
-    try {
-      return await invoke<PluginMarketSource[]>("plugin_market_get_sources");
-    } catch (error) {
-      logger.error("getMarketSources() failed:", error);
-      throw error;
-    }
+    return invokeIpc<PluginMarketSource[]>({
+      logger,
+      label: "getMarketSources",
+      command: "plugin_market_get_sources",
+    });
   },
 
   refreshMarket: async (): Promise<MarketRefreshResult> => {
-    logger.debug("refreshMarket() called");
-    try {
-      const result = await invoke<MarketRefreshResult>("plugin_market_refresh");
-      logger.info("refreshMarket() returned", result.plugins.length, "plugins");
-      return result;
-    } catch (error) {
-      logger.error("refreshMarket() failed:", error);
-      throw error;
-    }
+    return invokeIpc<MarketRefreshResult>({
+      logger,
+      label: "refreshMarket",
+      command: "plugin_market_refresh",
+      onSuccess: (result) =>
+        logger.info("refreshMarket() returned", result.plugins.length, "plugins"),
+    });
   },
 
   getMarketPlugins: async (): Promise<MarketRefreshResult> => {
-    logger.debug("getMarketPlugins() called");
-    try {
-      return await invoke<MarketRefreshResult>("plugin_market_get_plugins");
-    } catch (error) {
-      logger.error("getMarketPlugins() failed:", error);
-      throw error;
-    }
+    return invokeIpc<MarketRefreshResult>({
+      logger,
+      label: "getMarketPlugins",
+      command: "plugin_market_get_plugins",
+    });
   },
 
   installFromMarket: async (pluginId: string): Promise<InstallPluginResult> => {
-    logger.debug("installFromMarket() called:", pluginId);
-    try {
-      const result = await invoke<InstallPluginResult>("plugin_market_install", {
+    const result = await invokeIpc<InstallPluginResult>({
+      logger,
+      label: "installFromMarket",
+      command: "plugin_market_install",
+      args: {
         request: { pluginId },
-      });
-      await notifyPluginChanged(pluginId, "install");
-      return result;
-    } catch (error) {
-      logger.error("installFromMarket() failed:", error);
-      throw error;
-    }
+      },
+      logArgs: [pluginId],
+    });
+    await notifyPluginChanged(pluginId, "install");
+    return result;
   },
 
   uninstallFromMarket: async (pluginId: string): Promise<void> => {
-    logger.debug("uninstallFromMarket() called:", pluginId);
-    try {
-      await invoke("plugin_market_uninstall", { pluginId });
-      await notifyPluginChanged(pluginId, "uninstall");
-    } catch (error) {
-      logger.error("uninstallFromMarket() failed:", error);
-      throw error;
-    }
+    await invokeIpc<void>({
+      logger,
+      label: "uninstallFromMarket",
+      command: "plugin_market_uninstall",
+      args: { pluginId },
+      logArgs: [pluginId],
+    });
+    await notifyPluginChanged(pluginId, "uninstall");
   },
 
   getMarketInstallStatus: async (
     pluginId: string,
   ): Promise<MarketInstallStatus> => {
-    logger.debug("getMarketInstallStatus() called:", pluginId);
-    try {
-      return await invoke<MarketInstallStatus>(
-        "plugin_market_get_install_status",
-        { pluginId },
-      );
-    } catch (error) {
-      logger.error("getMarketInstallStatus() failed:", error);
-      throw error;
-    }
+    return invokeIpc<MarketInstallStatus>({
+      logger,
+      label: "getMarketInstallStatus",
+      command: "plugin_market_get_install_status",
+      args: { pluginId },
+      logArgs: [pluginId],
+    });
   },
 };
 
