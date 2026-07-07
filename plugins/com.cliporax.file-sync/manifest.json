@@ -57,7 +57,7 @@
   },
   "icon": "assets/icon.svg",
   "main": "main.js",
-  "minAppVersion": "1.1.0",
+  "minAppVersion": "1.2.0",
   "market": {
     "author": "Cliporax",
     "type": "sync"
