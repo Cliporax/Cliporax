@@ -197,7 +197,7 @@ pub fn parse_sftp_remote_root(remote_root: &str) -> Result<(String, u16, String)
     let (host_port, path) = if let Some(slash_pos) = root.find('/') {
         (&root[..slash_pos], &root[slash_pos..])
     } else {
-        (root, "/Cliporax/v1")
+        (root, "/cliporax/v1")
     };
 
     if host_port.trim().is_empty() {

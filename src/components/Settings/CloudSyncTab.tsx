@@ -73,7 +73,7 @@ const DEFAULT_FORM: FormState = {
   password: "",
   privateKey: "",
   passphrase: "",
-  remoteRoot: "/Cliporax/v1",
+  remoteRoot: "/cliporax/v1",
   sftpPort: 22,
   authMethod: "password",
   selectedTabs: [],
@@ -98,25 +98,25 @@ const PROVIDER_DEFAULTS: Record<
   webdav: {
     profileName: "Personal WebDAV",
     serverUrl: "https://dav.example.com/remote.php/dav/files/me",
-    remoteRoot: "/Cliporax/v1",
+    remoteRoot: "/cliporax/v1",
     authMethod: "password",
   },
   sftp: {
     profileName: "Personal SFTP",
     serverUrl: "sftp.example.com",
-    remoteRoot: "/Cliporax/v1",
+    remoteRoot: "/cliporax/v1",
     authMethod: "password",
   },
   google_drive: {
     profileName: "Google Drive Sync",
     serverUrl: "",
-    remoteRoot: "Cliporax/v1",
+    remoteRoot: "cliporax/v1",
     authMethod: "password",
   },
   one_drive: {
     profileName: "OneDrive Sync",
     serverUrl: "",
-    remoteRoot: "Cliporax/v1",
+    remoteRoot: "cliporax/v1",
     authMethod: "password",
   },
 };
@@ -214,7 +214,7 @@ const buildSftpRemoteRoot = (host: string, port: number, remoteRoot: string) => 
   const trimmedHost = host.trim().replace(/^sftp:\/\//, "").replace(/\/.*$/, "");
   const normalizedRoot = remoteRoot.trim().startsWith("/")
     ? remoteRoot.trim()
-    : `/${remoteRoot.trim() || "Cliporax/v1"}`;
+    : `/${remoteRoot.trim() || trimSlashes(PROVIDER_DEFAULTS.sftp.remoteRoot)}`;
   return `sftp://${trimmedHost}:${port}${normalizedRoot}`;
 };
 
@@ -222,7 +222,7 @@ const parseSftpRemoteRoot = (remoteRoot: string) => {
   const withoutScheme = remoteRoot.replace(/^sftp:\/\//, "");
   const slashIndex = withoutScheme.indexOf("/");
   const hostPort = slashIndex >= 0 ? withoutScheme.slice(0, slashIndex) : withoutScheme;
-  const path = slashIndex >= 0 ? withoutScheme.slice(slashIndex) : "/Cliporax/v1";
+  const path = slashIndex >= 0 ? withoutScheme.slice(slashIndex) : PROVIDER_DEFAULTS.sftp.remoteRoot;
   const colonIndex = hostPort.lastIndexOf(":");
 
   if (colonIndex < 0) {

@@ -6,6 +6,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+const DEFAULT_REMOTE_ROOT = "cliporax/v1";
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -368,6 +370,30 @@ function createInput(
   }
 
   return input;
+}
+
+function trimSlashes(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, "");
+}
+
+function buildProfileRemoteRoot(provider: string, server: string, remoteRoot: string): string {
+  const trimmedServer = server.trim().replace(/\/+$/g, "");
+  const normalizedRemoteRoot = trimSlashes(remoteRoot || DEFAULT_REMOTE_ROOT);
+
+  if (provider === "webdav") {
+    if (!normalizedRemoteRoot) return trimmedServer;
+    const lowerServer = trimmedServer.toLowerCase();
+    const lowerRoot = normalizedRemoteRoot.toLowerCase();
+    if (lowerServer.endsWith(`/${lowerRoot}`)) return trimmedServer;
+    return `${trimmedServer}/${normalizedRemoteRoot}`;
+  }
+
+  if (provider === "sftp") {
+    const host = trimmedServer.replace(/^sftp:\/\//, "").replace(/\/.*$/, "");
+    return `sftp://${host}/${normalizedRemoteRoot}`;
+  }
+
+  return normalizedRemoteRoot;
 }
 
 function createSelect(
@@ -924,7 +950,7 @@ function showAddProfileModal(theme: string, container: HTMLElement): void {
   form.appendChild(passwordField);
 
   // Remote root
-  const rootField = createFormField("Remote Path / App Folder", "text", "Cliporax/v1", theme);
+  const rootField = createFormField("Remote Path / App Folder", "text", DEFAULT_REMOTE_ROOT, theme);
   rootField.id = "cloud-sync-remote-root";
   form.appendChild(rootField);
 
@@ -1097,7 +1123,8 @@ async function testConnection(theme: string): Promise<void> {
   const server = (document.getElementById("cloud-sync-server") as HTMLInputElement)?.value || "";
   const username = (document.getElementById("cloud-sync-username") as HTMLInputElement)?.value || "";
   const password = (document.getElementById("cloud-sync-password") as HTMLInputElement)?.value || "";
-  const remoteRoot = (document.getElementById("cloud-sync-remote-root") as HTMLInputElement)?.value || "Cliporax/v1";
+  const remoteRoot =
+    (document.getElementById("cloud-sync-remote-root") as HTMLInputElement)?.value || DEFAULT_REMOTE_ROOT;
   const isOAuthProvider = provider === "google_drive" || provider === "one_drive";
 
   if ((!isOAuthProvider && (!server || !username || !password)) || (isOAuthProvider && !password)) {
@@ -1124,7 +1151,7 @@ async function testConnection(theme: string): Promise<void> {
         id: profileId,
         name: "Test",
         provider,
-        remote_root: provider === "webdav" ? server : isOAuthProvider ? remoteRoot : server,
+        remote_root: buildProfileRemoteRoot(provider, server, remoteRoot),
         credential_refs: {
           ...(usernameRef ? { username: usernameRef.ref_id } : {}),
           password: passwordRef.ref_id,
@@ -1150,7 +1177,8 @@ async function saveProfile(theme: string, container: HTMLElement): Promise<void>
   const server = (document.getElementById("cloud-sync-server") as HTMLInputElement)?.value || "";
   const username = (document.getElementById("cloud-sync-username") as HTMLInputElement)?.value || "";
   const password = (document.getElementById("cloud-sync-password") as HTMLInputElement)?.value || "";
-  const remoteRoot = (document.getElementById("cloud-sync-remote-root") as HTMLInputElement)?.value || "Cliporax/v1";
+  const remoteRoot =
+    (document.getElementById("cloud-sync-remote-root") as HTMLInputElement)?.value || DEFAULT_REMOTE_ROOT;
   const isOAuthProvider = provider === "google_drive" || provider === "one_drive";
 
   if ((!isOAuthProvider && (!server || !username || !password)) || (isOAuthProvider && !password)) {
@@ -1176,7 +1204,7 @@ async function saveProfile(theme: string, container: HTMLElement): Promise<void>
       id: profileId,
       name: "My Sync Profile",
       provider: provider as Provider,
-      remote_root: provider === "webdav" ? server : isOAuthProvider ? remoteRoot : server,
+      remote_root: buildProfileRemoteRoot(provider, server, remoteRoot),
       credential_refs: {
         ...(usernameRef ? { username: usernameRef.ref_id } : {}),
         password: passwordRef.ref_id,
@@ -1268,8 +1296,10 @@ async function loadProfileData(
     form.appendChild(providerRow);
 
     // Remote root
-    const rootField = createFormField("Remote Path", "text", profile.remote_root, theme);
-    (rootField.querySelector("input") as HTMLInputElement).id = "cloud-sync-edit-root";
+    const rootField = createFormField("Remote Path", "text", "", theme);
+    const rootInput = rootField.querySelector("input") as HTMLInputElement;
+    rootInput.id = "cloud-sync-edit-root";
+    rootInput.value = profile.remote_root;
     form.appendChild(rootField);
 
     // Tab sync selection
@@ -1343,7 +1373,8 @@ async function updateProfile(profileId: string, theme: string, container: HTMLEl
   try {
     const profile = await invoke<SyncProfile>("sync_profile_get", { profileId });
 
-    profile.remote_root = (document.getElementById("cloud-sync-edit-root") as HTMLInputElement)?.value || profile.remote_root;
+    profile.remote_root =
+      (document.getElementById("cloud-sync-edit-root") as HTMLInputElement)?.value.trim() || profile.remote_root;
     profile.sync_tabs.mode = (document.getElementById("cloud-sync-edit-tabs") as HTMLSelectElement)?.value as "all" | "selected";
     if (profile.sync_tabs.mode === "all") {
       profile.sync_tabs.selected_tab_ids = [];
