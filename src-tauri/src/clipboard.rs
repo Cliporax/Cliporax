@@ -19,8 +19,6 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-#[cfg(target_os = "windows")]
-use tokio::os::windows::process::CommandExt as _;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
