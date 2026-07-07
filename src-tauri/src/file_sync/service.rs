@@ -1366,94 +1366,7 @@ impl FileSyncService {
         profile_id: &str,
         event: &FileSyncRemoteEvent,
     ) -> Result<(), String> {
-        if event.operation == "delete" {
-            sqlx::query(
-                r#"
-                INSERT INTO file_sync_tombstones (profile_id, entry_id, revision, deleted_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(profile_id, entry_id) DO UPDATE SET
-                    revision = MAX(file_sync_tombstones.revision, excluded.revision),
-                    deleted_at = datetime('now')
-                "#,
-            )
-            .bind(profile_id)
-            .bind(&event.entry_id)
-            .bind(event.revision)
-            .execute(&self.db)
-            .await
-            .map_err(db_error)?;
-            sqlx::query(
-                "UPDATE file_sync_entries SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND profile_id = ? AND revision <= ?",
-            )
-            .bind(&event.entry_id)
-            .bind(profile_id)
-            .bind(event.revision)
-            .execute(&self.db)
-            .await
-            .map_err(db_error)?;
-            return Ok(());
-        }
-        let summary = event
-            .entry
-            .as_ref()
-            .ok_or_else(|| "Remote upsert event has no entry".to_string())?;
-        validate_remote_summary(summary)?;
-        let tombstone_revision = sqlx::query_scalar::<_, i64>(
-            "SELECT revision FROM file_sync_tombstones WHERE profile_id = ? AND entry_id = ?",
-        )
-        .bind(profile_id)
-        .bind(&summary.id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(db_error)?;
-        if tombstone_revision.is_some_and(|revision| revision >= summary.revision) {
-            return Ok(());
-        }
-        sqlx::query(
-            r#"
-            INSERT INTO file_sync_entries
-                (id, profile_id, origin_device_id, kind, display_name, total_size,
-                 file_count, revision, status, confirmed, manifest_hash, manifest_path,
-                 synced_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'remote', 1, ?, ?, ?, datetime('now'))
-            ON CONFLICT(id) DO UPDATE SET
-                profile_id = excluded.profile_id,
-                origin_device_id = excluded.origin_device_id,
-                kind = excluded.kind,
-                display_name = excluded.display_name,
-                total_size = excluded.total_size,
-                file_count = excluded.file_count,
-                revision = excluded.revision,
-                status = CASE
-                    WHEN file_sync_entries.source_path IS NOT NULL THEN 'synced'
-                    WHEN file_sync_entries.cache_path IS NOT NULL THEN 'ready'
-                    ELSE 'remote'
-                END,
-                confirmed = 1,
-                manifest_hash = excluded.manifest_hash,
-                manifest_path = excluded.manifest_path,
-                synced_at = excluded.synced_at,
-                deleted_at = NULL,
-                error = NULL,
-                updated_at = datetime('now')
-            WHERE excluded.revision >= file_sync_entries.revision
-            "#,
-        )
-        .bind(&summary.id)
-        .bind(profile_id)
-        .bind(&summary.origin_device_id)
-        .bind(&summary.kind)
-        .bind(&summary.display_name)
-        .bind(to_i64(summary.total_size, "remote entry size")?)
-        .bind(to_i64(summary.file_count, "remote file count")?)
-        .bind(summary.revision)
-        .bind(&summary.manifest_hash)
-        .bind(&summary.manifest_path)
-        .bind(&summary.synced_at)
-        .execute(&self.db)
-        .await
-        .map_err(db_error)?;
-        Ok(())
+        apply_remote_event_to_db(&self.db, profile_id, event).await
     }
 
     async fn publish_event(
@@ -1725,6 +1638,101 @@ fn public_entry(row: EntryRow, progress: i64) -> FileSyncEntry {
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
+}
+
+async fn apply_remote_event_to_db(
+    db: &Db,
+    profile_id: &str,
+    event: &FileSyncRemoteEvent,
+) -> Result<(), String> {
+    if event.operation == "delete" {
+        sqlx::query(
+            r#"
+            INSERT INTO file_sync_tombstones (profile_id, entry_id, revision, deleted_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(profile_id, entry_id) DO UPDATE SET
+                revision = MAX(file_sync_tombstones.revision, excluded.revision),
+                deleted_at = datetime('now')
+            "#,
+        )
+        .bind(profile_id)
+        .bind(&event.entry_id)
+        .bind(event.revision)
+        .execute(db)
+        .await
+        .map_err(db_error)?;
+        sqlx::query(
+            "UPDATE file_sync_entries SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND profile_id = ? AND revision <= ?",
+        )
+        .bind(&event.entry_id)
+        .bind(profile_id)
+        .bind(event.revision)
+        .execute(db)
+        .await
+        .map_err(db_error)?;
+        return Ok(());
+    }
+    let summary = event
+        .entry
+        .as_ref()
+        .ok_or_else(|| "Remote upsert event has no entry".to_string())?;
+    validate_remote_summary(summary)?;
+    let tombstone_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT revision FROM file_sync_tombstones WHERE profile_id = ? AND entry_id = ?",
+    )
+    .bind(profile_id)
+    .bind(&summary.id)
+    .fetch_optional(db)
+    .await
+    .map_err(db_error)?;
+    if tombstone_revision.is_some_and(|revision| revision >= summary.revision) {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO file_sync_entries
+            (id, profile_id, origin_device_id, kind, display_name, total_size,
+             file_count, revision, status, confirmed, manifest_hash, manifest_path,
+             synced_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'remote', 1, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            profile_id = excluded.profile_id,
+            origin_device_id = excluded.origin_device_id,
+            kind = excluded.kind,
+            display_name = excluded.display_name,
+            total_size = excluded.total_size,
+            file_count = excluded.file_count,
+            revision = excluded.revision,
+            status = CASE
+                WHEN file_sync_entries.source_path IS NOT NULL THEN 'synced'
+                WHEN file_sync_entries.cache_path IS NOT NULL THEN 'ready'
+                ELSE 'remote'
+            END,
+            confirmed = 1,
+            manifest_hash = excluded.manifest_hash,
+            manifest_path = excluded.manifest_path,
+            synced_at = excluded.synced_at,
+            deleted_at = NULL,
+            error = NULL,
+            updated_at = datetime('now')
+        WHERE excluded.revision >= file_sync_entries.revision
+        "#,
+    )
+    .bind(&summary.id)
+    .bind(profile_id)
+    .bind(&summary.origin_device_id)
+    .bind(&summary.kind)
+    .bind(&summary.display_name)
+    .bind(to_i64(summary.total_size, "remote entry size")?)
+    .bind(to_i64(summary.file_count, "remote file count")?)
+    .bind(summary.revision)
+    .bind(&summary.manifest_hash)
+    .bind(&summary.manifest_path)
+    .bind(&summary.synced_at)
+    .execute(db)
+    .await
+    .map_err(db_error)?;
+    Ok(())
 }
 
 fn source_path(entry: &EntryRow) -> Result<PathBuf, String> {
@@ -2573,6 +2581,109 @@ mod tests {
             remote_entry_root(&entry.id),
             "file-sync/v1/entries/entry123"
         );
+    }
+
+    #[tokio::test]
+    async fn remote_upsert_populates_file_sync_item_list() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let db = sqlx::SqlitePool::connect(":memory:").await?;
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&db).await?;
+        sqlx::query("CREATE TABLE sync_profiles (id TEXT PRIMARY KEY)")
+            .execute(&db)
+            .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE file_sync_entries (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                origin_device_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                source_path TEXT,
+                cache_path TEXT,
+                total_size INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                confirmed INTEGER NOT NULL DEFAULT 0,
+                manifest_hash TEXT,
+                manifest_path TEXT,
+                remote_event_path TEXT,
+                error TEXT,
+                synced_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME,
+                FOREIGN KEY (profile_id) REFERENCES sync_profiles(id)
+            )
+            "#,
+        )
+        .execute(&db)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE file_sync_tombstones (
+                profile_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (profile_id, entry_id),
+                FOREIGN KEY (profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&db)
+        .await?;
+        sqlx::query("INSERT INTO sync_profiles (id) VALUES ('profile123')")
+            .execute(&db)
+            .await?;
+
+        let synced_at = chrono::Utc::now().to_rfc3339();
+        let event = FileSyncRemoteEvent {
+            schema_version: FILE_SYNC_SCHEMA_VERSION,
+            device_id: "device123".to_string(),
+            seq: 1,
+            operation: "upsert".to_string(),
+            entry_id: "entry123".to_string(),
+            revision: 1,
+            changed_at: synced_at.clone(),
+            entry: Some(RemoteEntrySummary {
+                id: "entry123".to_string(),
+                origin_device_id: "device123".to_string(),
+                kind: "file".to_string(),
+                display_name: "report.txt".to_string(),
+                total_size: 12,
+                file_count: 1,
+                revision: 1,
+                manifest_path: "file-sync/v1/entries/entry123/1/manifest.json".to_string(),
+                manifest_hash: "a".repeat(64),
+                synced_at,
+            }),
+        };
+
+        apply_remote_event_to_db(&db, "profile123", &event).await?;
+
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            r#"
+            SELECT id, display_name, status
+            FROM file_sync_entries
+            WHERE profile_id = ? AND deleted_at IS NULL
+            ORDER BY updated_at DESC
+            "#,
+        )
+        .bind("profile123")
+        .fetch_all(&db)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![(
+                "entry123".to_string(),
+                "report.txt".to_string(),
+                "remote".to_string()
+            )]
+        );
+
+        Ok(())
     }
 
     #[test]

@@ -125,38 +125,62 @@ jobs:
         run: |
           $tag = $env:RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($tag)) {
-            $tag = "v1.1.0"
+            $package = Get-Content package.json -Raw | ConvertFrom-Json
+            $tag = "v$($package.version)"
           }
 
-          $previousTag = git tag --sort=-creatordate | Where-Object { $_ -ne $tag } | Select-Object -First 1
+          $tagExists = -not [string]::IsNullOrWhiteSpace((git tag --list $tag))
+          if ($tagExists) {
+            $previousTag = git describe --tags --abbrev=0 "$tag^" 2>$null
+          } else {
+            $previousTag = git describe --tags --abbrev=0 HEAD 2>$null
+          }
+          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+            $previousTag = git tag --sort=-creatordate | Where-Object { $_ -ne $tag } | Select-Object -First 1
+          }
           if ([string]::IsNullOrWhiteSpace($previousTag)) {
             $range = "HEAD"
+          } elseif ($tagExists) {
+            $range = "$previousTag..$tag"
           } else {
             $range = "$previousTag..HEAD"
           }
 
           $subjects = @(git log --pretty=format:"%s" $range | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
           $changes = New-Object System.Collections.Generic.List[string]
-          $hasBugFix = $false
+          $ignoredPattern = '^(?:chore|ci|build)(?:\([^)]+\))?:\s*(?:update|bump) version\b|^(?:update|bump) version\b|^release\b'
 
           foreach ($subject in $subjects) {
+            if ($subject -match $ignoredPattern) {
+              continue
+            }
+
             if ($subject -match '^feat(?:\([^)]+\))?:\s*(.+)$') {
               $changes.Add("- 新功能：$($Matches[1])")
               continue
             }
 
             if ($subject -match '^fix(?:\([^)]+\))?!?:\s*(.+)$') {
-              $fixText = $Matches[1]
-              if ($subject -match '^fix(?:\([^)]+\))?!:' -or $fixText -match '(严重|崩溃|crash|critical|security|安全|data loss|数据丢失)') {
-                $changes.Add("- 修复：$fixText")
-              } else {
-                $hasBugFix = $true
-              }
+              $changes.Add("- 修复：$($Matches[1])")
+              continue
             }
-          }
 
-          if ($hasBugFix) {
-            $changes.Add("- 修复一下bug")
+            if ($subject -match '^(?:perf|refactor)(?:\([^)]+\))?!?:\s*(.+)$') {
+              $changes.Add("- 改进：$($Matches[1])")
+              continue
+            }
+
+            if ($subject -match '^(?:build|ci|chore)(?:\([^)]+\))?!?:\s*(.+)$') {
+              $changes.Add("- 维护：$($Matches[1])")
+              continue
+            }
+
+            if ($subject -match '^(?:docs)(?:\([^)]+\))?!?:\s*(.+)$') {
+              $changes.Add("- 文档：$($Matches[1])")
+              continue
+            }
+
+            $changes.Add("- 更新：$subject")
           }
 
           $changes = @($changes | Select-Object -Unique | Select-Object -First 20)
@@ -179,6 +203,8 @@ jobs:
           "body<<EOF" >> $env:GITHUB_OUTPUT
           $body >> $env:GITHUB_OUTPUT
           "EOF" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "release_name=Cliporax $tag" >> $env:GITHUB_OUTPUT
 
       - name: Build and upload Tauri bundles
         if: ${{ !startsWith(matrix.platform, 'macos') || steps.mac-signing.outputs.available == 'true' }}
@@ -194,12 +220,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tauriScript: npm run tauri
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}
-          releaseName: Cliporax v1.1.0
+          tagName: ${{ steps.release-notes.outputs.tag }}
+          releaseName: ${{ steps.release-notes.outputs.release_name }}
           releaseBody: ${{ steps.release-notes.outputs.body }}
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
-          generateReleaseNotes: true
+          generateReleaseNotes: false
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
           args: ${{ matrix.args }}
 

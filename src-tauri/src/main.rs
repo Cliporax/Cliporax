@@ -208,23 +208,12 @@ fn main() {
                         log::error!("Builtin plugin activation failed: {}", e);
                     }
                 }
-                let sync_service = Arc::new(SyncService::new(
-                    sync_repository.clone(),
-                    secret_store.clone(),
-                    sync_engine.clone(),
-                    plugin_registry.clone(),
-                    app_handle.clone(),
-                ));
-                app_handle.manage(plugin_registry);
-                app_handle.manage(sync_service.clone());
-                tokio::spawn(sync_service.run_scheduler_loop());
-
                 let file_sync_service = Arc::new(
                     FileSyncService::new(
                         db.clone(),
-                        sync_repository,
-                        sync_engine,
-                        secret_store,
+                        sync_repository.clone(),
+                        sync_engine.clone(),
+                        secret_store.clone(),
                         clipboard_monitor,
                         app_handle.clone(),
                     )
@@ -234,6 +223,17 @@ fn main() {
                     })?,
                 );
                 app_handle.manage(file_sync_service.clone());
+                let sync_service = Arc::new(SyncService::new(
+                    sync_repository.clone(),
+                    secret_store.clone(),
+                    sync_engine.clone(),
+                    plugin_registry.clone(),
+                    file_sync_service.clone(),
+                    app_handle.clone(),
+                ));
+                app_handle.manage(plugin_registry);
+                app_handle.manage(sync_service.clone());
+                tokio::spawn(sync_service.run_scheduler_loop());
                 tokio::spawn(async move {
                     file_sync_service.resume_pending().await;
                 });

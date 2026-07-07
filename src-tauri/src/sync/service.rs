@@ -1,3 +1,4 @@
+use crate::file_sync::FileSyncService;
 use crate::plugin::lifecycle::registry::PluginRegistry;
 use crate::sync::engine::SyncEngine;
 use crate::sync::error::SyncError;
@@ -24,6 +25,7 @@ pub struct SyncService {
     secret_store: Arc<SecretStore>,
     engine: Arc<SyncEngine>,
     plugin_registry: Arc<RwLock<PluginRegistry>>,
+    file_sync_service: Arc<FileSyncService>,
     provider_factory: ProviderFactory,
     app_handle: tauri::AppHandle,
 }
@@ -34,6 +36,7 @@ impl SyncService {
         secret_store: Arc<SecretStore>,
         engine: Arc<SyncEngine>,
         plugin_registry: Arc<RwLock<PluginRegistry>>,
+        file_sync_service: Arc<FileSyncService>,
         app_handle: tauri::AppHandle,
     ) -> Self {
         let provider_factory = ProviderFactory::new(secret_store.clone());
@@ -42,6 +45,7 @@ impl SyncService {
             secret_store,
             engine,
             plugin_registry,
+            file_sync_service,
             provider_factory,
             app_handle,
         }
@@ -154,6 +158,13 @@ impl SyncService {
         }
         let provider = self.provider_factory.build(&profile).await?;
         let report = self.engine.run_now(profile_id, provider).await?;
+        if let Err(error) = self.file_sync_service.refresh(profile_id).await {
+            log::warn!(
+                "[Sync::Service] File Sync refresh failed after sync for profile {}: {}",
+                profile_id,
+                error
+            );
+        }
         self.emit_sync_completed(profile_id, &report);
         Ok(report)
     }
