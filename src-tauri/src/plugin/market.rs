@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 const DEFAULT_MARKET_SOURCE_ID: &str = "official";
 const DEFAULT_MARKET_SOURCE_NAME: &str = "Cliporax Official Plugins";
 const DEFAULT_MARKET_RELEASE_API_URL: &str =
-    "https://api.github.com/repos/Cliporax/cliporax-plugin-market/releases/latest";
+    "https://github.com/Cliporax/cliporax-plugin-market/releases/latest/download/index.json";
 const MARKET_DIR_NAME: &str = "plugin-market";
 const MARKET_INDEX_FILE: &str = "index.json";
 const MAX_PLUGIN_PACKAGE_SIZE: u64 = 64 * 1024 * 1024;
@@ -51,9 +51,37 @@ pub async fn refresh_market(
         .next()
         .ok_or_else(|| "No plugin market source configured".to_string())?;
 
+    let index_bytes = fetch_market_index(&source.release_api_url).await?;
+
+    write_cached_index(&app_handle, &index_bytes).await?;
+    let mut index = parse_market_index(&index_bytes)?;
+    apply_install_status(&mut index.plugins, &registry).await;
+
+    Ok(MarketRefreshResult {
+        source_id: source.id,
+        stale: false,
+        plugins: index.plugins,
+    })
+}
+
+async fn fetch_market_index(source_url: &str) -> Result<Vec<u8>, String> {
     let client = http_client()?;
+    if is_direct_market_index_url(source_url) {
+        return client
+            .get(source_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download plugin market index: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("Plugin market index request failed: {}", e))?
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("Failed to read plugin market index: {}", e));
+    }
+
     let release = client
-        .get(&source.release_api_url)
+        .get(source_url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch plugin market release: {}", e))?
@@ -84,15 +112,15 @@ pub async fn refresh_market(
         return Err("Plugin market index size does not match release metadata".to_string());
     }
 
-    write_cached_index(&app_handle, &index_bytes).await?;
-    let mut index = parse_market_index(&index_bytes)?;
-    apply_install_status(&mut index.plugins, &registry).await;
+    Ok(index_bytes.to_vec())
+}
 
-    Ok(MarketRefreshResult {
-        source_id: source.id,
-        stale: false,
-        plugins: index.plugins,
-    })
+fn is_direct_market_index_url(source_url: &str) -> bool {
+    source_url
+        .split('?')
+        .next()
+        .map(|path| path.ends_with(&format!("/{}", MARKET_INDEX_FILE)))
+        .unwrap_or(false)
 }
 
 pub async fn get_market_plugins(
