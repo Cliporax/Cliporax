@@ -102,6 +102,9 @@ export interface RegisteredExtension {
   /** Component path */
   component: string;
 
+  /** Optional icon name */
+  icon?: string;
+
   /** Configuration */
   config: Record<string, unknown>;
 

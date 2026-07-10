@@ -287,6 +287,55 @@ function App() {
     };
   }, []);
 
+  // Native select/combobox popups can briefly move focus outside the Tauri
+  // window on some platforms. Treat them like menus so auto-hide does not
+  // close Cliporax while the popup is open.
+  useEffect(() => {
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const isSelectTarget = (target: EventTarget | null) =>
+      target instanceof Element && Boolean(target.closest("select"));
+
+    const holdAutoHide = (event: Event) => {
+      if (!isSelectTarget(event.target)) return;
+      if (releaseTimer) {
+        clearTimeout(releaseTimer);
+        releaseTimer = null;
+      }
+      windowApi.setContextMenuOpen(true);
+    };
+
+    const releaseAutoHideSoon = (event: Event) => {
+      if (!isSelectTarget(event.target)) return;
+      if (releaseTimer) clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(() => {
+        windowApi.setContextMenuOpen(false);
+        releaseTimer = null;
+      }, 500);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !isSelectTarget(event.target)) return;
+      releaseAutoHideSoon(event);
+    };
+
+    document.addEventListener("pointerdown", holdAutoHide, true);
+    document.addEventListener("focusin", holdAutoHide, true);
+    document.addEventListener("change", releaseAutoHideSoon, true);
+    document.addEventListener("focusout", releaseAutoHideSoon, true);
+    document.addEventListener("keydown", handleKeyDown, true);
+
+    return () => {
+      if (releaseTimer) clearTimeout(releaseTimer);
+      document.removeEventListener("pointerdown", holdAutoHide, true);
+      document.removeEventListener("focusin", holdAutoHide, true);
+      document.removeEventListener("change", releaseAutoHideSoon, true);
+      document.removeEventListener("focusout", releaseAutoHideSoon, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+      windowApi.setContextMenuOpen(false);
+    };
+  }, []);
+
   useEffect(() => {
     if (showSearch && searchInputRef.current) {
       searchInputRef.current.focus();

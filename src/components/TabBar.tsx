@@ -5,7 +5,7 @@ import React, {
   useEffect,
   useLayoutEffect,
 } from "react";
-import { Plus, X, Edit2 } from "lucide-react";
+import { Plus, X, Edit2, ListTodo } from "lucide-react";
 import { useTabStore } from "../stores/tabStore";
 import { useUIStore } from "../stores/uiStore";
 import { createLogger } from "../utils/logger";
@@ -54,6 +54,17 @@ const clampContextMenuPosition = (
     ),
   };
 };
+
+function renderPluginTabIcon(icon: string | undefined) {
+  if (!icon) return null;
+  if (icon === "list-todo") {
+    return <ListTodo size={14} className="mr-1.5 shrink-0" />;
+  }
+  if (icon.length <= 2) {
+    return <span className="mr-1.5 shrink-0 text-xs leading-none">{icon}</span>;
+  }
+  return null;
+}
 
 export function TabBar() {
   const {
@@ -448,7 +459,8 @@ export function TabBar() {
               }
             `}
           >
-            {tab.title}
+            {renderPluginTabIcon(tab.icon)}
+            <span className="truncate">{tab.title}</span>
           </button>
         ))}
 

@@ -165,6 +165,7 @@ impl PluginManifest {
                     | ExtensionPoint::Card
                     | ExtensionPoint::Sidebar
                     | ExtensionPoint::Preview
+                    | ExtensionPoint::ContextMenu
                     | ExtensionPoint::ContentTab
             ) {
                 return Err(ManifestError::ValidationFailed(
@@ -307,6 +308,10 @@ pub struct ExtensionDeclaration {
     /// Entry component
     pub component: String,
 
+    /// Optional icon name or path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+
     /// Display condition
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
@@ -328,6 +333,8 @@ pub enum ExtensionPoint {
     Sidebar,
     /// Preview extension
     Preview,
+    /// Clipboard item context menu extension
+    ContextMenu,
     /// Main window content tab extension
     ContentTab,
     /// Custom extension point

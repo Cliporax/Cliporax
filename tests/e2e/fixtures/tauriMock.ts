@@ -19,6 +19,24 @@ type ClipboardItem = {
 type TauriMockOptions = {
   items?: ClipboardItem[];
   failCommands?: Record<string, string>;
+  plugins?: MockPlugin[];
+};
+
+type MockPlugin = {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  permissions?: string[];
+  grantedPermissions?: string[];
+  extensions?: Array<{
+    point: string;
+    component: string;
+    icon?: string;
+    condition?: string;
+    priority?: number;
+  }>;
+  script: string;
 };
 
 const defaultSettings = {
@@ -50,7 +68,7 @@ export function makeClipboardItems(count: number): ClipboardItem[] {
 }
 
 async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
-  await page.addInitScript(({ initialItems, failCommands, settings }) => {
+  await page.addInitScript(({ initialItems, failCommands, settings, plugins }) => {
     const listeners = new Map<string, Map<number, Function>>();
     let nextCallbackId = 1;
     let items = [...initialItems];
@@ -172,7 +190,58 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
         cmd.startsWith("file_sync_") ||
         cmd.startsWith("sync_")
       ) {
-        if (cmd.endsWith("get_all") || cmd === "plugin_get_all") return [];
+        if (cmd === "plugin_get_all") {
+          return plugins.map((plugin: any) => ({
+            id: plugin.id,
+            name: plugin.name,
+            version: plugin.version ?? "0.1.0",
+            description: plugin.description ?? "",
+            author: "Test",
+            state: "active",
+            permissions: (plugin.permissions ?? []).map((permission: string) => ({
+              permission,
+              reason: "test",
+              required: true,
+            })),
+            type: "utility",
+            isBuiltin: false,
+          }));
+        }
+        if (cmd === "plugin_get_detail") {
+          const plugin = plugins.find((candidate: any) => candidate.id === args.pluginId);
+          if (!plugin) throw new Error(`Plugin not found: ${args.pluginId}`);
+          return {
+            manifest: {
+              id: plugin.id,
+              name: plugin.name,
+              version: plugin.version ?? "0.1.0",
+              description: plugin.description ?? "",
+              author: { name: "Test" },
+              main: "main.js",
+              type: "utility",
+              permissions: (plugin.permissions ?? []).map((permission: string) => ({
+                permission,
+                reason: "test",
+                required: true,
+              })),
+              extensions: plugin.extensions ?? [],
+            },
+            state: "active",
+            grantedPermissions: plugin.grantedPermissions ?? plugin.permissions ?? [],
+            config: {},
+            statistics: {
+              activatedCount: 1,
+              totalRuntimeMs: 0,
+              errorCount: 0,
+            },
+          };
+        }
+        if (cmd === "plugin_read_script") {
+          const plugin = plugins.find((candidate: any) => candidate.id === args.pluginId);
+          if (!plugin) throw new Error(`Plugin not found: ${args.pluginId}`);
+          return plugin.script;
+        }
+        if (cmd.endsWith("get_all")) return [];
         if (cmd.includes("get_sources") || cmd.includes("get_plugins")) return [];
         if (cmd.includes("get_install_status")) return null;
         return null;
@@ -219,6 +288,7 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
     initialItems: options.items ?? [],
     failCommands: options.failCommands ?? {},
     settings: defaultSettings,
+    plugins: options.plugins ?? [],
   });
 }
 

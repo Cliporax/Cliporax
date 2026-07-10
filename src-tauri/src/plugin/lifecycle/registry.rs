@@ -372,11 +372,6 @@ impl PluginRegistry {
             .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?
             .clone();
 
-        // Check if already loaded
-        if self.instances.contains_key(plugin_id) {
-            return Ok(LoadResult::Success { success: true });
-        }
-
         let unresolved_permissions: Vec<PermissionRequest> = discovered
             .manifest
             .permissions
@@ -421,6 +416,15 @@ impl PluginRegistry {
             return Ok(LoadResult::PermissionRequired {
                 permissions: evaluation.need_confirm,
             });
+        }
+
+        // Check if already loaded after permission evaluation so manifest
+        // updates can request newly added permissions.
+        if self.instances.contains_key(plugin_id) {
+            if let Some(instance) = self.instances.get_mut(plugin_id) {
+                instance.granted_permissions = self.permission_checker.get_granted(plugin_id);
+            }
+            return Ok(LoadResult::Success { success: true });
         }
 
         // Create plugin instance

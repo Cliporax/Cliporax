@@ -2,7 +2,7 @@ import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextMenu } from "../components/ContextMenu";
-import { clipboard } from "../lib/tauri-api";
+import { clipboard, type ClipboardItem } from "../lib/tauri-api";
 
 vi.mock("../lib/tauri-api", () => ({
   clipboard: {
@@ -24,9 +24,32 @@ vi.mock("../stores/tabStore", () => ({
 
 vi.mock("../stores/clipboardStore", () => ({
   useClipboardStore: () => ({
+    items: [],
     removeItem: vi.fn(),
+    updateItem: vi.fn(),
   }),
 }));
+
+vi.mock("../plugin/extensions", () => ({
+  useExtensionManager: () => ({
+    getExtensions: () => [],
+  }),
+}));
+
+const item = (id: number): ClipboardItem => ({
+  id,
+  type: "text" as ClipboardItem["type"],
+  content: `Item ${id}`,
+  content_hash: null,
+  metadata: null,
+  tags: null,
+  tab_id: 1,
+  is_sensitive: false,
+  is_pinned: false,
+  display_order: id,
+  created_at: null,
+  updated_at: null,
+});
 
 const setViewport = (width: number, height: number) => {
   Object.defineProperty(window, "innerWidth", {
@@ -48,7 +71,7 @@ describe("ContextMenu", () => {
     setViewport(400, 300);
 
     render(
-      <ContextMenu itemId={1} currentTabId={1}>
+      <ContextMenu item={item(1)} itemId={1} currentTabId={1}>
         <button type="button">Item 1</button>
       </ContextMenu>,
     );
@@ -69,10 +92,10 @@ describe("ContextMenu", () => {
   it("closes an open item menu when another item is clicked", async () => {
     render(
       <>
-        <ContextMenu itemId={1} currentTabId={1}>
+        <ContextMenu item={item(1)} itemId={1} currentTabId={1}>
           <button type="button">Item 1</button>
         </ContextMenu>
-        <ContextMenu itemId={2} currentTabId={1}>
+        <ContextMenu item={item(2)} itemId={2} currentTabId={1}>
           <button type="button">Item 2</button>
         </ContextMenu>
       </>,
@@ -97,6 +120,7 @@ describe("ContextMenu", () => {
 
     render(
       <ContextMenu
+        item={item(1)}
         itemId={1}
         currentTabId={1}
         batchItemIds={new Set([1, 2])}
@@ -129,6 +153,7 @@ describe("ContextMenu", () => {
 
     render(
       <ContextMenu
+        item={item(1)}
         itemId={1}
         currentTabId={1}
         batchItemIds={new Set([1, 2])}

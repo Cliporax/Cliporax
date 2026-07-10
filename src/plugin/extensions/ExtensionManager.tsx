@@ -46,6 +46,30 @@ export interface CardExtensionData {
   position: "badge" | "action" | "header" | "footer";
 }
 
+export interface PluginTransferItem {
+  id?: number | null;
+  type?: string;
+  content?: string;
+  source?: "clipboard";
+}
+
+export interface PluginItemApi {
+  getItems: () => PluginTransferItem[];
+  createText: (content: string, options?: { tabId?: number | null }) => Promise<number>;
+  updateContent: (id: number, content: string) => Promise<void>;
+  updateTags: (id: number, tags: string[]) => Promise<void>;
+  setPinned: (id: number, pinned: boolean) => Promise<void>;
+  deleteItems: (ids: number[]) => Promise<number>;
+}
+
+export interface PluginContextMenuItem {
+  id: string;
+  label: string;
+  icon?: string;
+  disabled?: boolean;
+  action: (api: PluginItemApi) => void | Promise<void>;
+}
+
 /**
  * Extension context
  */
@@ -67,8 +91,10 @@ export interface RegisteredExtension {
   pluginId: string;
   pluginName: string;
   pluginVersion: string;
+  grantedPermissions: string[];
   pointType: ExtensionPointType;
   component: string;
+  icon?: string;
   config: Record<string, unknown>;
   priority: number;
   condition?: string;
@@ -102,6 +128,8 @@ const ExtensionManagerContext =
 interface RuntimePlugin {
   onActivate?: (context: ExtensionContext) => void;
   onDeactivate?: () => void;
+  acceptItems?: (items: PluginTransferItem[]) => number | Promise<number>;
+  acceptClipboardItems?: (items: PluginTransferItem[]) => number | Promise<number>;
   extensions?: Record<
     string,
     {
@@ -115,6 +143,11 @@ interface RuntimePlugin {
         context: ExtensionContext;
         config: Record<string, unknown>;
       }) => boolean;
+      getMenuItems?: (props: {
+        data: unknown;
+        context: ExtensionContext;
+        config: Record<string, unknown>;
+      }) => PluginContextMenuItem[];
     }
   >;
 }
@@ -409,12 +442,14 @@ export const ExtensionManagerProvider: React.FC<{
           if (manifest.extensions && Array.isArray(manifest.extensions)) {
             for (const ext of manifest.extensions) {
               const registered: RegisteredExtension = {
-                id: `${plugin.id}:${ext.point}`,
+                id: `${plugin.id}:${ext.point}:${ext.component}`,
                 pluginId: plugin.id,
                 pluginName: plugin.name,
                 pluginVersion: plugin.version,
+                grantedPermissions: detail.grantedPermissions,
                 pointType: ext.point as ExtensionPointType,
                 component: ext.component,
+                icon: typeof ext.icon === "string" ? ext.icon : manifest.icon,
                 config: pluginConfig,
                 priority: ext.priority || 0,
                 condition: ext.condition,
@@ -714,6 +749,7 @@ export interface ContentTabExtension {
   id: string;
   pluginId: string;
   title: string;
+  icon?: string;
   component: string;
   priority: number;
 }
@@ -724,6 +760,7 @@ export const useContentTabExtensions = (): ContentTabExtension[] => {
     id: `plugin:${extension.pluginId}:${extension.component}`,
     pluginId: extension.pluginId,
     title: extension.pluginName,
+    icon: extension.icon,
     component: extension.component,
     priority: extension.priority,
   }));

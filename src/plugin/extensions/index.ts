@@ -14,4 +14,7 @@ export {
   type ExtensionContext,
   type RegisteredExtension,
   type ContentTabExtension,
+  type PluginContextMenuItem,
+  type PluginItemApi,
+  type PluginTransferItem,
 } from "./ExtensionManager";

@@ -38,6 +38,7 @@ export interface AuthorInfo {
 export interface ExtensionDeclaration {
   point: string;
   component: string;
+  icon?: string;
   condition?: string;
   priority?: number;
 }

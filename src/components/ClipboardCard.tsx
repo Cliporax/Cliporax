@@ -1,6 +1,7 @@
 import React, { forwardRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../contexts/ThemeContext";
+import { ItemType, type ClipboardItem } from "../lib/tauri-api";
 import { useCardExtensions } from "../plugin/extensions";
 import { ContextMenu } from "./ContextMenu";
 import { createLogger } from "../utils/logger";
@@ -247,6 +248,28 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
         : [];
     const titleContent =
       type === "text" ? truncateText(content, TITLE_PREVIEW_LIMIT) : content;
+    const contextMenuItem = React.useMemo<ClipboardItem>(
+      () => ({
+        id,
+        type:
+          type === "text"
+            ? ItemType.Text
+            : type === "image"
+              ? ItemType.Image
+              : ItemType.File,
+        content,
+        content_hash: null,
+        metadata: metadata ?? null,
+        tags: null,
+        tab_id: tabId ?? null,
+        is_sensitive: false,
+        is_pinned: isPinned,
+        display_order: index,
+        created_at: null,
+        updated_at: null,
+      }),
+      [content, id, index, isPinned, metadata, tabId, type],
+    );
 
     // Parse metadata JSON to extract source_host
     const sourceHost = React.useMemo(() => {
@@ -513,6 +536,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
 
     return (
       <ContextMenu 
+        item={contextMenuItem}
         itemId={id} 
         currentTabId={tabId ?? null}
         batchItemIds={

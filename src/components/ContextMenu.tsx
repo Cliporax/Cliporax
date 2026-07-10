@@ -6,10 +6,17 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
-import { FolderPlus, Copy, ChevronRight } from "lucide-react";
-import { clipboard } from "../lib/tauri-api";
+import { FolderPlus, Copy, ChevronRight, ListTodo } from "lucide-react";
+import { clipboard, ItemType, type ClipboardItem } from "../lib/tauri-api";
 import { useTabStore } from "../stores/tabStore";
 import { useClipboardStore } from "../stores/clipboardStore";
+import {
+  useExtensionManager,
+  type PluginContextMenuItem,
+  type PluginItemApi,
+  type PluginTransferItem,
+  type RegisteredExtension,
+} from "../plugin/extensions";
 import { createLogger } from "../utils/logger";
 
 const logger = createLogger("ContextMenu");
@@ -26,6 +33,7 @@ const SUBMENU_ITEM_HEIGHT = 28;
 const SUBMENU_VERTICAL_PADDING = 4;
 
 interface ContextMenuProps {
+  item: ClipboardItem;
   itemId: number;
   currentTabId?: number | null;
   batchItemIds?: Set<number>;
@@ -44,6 +52,11 @@ interface SubMenuState {
   type: SubMenuType;
   side: "left" | "right";
   top: number;
+}
+
+interface RuntimeContextMenuEntry {
+  extension: RegisteredExtension;
+  item: PluginContextMenuItem;
 }
 
 const getViewportSize = () => ({
@@ -90,7 +103,53 @@ const getSubMenuLayout = (
   return { side, top };
 };
 
+function hasPermission(extension: RegisteredExtension, permission: string) {
+  const granted = new Set(extension.grantedPermissions);
+  return (
+    granted.has(permission) ||
+    granted.has(`${permission.split(":")[0]}:*`) ||
+    granted.has("*")
+  );
+}
+
+function toTransferItem(item: ClipboardItem): PluginTransferItem {
+  return {
+    id: item.id,
+    type: item.type,
+    content: item.content,
+    source: "clipboard",
+  };
+}
+
+function evaluateContextMenuCondition(
+  condition: string | undefined,
+  item: ClipboardItem | undefined,
+) {
+  if (!condition) return true;
+
+  const normalized = condition.trim();
+  const itemTypeMatch = normalized.match(/^item\.type\s*===\s*['"](\w+)['"]$/);
+  if (itemTypeMatch) {
+    return item?.type === itemTypeMatch[1];
+  }
+
+  logger.warn("Unsupported plugin context-menu condition:", condition);
+  return false;
+}
+
+function renderPluginMenuIcon(icon: string | undefined) {
+  if (!icon) return null;
+  if (icon === "list-todo") {
+    return <ListTodo size={14} className="mr-2 shrink-0" />;
+  }
+  if (icon.length <= 2) {
+    return <span className="mr-2 shrink-0 text-xs leading-none">{icon}</span>;
+  }
+  return null;
+}
+
 export function ContextMenu({
+  item,
   itemId,
   currentTabId,
   batchItemIds,
@@ -108,8 +167,10 @@ export function ContextMenu({
   ).current;
 
   const { tabs } = useTabStore();
-  const { removeItem } = useClipboardStore();
+  const { items, removeItem, updateItem } = useClipboardStore();
+  const { getExtensions } = useExtensionManager();
   const availableTabs = tabs.filter((t) => t.id !== currentTabId);
+  const contextMenuExtensions = getExtensions("context-menu");
   const batchIds = useMemo(
     () =>
       batchItemIds?.has(itemId) && batchItemIds.size > 1
@@ -117,6 +178,90 @@ export function ContextMenu({
         : [],
     [batchItemIds, itemId],
   );
+
+  const selectedItems = useMemo(() => {
+    const ids = batchIds.length > 1 ? new Set(batchIds) : new Set([itemId]);
+    const storeItems = items.filter(
+      (clipboardItem) =>
+        clipboardItem.id !== null && ids.has(clipboardItem.id),
+    );
+
+    if (storeItems.length > 0) {
+      return storeItems;
+    }
+
+    return item.id !== null && ids.has(item.id) ? [item] : [];
+  }, [batchIds, item, itemId, items]);
+
+  const pluginContextMenuEntries = useMemo<RuntimeContextMenuEntry[]>(() => {
+    const theme = document.documentElement.classList.contains("dark")
+      ? "dark"
+      : "light";
+    const primaryItem = selectedItems[0];
+
+    return contextMenuExtensions.flatMap((extension) => {
+      if (!hasPermission(extension, "ui:context-menu")) {
+        return [];
+      }
+
+      if (!evaluateContextMenuCondition(extension.condition, primaryItem)) {
+        return [];
+      }
+
+      const plugin = window.CliporaxPlugins?.[extension.pluginId];
+      const component = plugin?.extensions?.[extension.component];
+      if (!component?.getMenuItems) return [];
+
+      const props = {
+        data: {
+          item: primaryItem
+            ? {
+                id: primaryItem.id,
+                type: primaryItem.type,
+                is_pinned: primaryItem.is_pinned,
+                is_sensitive: primaryItem.is_sensitive,
+              }
+            : null,
+          itemId,
+          itemIds: selectedItems
+            .map((item) => item.id)
+            .filter((id): id is number => id !== null),
+          items: selectedItems.map((item) => ({
+            id: item.id,
+            type: item.type,
+            is_pinned: item.is_pinned,
+            is_sensitive: item.is_sensitive,
+          })),
+        },
+        context: {
+          theme: theme as "light" | "dark",
+          settings: extension.config,
+          plugin: {
+            id: extension.pluginId,
+            name: extension.pluginName,
+            version: extension.pluginVersion,
+          },
+        },
+        config: extension.config,
+      };
+
+      if (component.shouldShow && !component.shouldShow(props)) return [];
+
+      try {
+        return component.getMenuItems(props).map((menuItem) => ({
+          extension,
+          item: menuItem,
+        }));
+      } catch (error) {
+        logger.error("Failed to get plugin context menu items:", {
+          pluginId: extension.pluginId,
+          component: extension.component,
+          error,
+        });
+        return [];
+      }
+    });
+  }, [contextMenuExtensions, itemId, selectedItems]);
 
   const closeMenu = useCallback(() => {
     setPosition(null);
@@ -318,6 +463,91 @@ export function ContextMenu({
     [batchIds, closeMenu, itemId, currentTabId, onBatchActionComplete],
   );
 
+  const createPluginItemApi = useCallback(
+    (extension: RegisteredExtension): PluginItemApi => {
+      const requirePermission = (permission: string) => {
+        if (!hasPermission(extension, permission)) {
+          throw new Error(
+            `Plugin ${extension.pluginId} requires ${permission} permission`,
+          );
+        }
+      };
+
+      return {
+        getItems: () => {
+          requirePermission("data:read");
+          return selectedItems.map(toTransferItem);
+        },
+        createText: async (content, options) => {
+          requirePermission("data:write");
+          return clipboard.create({
+            type: ItemType.Text,
+            content,
+            content_hash: null,
+            metadata: null,
+            tags: null,
+            tab_id: options?.tabId ?? currentTabId ?? null,
+            is_sensitive: false,
+            is_pinned: false,
+          });
+        },
+        updateContent: async (id, content) => {
+          requirePermission("data:write");
+          await clipboard.updateContent(id, content);
+          updateItem(id, { content });
+        },
+        updateTags: async (id, tags) => {
+          requirePermission("data:write");
+          await clipboard.updateTags(id, tags);
+          updateItem(id, { tags: JSON.stringify(tags) });
+        },
+        setPinned: async (id, pinned) => {
+          requirePermission("data:write");
+          await clipboard.togglePin(id, pinned ? 1 : 0);
+          updateItem(id, { is_pinned: pinned });
+        },
+        deleteItems: async (ids) => {
+          requirePermission("data:delete");
+          const deleted = await clipboard.deleteByIds(ids);
+          ids.forEach((id) => removeItem(id));
+          if (ids.length === 1) {
+            window.dispatchEvent(
+              new CustomEvent("clipboard:action", {
+                detail: { action: "delete", itemId: ids[0] },
+              }),
+            );
+          } else {
+            onBatchActionComplete?.();
+          }
+          return deleted;
+        },
+      };
+    },
+    [
+      currentTabId,
+      onBatchActionComplete,
+      removeItem,
+      selectedItems,
+      updateItem,
+    ],
+  );
+
+  const handlePluginContextMenuAction = useCallback(
+    async (entry: RuntimeContextMenuEntry) => {
+      try {
+        await entry.item.action(createPluginItemApi(entry.extension));
+        closeMenu();
+      } catch (error) {
+        logger.error("Plugin context menu action failed:", {
+          pluginId: entry.extension.pluginId,
+          actionId: entry.item.id,
+          error,
+        });
+      }
+    },
+    [closeMenu, createPluginItemApi],
+  );
+
   const handleSubMenuHover = useCallback(
     (menuType: SubMenuType, e: React.MouseEvent<HTMLDivElement>) => {
       setSubMenu({
@@ -361,6 +591,27 @@ export function ContextMenu({
           maxWidth: `calc(100vw - ${VIEWPORT_PADDING * 2}px)`,
         }}
       >
+        {pluginContextMenuEntries.length > 0 && (
+          <>
+            {pluginContextMenuEntries.map((entry) => (
+              <button
+                key={`${entry.extension.id}:${entry.item.id}`}
+                type="button"
+                disabled={entry.item.disabled}
+                onClick={() => handlePluginContextMenuAction(entry)}
+                className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50 truncate whitespace-nowrap"
+                title={entry.item.label}
+              >
+                <span className="flex min-w-0 items-center">
+                  {renderPluginMenuIcon(entry.item.icon)}
+                  <span className="truncate">{entry.item.label}</span>
+                </span>
+              </button>
+            ))}
+            <div className="my-0.5 border-t border-gray-200 dark:border-gray-700" />
+          </>
+        )}
+
         {/* Move To Submenu Trigger */}
         <div
           className="relative group"

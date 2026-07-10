@@ -462,15 +462,15 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     useEffect(() => {
       const handleClipboardAction = (e: Event) => {
         const { action, itemId } = (e as CustomEvent).detail as {
-          action: "move" | "copy";
+          action: "move" | "copy" | "delete";
           itemId: number;
         };
         logger.info(
           `Clipboard action received: ${action} for item ${itemId}`,
         );
 
-        if (action === "move") {
-          // Incremental delete: remove only the moved item, don't clear all caches
+        if (action === "move" || action === "delete") {
+          // Incremental delete: remove only the affected item, don't clear all caches
           const index = cacheManagerRef.current.getIndexById(itemId);
           if (index !== undefined) {
             cacheManagerRef.current.removeAtIndex(index);
