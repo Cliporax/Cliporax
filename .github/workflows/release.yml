@@ -85,38 +85,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Detect macOS signing secrets
-        id: mac-signing
-        if: startsWith(matrix.platform, 'macos')
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          missing=()
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
-          done
-
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'available=false\n' >> "$GITHUB_OUTPUT"
-            printf 'Missing macOS signing/notarization secrets: %s\n' "${missing[*]}"
-            printf 'A compile-check .app archive will be uploaded as a workflow artifact; no unsigned DMG will be published.\n'
-            {
-              printf '### macOS release asset skipped\n\n'
-              printf 'Missing signing/notarization secrets: `%s`.\n\n' "${missing[*]}"
-              printf 'The unsigned `.app` artifact is for CI inspection only and is not attached to the GitHub release.\n'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            printf 'available=true\n' >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Generate release notes
         id: release-notes
         shell: pwsh
@@ -207,7 +175,6 @@ jobs:
           "release_name=Cliporax $tag" >> $env:GITHUB_OUTPUT
 
       - name: Build and upload Tauri bundles
-        if: ${{ !startsWith(matrix.platform, 'macos') || steps.mac-signing.outputs.available == 'true' }}
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -228,28 +195,6 @@ jobs:
           generateReleaseNotes: false
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
           args: ${{ matrix.args }}
-
-      - name: Build unsigned macOS app for compile verification
-        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
-        shell: bash
-        run: npm run tauri build -- --target "${{ matrix.target }}" --bundles app
-
-      - name: Archive unsigned macOS app
-        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
-        shell: bash
-        run: |
-          app_path="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Cliporax.app"
-          archive_path="src-tauri/target/${{ matrix.target }}/release/Cliporax_${{ matrix.target }}_unsigned.zip"
-          test -d "$app_path"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive_path"
-
-      - name: Upload unsigned macOS compile artifact
-        if: ${{ startsWith(matrix.platform, 'macos') && steps.mac-signing.outputs.available != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Cliporax-${{ matrix.target }}-unsigned
-          path: src-tauri/target/${{ matrix.target }}/release/Cliporax_${{ matrix.target }}_unsigned.zip
-          if-no-files-found: error
 
       - name: Package Windows portable app
         if: matrix.platform == 'windows-latest'
