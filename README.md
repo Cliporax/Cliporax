@@ -48,7 +48,6 @@ The app is built with Tauri 2, React, TypeScript, Rust, and SQLite. The goal is 
 .
 ├── src/                    # React frontend, state, components, and plugin frontend runtime
 ├── src-tauri/              # Rust/Tauri backend, database, IPC, sync, and plugin lifecycle
-├── plugins/                # Built-in/example plugin packages
 ├── scripts/                # Plugin builds, CLI preparation, and agent check scripts
 ├── docs/                   # Public technical documentation
 ├── agent/skills/           # Project collaboration and check workflows
@@ -70,7 +69,7 @@ The app is built with Tauri 2, React, TypeScript, Rust, and SQLite. The goal is 
 npm install
 ```
 
-Some built-in plugin directories have their own lockfiles. `plugins/com.cliporax.cloud-sync` uses `yarn.lock`; do not introduce `package-lock.json` there unless intentionally migrating package managers.
+Plugin packages are maintained in the separate `CliporaxPlugins/` market repository. The main app no longer keeps plugin source copies under `plugins/`.
 
 ### Start Development
 
@@ -78,7 +77,7 @@ Some built-in plugin directories have their own lockfiles. `plugins/com.cliporax
 npm run tauri:dev
 ```
 
-This command prepares the CLI, builds and installs the built-in plugins, then starts Vite and the Tauri application.
+This command prepares the CLI, runs the plugin preparation no-op for compatibility, then starts Vite and the Tauri application.
 
 You can also start only the frontend:
 
@@ -92,7 +91,7 @@ npm run dev
 npm run build              # Type-check and build the frontend
 npm run tauri:build        # Build desktop application bundles
 npm run test:run           # Run frontend tests
-npm run plugins:dev        # Build and install built-in plugins
+npm run plugins:dev        # Compatibility no-op when no app-local plugins exist
 npm run codegen:types      # Export TypeScript types from Rust
 npm run cli:build          # Build cliporax-cli
 npm run cli -- list        # Run a CLI example
@@ -127,16 +126,9 @@ The CLI connects to the local SQLite database created by Cliporax, so the deskto
 
 ## Plugin System
 
-Plugins live under `plugins/`. Each plugin contains a `manifest.json` and an entry script. The manifest describes the plugin ID, name, version, type, permissions, extension points, and configuration fields.
+Plugin packages are distributed through the plugin market. Official plugin source and package metadata live in `../CliporaxPlugins/`; installed plugins are copied into the app data plugin directory at runtime.
 
-Current built-in/example plugins:
-
-- `com.cliporax.qrcode`: generates QR codes for text clipboard items.
-- `com.cliporax.qrscanner`: scans QR codes from a screen region and can write results into clipboard history.
-- `com.cliporax.imagepreview`: previews images in a separate window with zoom configuration.
-- `com.cliporax.cloud-sync`: provides the settings panel and status UI for sync.
-
-Plugin development commands:
+Legacy plugin preparation commands remain for packaging compatibility and are no-ops when `plugins/` is absent:
 
 ```bash
 npm run plugins:build
@@ -162,7 +154,6 @@ Sync-related code is mainly located in:
 
 - `src-tauri/src/sync/`
 - `src/components/Settings/CloudSyncTab.tsx`
-- `plugins/com.cliporax.cloud-sync/`
 
 ## Release Packaging
 
@@ -184,7 +175,7 @@ are rejected by Gatekeeper. Add all six secrets to publish macOS release assets.
 
 ## Roadmap Notes
 
-- Plugin system: discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and built-in plugin build/install scripts are implemented. A real online plugin marketplace, remote download/install, version updates, and full product flow for removing plugin packages are still missing.
+- Plugin system: discovery, loading, enable/disable, runtime unload, permission grants, configuration fields, frontend extension points, and plugin market installation are implemented. Official plugin source has moved to `CliporaxPlugins/`; next steps should focus on market release operations, update UX, and more real plugin integration testing.
 - AI features: general image OCR, local semantic search, and text summaries are not implemented. The QR scanner plugin can recognize QR codes, but that is not equivalent to OCR or AI retrieval.
 - Local encryption: the sync module has a remote-sync encryption model based on Argon2id and authenticated encryption, and provider credentials are saved through the backend. The main SQLite clipboard database is not currently encrypted with SQLCipher.
 - Cloud Sync: settings UI, sync profiles, WebDAV/SFTP/Google Drive/OneDrive providers, credential references, connection tests, scheduling, logs, conflict entry points, and optional encryption model are implemented. Next steps should focus on verification with real services, conflict UX, credential storage hardening, and cross-platform runtime testing.

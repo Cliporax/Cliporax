@@ -1,11 +1,18 @@
 //! Plugin marketplace client and installer.
 
+mod models;
+
+use self::models::GithubRelease;
+pub use self::models::{
+    InstallPluginRequest, InstallPluginResult, InstalledPluginVersion, MarketCompatibility,
+    MarketIndex, MarketInstallStatus, MarketPlugin, MarketPluginAsset, MarketPluginIcon,
+    MarketPublisher, MarketRefreshResult, PluginMarketSource,
+};
 use crate::plugin::get_plugin_dir;
 use crate::plugin::lifecycle::registry::PluginRegistry;
 use crate::plugin::manifest::PluginManifest;
 use chrono::Utc;
 use semver::Version;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -17,146 +24,10 @@ use tokio::sync::RwLock;
 const DEFAULT_MARKET_SOURCE_ID: &str = "official";
 const DEFAULT_MARKET_SOURCE_NAME: &str = "Cliporax Official Plugins";
 const DEFAULT_MARKET_RELEASE_API_URL: &str =
-    "https://api.github.com/repos/Cliporax/cliporax-plugin-market/releases/latest";
+    "https://github.com/Cliporax/cliporax-plugin-market/releases/latest/download/index.json";
 const MARKET_DIR_NAME: &str = "plugin-market";
 const MARKET_INDEX_FILE: &str = "index.json";
 const MAX_PLUGIN_PACKAGE_SIZE: u64 = 64 * 1024 * 1024;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginMarketSource {
-    pub id: String,
-    pub name: String,
-    pub release_api_url: String,
-    pub readonly: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketIndex {
-    pub schema_version: u32,
-    pub generated_at: String,
-    pub market_version: String,
-    pub plugins: Vec<MarketPlugin>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketPlugin {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub author: String,
-    pub license: String,
-    pub homepage: String,
-    pub repository: String,
-    #[serde(default)]
-    pub keywords: Vec<String>,
-    #[serde(rename = "type")]
-    pub plugin_type: String,
-    #[serde(default)]
-    pub permissions: Vec<String>,
-    pub min_app_version: String,
-    #[serde(default)]
-    pub compatibility: MarketCompatibility,
-    pub icon: MarketPluginIcon,
-    pub publisher: MarketPublisher,
-    pub asset: MarketPluginAsset,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub installed: Option<InstalledPluginVersion>,
-    #[serde(default)]
-    pub status: MarketInstallStatus,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketCompatibility {
-    #[serde(default)]
-    pub platforms: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketPluginIcon {
-    pub path: String,
-    pub content_type: String,
-    pub size: u64,
-    pub sha256: String,
-    pub data_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarketPublisher {
-    pub name: String,
-    pub url: String,
-    pub official: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketPluginAsset {
-    pub name: String,
-    pub download_url: String,
-    pub api_url: String,
-    pub size: u64,
-    pub sha256: String,
-    pub github_asset_id: Option<u64>,
-    pub content_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstalledPluginVersion {
-    pub version: String,
-    pub state: crate::plugin::lifecycle::state::PluginState,
-    pub is_builtin: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum MarketInstallStatus {
-    #[default]
-    NotInstalled,
-    Installed,
-    UpdateAvailable,
-    Incompatible,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallPluginRequest {
-    pub plugin_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallPluginResult {
-    pub plugin_id: String,
-    pub version: String,
-    pub installed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketRefreshResult {
-    pub source_id: String,
-    pub stale: bool,
-    pub plugins: Vec<MarketPlugin>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GithubRelease {
-    assets: Vec<GithubReleaseAsset>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GithubReleaseAsset {
-    name: String,
-    url: String,
-    browser_download_url: String,
-    size: u64,
-}
 
 pub fn default_market_sources() -> Vec<PluginMarketSource> {
     vec![PluginMarketSource {
@@ -180,9 +51,37 @@ pub async fn refresh_market(
         .next()
         .ok_or_else(|| "No plugin market source configured".to_string())?;
 
+    let index_bytes = fetch_market_index(&source.release_api_url).await?;
+
+    write_cached_index(&app_handle, &index_bytes).await?;
+    let mut index = parse_market_index(&index_bytes)?;
+    apply_install_status(&mut index.plugins, &registry).await;
+
+    Ok(MarketRefreshResult {
+        source_id: source.id,
+        stale: false,
+        plugins: index.plugins,
+    })
+}
+
+async fn fetch_market_index(source_url: &str) -> Result<Vec<u8>, String> {
     let client = http_client()?;
+    if is_direct_market_index_url(source_url) {
+        return client
+            .get(source_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download plugin market index: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("Plugin market index request failed: {}", e))?
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("Failed to read plugin market index: {}", e));
+    }
+
     let release = client
-        .get(&source.release_api_url)
+        .get(source_url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch plugin market release: {}", e))?
@@ -213,15 +112,15 @@ pub async fn refresh_market(
         return Err("Plugin market index size does not match release metadata".to_string());
     }
 
-    write_cached_index(&app_handle, &index_bytes).await?;
-    let mut index = parse_market_index(&index_bytes)?;
-    apply_install_status(&mut index.plugins, &registry).await;
+    Ok(index_bytes.to_vec())
+}
 
-    Ok(MarketRefreshResult {
-        source_id: source.id,
-        stale: false,
-        plugins: index.plugins,
-    })
+fn is_direct_market_index_url(source_url: &str) -> bool {
+    source_url
+        .split('?')
+        .next()
+        .map(|path| path.ends_with(&format!("/{}", MARKET_INDEX_FILE)))
+        .unwrap_or(false)
 }
 
 pub async fn get_market_plugins(

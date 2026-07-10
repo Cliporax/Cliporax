@@ -26,7 +26,10 @@ async function runPackageCommand(pluginPath, command) {
 }
 
 async function buildPlugins() {
-  const entries = await readdir(PLUGINS_DIR);
+  const entries = await readdir(PLUGINS_DIR).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
   const plugins = [];
 
   for (const entry of entries) {

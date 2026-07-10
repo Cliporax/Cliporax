@@ -112,7 +112,7 @@ If a plugin configuration contains secrets, those fields must be stored through 
 
 - `src-tauri/src/sync/`
 - `src/components/Settings/CloudSyncTab.tsx`
-- `plugins/com.cliporax.cloud-sync/`
+- Official plugin packages live in the separate `CliporaxPlugins/` market repository; Cloud Sync's app UI and services live in this repository.
 
 ## Status
 

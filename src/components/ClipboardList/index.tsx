@@ -26,6 +26,7 @@ import {
   CONTENT_PADDING_RIGHT,
   SCROLLBAR_WIDTH,
   SCROLLBAR_GAP,
+  OVERSCAN,
   TYPE_PRELOAD_LIMIT,
   getTextHeight,
   createTransparentDragImage,
@@ -43,14 +44,24 @@ import {
   useMouseDrag,
   useOverlapDetection,
 } from "./hooks";
+import {
+  calculateScrollbarMetrics,
+  calculateSearchContentHeight,
+  calculateSearchVisibleRange,
+  collectVisibleItems,
+  shouldUseMouseReorder,
+} from "./virtualization";
 
 const logger = createLogger("ClipboardList");
 
-// Detect whether the platform is macOS / Windows
-const isMacOS = /Mac|iPod|iPhone|iPad/.test(navigator.platform) || 
-                (navigator.userAgent.includes('Mac') && !('ontouchend' in document));
-const isWindows = /Win/.test(navigator.platform);
-const useMouseReorder = isMacOS || isWindows;
+const isMacOS =
+  /Mac|iPod|iPhone|iPad/.test(navigator.platform) ||
+  (navigator.userAgent.includes("Mac") && !("ontouchend" in document));
+const useMouseReorder = shouldUseMouseReorder(
+  navigator.platform,
+  navigator.userAgent,
+  "ontouchend" in document,
+);
 
 // Global transparent drag image element, reused
 let transparentDragImage: HTMLElement | null = null;
@@ -549,13 +560,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // Calculate content height using dynamic heights
     const contentHeight = isSearchMode
-      ? searchResults.reduce(
-          (sum, item) =>
-            sum +
-            (item.type === "image" ? IMAGE_HEIGHT : getTextHeight(lineHeight)) +
-            CARD_GAP,
-          0,
-        ) - CARD_GAP
+      ? calculateSearchContentHeight(searchResults, lineHeight)
       : typeCacheRef.current.getTotalHeight(totalCount);
 
     // Total height = content height + vertical padding
@@ -567,48 +572,8 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
     const visibleContentTop = Math.max(0, scrollTop - CONTENT_PADDING_TOP);
     const visibleContentBottom = visibleContentTop + effectiveViewportHeight;
 
-    // Calculate visible range in search mode
-    const calculateSearchVisibleRange = () => {
-      if (searchResults.length === 0) return { start: 0, end: 0 };
-
-      let start = 0;
-      let end = searchResults.length - 1;
-      let currentPos = 0;
-
-      for (let i = 0; i < searchResults.length; i++) {
-        const itemHeight =
-          searchResults[i].type === "image"
-            ? IMAGE_HEIGHT
-            : getTextHeight(lineHeight);
-        if (currentPos + itemHeight >= visibleContentTop) {
-          start = i;
-          break;
-        }
-        currentPos += itemHeight + CARD_GAP;
-      }
-
-      currentPos = 0;
-      for (let i = 0; i < searchResults.length; i++) {
-        const itemHeight =
-          searchResults[i].type === "image"
-            ? IMAGE_HEIGHT
-            : getTextHeight(lineHeight);
-        if (currentPos >= visibleContentBottom) {
-          end = Math.max(i - 1, start);
-          break;
-        }
-        if (i === searchResults.length - 1) {
-          end = i;
-        }
-        currentPos += itemHeight + CARD_GAP;
-      }
-
-      return { start, end: Math.max(start, end) };
-    };
-
-    const OVERSCAN = 5;
     const { start: visibleStartIndex, end: visibleEndIndex } = isSearchMode
-      ? calculateSearchVisibleRange()
+      ? calculateSearchVisibleRange(searchResults, lineHeight, visibleContentTop, visibleContentBottom)
       : typeCacheRef.current.findVisibleRange(
           visibleContentTop,
           effectiveViewportHeight,
@@ -617,46 +582,16 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // Get visible items
     const getVisibleItems = useCallback(() => {
-      const items: { item: any; index: number; top: number }[] = [];
-      let missingCount = 0;
-
-      for (
-        let i = visibleStartIndex - OVERSCAN;
-        i <= visibleEndIndex + OVERSCAN;
-        i++
-      ) {
-        if (i < 0) continue;
-        if (isSearchMode && i >= searchResults.length) break;
-        if (!isSearchMode && i >= totalCount) break;
-
-        const item = isSearchMode
-          ? searchResults[i]
-          : cacheManagerRef.current.getItem(i);
-        if (item) {
-          const contentTop = isSearchMode
-            ? searchResults
-                .slice(0, i)
-                .reduce(
-                  (sum, it) =>
-                    sum +
-                    (it.type === "image"
-                      ? IMAGE_HEIGHT
-                      : getTextHeight(lineHeight)) +
-                    CARD_GAP,
-                  0,
-                )
-            : typeCacheRef.current.getPosition(i, totalCount);
-          items.push({
-            item,
-            index: i,
-            top: contentTop,
-          });
-        } else {
-          missingCount++;
-        }
-      }
-
-      return { items, missingCount };
+      return collectVisibleItems({
+        visibleStartIndex,
+        visibleEndIndex,
+        isSearchMode,
+        searchResults,
+        totalCount,
+        lineHeight,
+        getCachedItem: (index) => cacheManagerRef.current.getItem(index),
+        getCachedPosition: (index) => typeCacheRef.current.getPosition(index, totalCount),
+      });
     }, [
       visibleStartIndex,
       visibleEndIndex,
@@ -1079,36 +1014,19 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
     // ========== Custom scrollbar ==========
 
-    const SCROLLBAR_MARGIN_TOP = CONTENT_PADDING_TOP;
-    const SCROLLBAR_MARGIN_BOTTOM = CONTENT_PADDING_BOTTOM;
-
-    const scrollbarTrackHeight =
-      viewportHeight - SCROLLBAR_MARGIN_TOP - SCROLLBAR_MARGIN_BOTTOM;
-
-    const scrollbarThumbHeight =
-      viewportHeight > 0 && contentHeight > 0
-        ? Math.max(
-            36,
-            Math.min(
-              scrollbarTrackHeight,
-              (viewportHeight / (contentHeight + viewportHeight)) *
-                scrollbarTrackHeight,
-            ),
-          )
-        : 0;
-
-    const scrollbarThumbMaxTravel = Math.max(
-      0,
-      scrollbarTrackHeight - scrollbarThumbHeight,
-    );
-
-    const maxScrollTop = Math.max(0, totalHeight - viewportHeight);
-
-    const scrollbarThumbTop =
-      maxScrollTop > 0
-        ? (scrollTop / maxScrollTop) * scrollbarThumbMaxTravel +
-          SCROLLBAR_MARGIN_TOP
-        : SCROLLBAR_MARGIN_TOP;
+    const {
+      marginTop: SCROLLBAR_MARGIN_TOP,
+      trackHeight: scrollbarTrackHeight,
+      thumbHeight: scrollbarThumbHeight,
+      thumbMaxTravel: scrollbarThumbMaxTravel,
+      maxScrollTop,
+      thumbTop: scrollbarThumbTop,
+    } = calculateScrollbarMetrics({
+      viewportHeight,
+      contentHeight,
+      totalHeight,
+      scrollTop,
+    });
 
     const handleScrollbarMouseDown = useCallback(
       (e: React.MouseEvent) => {

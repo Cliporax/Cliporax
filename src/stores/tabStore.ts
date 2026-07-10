@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { tabs as tabsApi } from "../lib/tauri-api";
 import type { Tab } from "../types/generated/api";
 
 interface TabState {
@@ -30,7 +30,7 @@ export const useTabStore = create<TabState>((set, get) => ({
   loadTabs: async () => {
     set({ isLoading: true });
     try {
-      const tabs = await invoke<Tab[]>("tabs_get_all");
+      const tabs = await tabsApi.getAll();
       set({ tabs, isLoading: false });
 
       // Set default active tab if not set
@@ -47,7 +47,7 @@ export const useTabStore = create<TabState>((set, get) => ({
 
   createTab: async (name: string) => {
     try {
-      await invoke("tabs_create", { name });
+      await tabsApi.create(name);
       // Reload tabs after creation
       await get().loadTabs();
     } catch (error) {
@@ -58,7 +58,7 @@ export const useTabStore = create<TabState>((set, get) => ({
 
   deleteTab: async (id: number) => {
     try {
-      await invoke("tabs_delete", { id });
+      await tabsApi.delete(id);
 
       // Update state after deletion
       set((state) => {
@@ -95,7 +95,7 @@ export const useTabStore = create<TabState>((set, get) => ({
         throw new Error(`Tab name '${trimmedName}' is reserved`);
       }
 
-      await invoke("tabs_rename", { id, name: trimmedName });
+      await tabsApi.rename(id, trimmedName);
 
       // Update state after rename
       set((state) => {

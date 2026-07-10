@@ -18,7 +18,10 @@ async function bundlePlugins() {
   await rm(BUNDLE_DIR, { recursive: true, force: true });
   await mkdir(BUNDLE_DIR, { recursive: true });
 
-  const entries = await readdir(PLUGINS_DIR);
+  const entries = await readdir(PLUGINS_DIR).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
   let bundled = 0;
 
   for (const entry of entries) {

@@ -19,6 +19,8 @@ pub mod manifest;
 pub mod models;
 pub mod providers;
 pub mod repository;
+mod repository_profile;
+mod repository_tabs;
 pub mod scheduler;
 pub mod secrets;
 pub mod service;
