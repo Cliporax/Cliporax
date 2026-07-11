@@ -7,6 +7,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useToast } from "../../components/Toast";
+import { Combobox } from "../../components/Combobox";
 import {
   X,
   Shield,
@@ -203,86 +204,6 @@ export const PluginDetailModal: React.FC<PluginDetailModalProps> = ({
     setConfigValues((prev) => ({ ...prev, [key]: value }));
   };
 
-  const CustomSelect: React.FC<{
-    value: string;
-    options: Array<{ value: string; label: string }>;
-    placeholder: string;
-    onChange: (value: string) => void;
-  }> = ({ value, options, placeholder, onChange }) => {
-    const [open, setOpen] = useState(false);
-    const selected = options.find((option) => option.value === value);
-
-    return (
-      <div className="relative">
-        <button
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          onClick={() => setOpen((next) => !next)}
-          onBlur={(event) => {
-            if (event.currentTarget.parentElement?.contains(event.relatedTarget)) {
-              return;
-            }
-            setOpen(false);
-          }}
-          className="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all flex items-center justify-between gap-2"
-          style={{
-            backgroundColor: isDark
-              ? "rgba(255,255,255,0.05)"
-              : "rgba(255,255,255,0.7)",
-            border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.06)"}`,
-            color: isDark ? "#e2e8f0" : "#4a4a48",
-          }}
-        >
-          <span className="truncate">{selected?.label ?? placeholder}</span>
-          <ChevronDown size={14} className="shrink-0" />
-        </button>
-        {open && (
-          <div
-            role="listbox"
-            className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-auto rounded-lg p-1 shadow-xl"
-            style={{
-              backgroundColor: isDark ? "#1f2937" : "#ffffff",
-              border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"}`,
-            }}
-          >
-            <button
-              type="button"
-              role="option"
-              aria-selected={!value}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                onChange("");
-                setOpen(false);
-              }}
-              className="w-full rounded-md px-2 py-1.5 text-left text-sm"
-              style={{ color: isDark ? "#e2e8f0" : "#4a4a48" }}
-            >
-              {placeholder}
-            </button>
-            {options.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-selected={option.value === value}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-                className="w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                style={{ color: isDark ? "#e2e8f0" : "#4a4a48" }}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   // Save config
   const handleSave = async () => {
     try {
@@ -369,10 +290,15 @@ export const PluginDetailModal: React.FC<PluginDetailModalProps> = ({
 
       case "select":
         return (
-          <CustomSelect
+          <Combobox
             value={String(value || "")}
-            options={field.options ?? []}
+            options={[
+              { value: "", label: t("common.select", "Select...") },
+              ...(field.options ?? []),
+            ]}
             placeholder={t("common.select", "Select...")}
+            ariaLabel={field.label}
+            theme={resolvedTheme}
             onChange={(nextValue) => handleConfigChange(field.key, nextValue)}
           />
         );

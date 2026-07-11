@@ -13,6 +13,14 @@ export { PluginDetailPanel } from "./components/PluginDetail";
 export { PluginDetailModal } from "./components/PluginDetailModal";
 export { PermissionPrompt } from "./components/PermissionPrompt";
 export {
+  Combobox,
+  createCombobox,
+  type ComboboxInstance,
+  type ComboboxOption,
+  type ComboboxOptions,
+  type ComboboxProps,
+} from "../components/Combobox";
+export {
   ExtensionManagerProvider,
   PluginContentTab,
   PluginSidebarExtensions,

@@ -18,6 +18,7 @@ import {
   type RegisteredExtension,
 } from "../plugin/extensions";
 import { createPluginNetworkApi } from "../plugin/runtime/network";
+import { createCombobox } from "./Combobox";
 import { createLogger } from "../utils/logger";
 import { useConfirm } from "./ConfirmDialog";
 
@@ -329,6 +330,7 @@ export function ContextMenu({
             extension.pluginId,
             extension.grantedPermissions,
           ),
+          ui: { createCombobox },
           plugin: {
             id: extension.pluginId,
             name: extension.pluginName,

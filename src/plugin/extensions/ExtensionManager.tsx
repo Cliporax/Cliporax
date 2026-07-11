@@ -21,6 +21,11 @@ import {
   createPluginNetworkApi,
   type PluginNetworkApi,
 } from "../runtime/network";
+import {
+  createCombobox,
+  type ComboboxInstance,
+  type ComboboxOptions,
+} from "../../components/Combobox";
 
 const logger = createLogger("ExtensionManager");
 const PLUGIN_CHANGED_EVENT = "cliporax:plugin-changed";
@@ -83,6 +88,10 @@ export interface ExtensionContext {
   settings: Record<string, unknown>;
   /** Permission-aware HTTP client for this plugin. */
   network: PluginNetworkApi;
+  /** Shared host UI primitives for DOM-based plugin extensions. */
+  ui: {
+    createCombobox: (options: ComboboxOptions) => ComboboxInstance;
+  };
   plugin: {
     id: string;
     name: string;
@@ -248,6 +257,7 @@ const PluginDomExtension: React.FC<{
     const extensionContext: ExtensionContext = {
       ...context,
       network: createPluginNetworkApi(ext.pluginId, ext.grantedPermissions),
+      ui: { createCombobox },
       plugin: {
         id: ext.pluginId,
         name: ext.pluginName,
@@ -303,6 +313,7 @@ const SidebarExtensions: React.FC<{ theme: "light" | "dark" }> = ({
       theme,
       settings: {},
       network: createPluginNetworkApi("", []),
+      ui: { createCombobox },
       plugin: { id: "", name: "", version: "" },
     },
   );
@@ -374,6 +385,7 @@ export const ExtensionManagerProvider: React.FC<{
           theme: "dark",
           settings: {},
           network: createPluginNetworkApi(pluginId, grantedPermissions),
+          ui: { createCombobox },
           plugin: {
             id: pluginId,
             name: pluginId,
@@ -761,6 +773,7 @@ export const useCardExtensions = (
     theme,
     settings: {},
     network: createPluginNetworkApi("", []),
+    ui: { createCombobox },
     plugin: { id: "", name: "", version: "" },
   };
 
@@ -832,6 +845,7 @@ export const PluginContentTab: React.FC<{
             extension.pluginId,
             extension.grantedPermissions,
           ),
+          ui: { createCombobox },
           plugin: {
             id: extension.pluginId,
             name: extension.pluginName,
