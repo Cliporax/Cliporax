@@ -17,6 +17,10 @@ import { pluginApi } from "../api/pluginApi";
 import { createLogger } from "../../utils/logger";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  createPluginNetworkApi,
+  type PluginNetworkApi,
+} from "../runtime/network";
 
 const logger = createLogger("ExtensionManager");
 const PLUGIN_CHANGED_EVENT = "cliporax:plugin-changed";
@@ -76,6 +80,8 @@ export interface PluginContextMenuItem {
 export interface ExtensionContext {
   theme: "light" | "dark";
   settings: Record<string, unknown>;
+  /** Permission-aware HTTP client for this plugin. */
+  network: PluginNetworkApi;
   plugin: {
     id: string;
     name: string;
@@ -239,6 +245,7 @@ const PluginDomExtension: React.FC<{
 
     const extensionContext: ExtensionContext = {
       ...context,
+      network: createPluginNetworkApi(ext.pluginId, ext.grantedPermissions),
       plugin: {
         id: ext.pluginId,
         name: ext.pluginName,
@@ -293,6 +300,7 @@ const SidebarExtensions: React.FC<{ theme: "light" | "dark" }> = ({
     {
       theme,
       settings: {},
+      network: createPluginNetworkApi("", []),
       plugin: { id: "", name: "", version: "" },
     },
   );
@@ -342,7 +350,10 @@ export const ExtensionManagerProvider: React.FC<{
   /**
    * Load plugin script via IPC and execute it
    */
-  const loadPluginScriptViaIPC = useCallback(async (pluginId: string) => {
+  const loadPluginScriptViaIPC = useCallback(async (
+    pluginId: string,
+    grantedPermissions: readonly string[],
+  ) => {
     if (!loadedScriptIds.has(pluginId)) {
       const scriptContent = await pluginApi.readScript(pluginId);
       const script = document.createElement("script");
@@ -356,6 +367,7 @@ export const ExtensionManagerProvider: React.FC<{
         plugin.onActivate({
           theme: "dark",
           settings: {},
+          network: createPluginNetworkApi(pluginId, grantedPermissions),
           plugin: {
             id: pluginId,
             name: pluginId,
@@ -398,12 +410,15 @@ export const ExtensionManagerProvider: React.FC<{
           continue;
         }
 
-        await loadPluginScriptViaIPC(plugin.id);
-
         // Get plugin detail to access extensions
         try {
           const detail = await pluginApi.getDetail(plugin.id);
           const manifest = detail.manifest;
+
+          await loadPluginScriptViaIPC(
+            plugin.id,
+            detail.grantedPermissions,
+          );
 
           const pluginConfig = isRecord(detail.config) ? detail.config : {};
 
@@ -720,6 +735,7 @@ export const useCardExtensions = (
   const context: ExtensionContext = {
     theme,
     settings: {},
+    network: createPluginNetworkApi("", []),
     plugin: { id: "", name: "", version: "" },
   };
 
@@ -785,6 +801,10 @@ export const PluginContentTab: React.FC<{
         context={{
           theme,
           settings: extension.config,
+          network: createPluginNetworkApi(
+            extension.pluginId,
+            extension.grantedPermissions,
+          ),
           plugin: {
             id: extension.pluginId,
             name: extension.pluginName,

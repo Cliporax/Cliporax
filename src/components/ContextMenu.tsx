@@ -17,6 +17,7 @@ import {
   type PluginTransferItem,
   type RegisteredExtension,
 } from "../plugin/extensions";
+import { createPluginNetworkApi } from "../plugin/runtime/network";
 import { createLogger } from "../utils/logger";
 
 const logger = createLogger("ContextMenu");
@@ -236,6 +237,10 @@ export function ContextMenu({
         context: {
           theme: theme as "light" | "dark",
           settings: extension.config,
+          network: createPluginNetworkApi(
+            extension.pluginId,
+            extension.grantedPermissions,
+          ),
           plugin: {
             id: extension.pluginId,
             name: extension.pluginName,

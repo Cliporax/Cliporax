@@ -243,7 +243,7 @@ interface StorageApi {
 }
 
 interface NetworkApi {
-  fetch(input: string, init?: RequestInit): Promise<Response>;
+  fetch(input: RequestInfo | URL, init?: RequestInit & { timeout?: number }): Promise<Response>;
 }
 
 interface EventApi {
@@ -263,6 +263,33 @@ interface ConfigApi {
   update<T>(patch: Partial<T>): Promise<void>;
 }
 ```
+
+### Network requests from UI extensions
+
+Use the `network` object included in an extension's render context rather than
+depending on a global `fetch` binding. It permits requests only when the active
+plugin has `network:fetch` or an implied network permission.
+
+```js
+function render(props) {
+  const button = document.createElement("button");
+  button.textContent = "Fetch";
+  button.onclick = async () => {
+    const response = await props.context.network.fetch(
+      "https://example.com/api/data",
+      { headers: { Accept: "application/json" }, timeout: 10_000 },
+    );
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    const result = await response.json();
+    // render result
+  };
+  return button;
+}
+```
+
+The method returns the standard Web `Response`; HTTP error statuses are not
+thrown. A timeout rejects with the standard abort error. The host does not log
+request bodies, response bodies, or credentials.
 
 ## 7. IPC Commands
 
