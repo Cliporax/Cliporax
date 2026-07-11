@@ -99,6 +99,22 @@ impl TabRepository {
         result
     }
 
+    pub async fn get_trash_tab_id(pool: &Db) -> Result<i64, Error> {
+        if let Some(id) = sqlx::query_scalar("SELECT id FROM tabs WHERE is_trash = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await?
+        {
+            return Ok(id);
+        }
+
+        Ok(sqlx::query(
+            "INSERT INTO tabs (name, is_default, auto_capture, is_trash) VALUES ('Trash', 0, 0, 1)",
+        )
+        .execute(pool)
+        .await?
+        .last_insert_rowid())
+    }
+
     pub async fn create(pool: &Db, name: &str) -> Result<i64, Error> {
         log::info!("[TabRepository] create called with name: {}", name);
         let mut tx = pool.begin().await?;
@@ -127,7 +143,7 @@ impl TabRepository {
 
         let mut tx = pool.begin().await?;
         let tab: Option<(i64,)> =
-            sqlx::query_as("SELECT id FROM tabs WHERE id = ? AND is_default = 0")
+            sqlx::query_as("SELECT id FROM tabs WHERE id = ? AND is_default = 0 AND is_trash = 0")
                 .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?;
@@ -189,7 +205,7 @@ impl TabRepository {
         items_result?;
 
         // Then delete the tab itself
-        sqlx::query("DELETE FROM tabs WHERE id = ? AND is_default = 0")
+        sqlx::query("DELETE FROM tabs WHERE id = ? AND is_default = 0 AND is_trash = 0")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -216,7 +232,7 @@ impl TabRepository {
         );
 
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE tabs SET name = ? WHERE id = ? AND is_default = 0")
+        sqlx::query("UPDATE tabs SET name = ? WHERE id = ? AND is_default = 0 AND is_trash = 0")
             .bind(new_name.trim())
             .bind(id)
             .execute(&mut *tx)
@@ -634,38 +650,71 @@ impl ClipboardRepository {
     }
 
     pub async fn delete(pool: &Db, id: i64) -> Result<(), Error> {
-        log::info!("[ClipboardRepository] delete called - id: {}", id);
+        Self::move_to_trash(pool, &[id]).await.map(|_| ())
+    }
 
-        // Use transaction to ensure delete and sync outbox are atomic
+    pub async fn move_to_trash(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let trash_id = TabRepository::get_trash_tab_id(pool).await?;
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("UPDATE clipboard_items SET deleted_from_tab_id = tab_id, tab_id = ?, deleted_at = datetime('now'), is_pinned = 0 WHERE id IN ({}) AND tab_id != ?", placeholders);
+        let mut query = sqlx::query(&sql).bind(trash_id);
+        for id in ids {
+            query = query.bind(id);
+        }
+        query = query.bind(trash_id);
+        Ok(query.execute(pool).await?.rows_affected() as i64)
+    }
+
+    pub async fn restore_from_trash(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let trash_id = TabRepository::get_trash_tab_id(pool).await?;
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("UPDATE clipboard_items SET tab_id = COALESCE(deleted_from_tab_id, tab_id), deleted_from_tab_id = NULL, deleted_at = NULL WHERE id IN ({}) AND tab_id = ?", placeholders);
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id);
+        }
+        Ok(query.bind(trash_id).execute(pool).await?.rows_affected() as i64)
+    }
+
+    pub async fn purge_trash(pool: &Db, retention_days: i64) -> Result<i64, Error> {
+        let trash_id = TabRepository::get_trash_tab_id(pool).await?;
         let mut tx = pool.begin().await?;
-
-        // Record sync change before deleting (in same transaction)
-        // This ensures the tombstone is created even if delete fails
-        let item_key = get_sync_item_key_tx(&mut tx, id).await?;
-        record_sync_change_tx(
-            &mut tx,
-            SYNC_ENTITY_CLIPBOARD_ITEM,
-            &id.to_string(),
-            SYNC_OP_DELETE,
-            None,
-            item_key.as_deref(),
-            SYNC_SOURCE_LOCAL,
-        )
-        .await?;
-
-        sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
+        let ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM clipboard_items WHERE tab_id = ? AND deleted_at <= datetime('now', '-' || ? || ' days')").bind(trash_id).bind(retention_days).fetch_all(&mut *tx).await?;
+        for (id,) in &ids {
+            let key = get_sync_item_key_tx(&mut tx, *id).await?;
+            record_sync_change_tx(
+                &mut tx,
+                SYNC_ENTITY_CLIPBOARD_ITEM,
+                &id.to_string(),
+                SYNC_OP_DELETE,
+                None,
+                key.as_deref(),
+                SYNC_SOURCE_LOCAL,
+            )
             .await?;
-        sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
+            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
-
-        log::info!("[ClipboardRepository] delete success");
-        Ok(())
+        Ok(ids.len() as i64)
     }
 
     pub async fn update_tags(pool: &Db, id: i64, tags: &str) -> Result<(), Error> {
@@ -944,8 +993,8 @@ impl ClipboardRepository {
         result
     }
 
-    /// Delete items by index range (ordered by is_pinned DESC, display_order ASC, updated_at DESC)
-    /// This is used for batch deletion in range selection
+    /// Move items in an index range to Trash (ordered by is_pinned DESC,
+    /// display_order ASC, updated_at DESC). This is used for range selection.
     pub async fn delete_by_index_range(
         pool: &Db,
         tab_id: i64,
@@ -959,7 +1008,6 @@ impl ClipboardRepository {
             end_index
         );
 
-        let mut tx = pool.begin().await?;
         let ids: Vec<(i64,)> = sqlx::query_as(
             r#"
             SELECT id FROM (
@@ -975,37 +1023,10 @@ impl ClipboardRepository {
         .bind(tab_id)
         .bind(end_index - start_index + 1) // count
         .bind(start_index) // offset
-        .fetch_all(&mut *tx)
+        .fetch_all(pool)
         .await?;
-
-        for (id,) in &ids {
-            let item_key = get_sync_item_key_tx(&mut tx, *id).await?;
-            record_sync_change_tx(
-                &mut tx,
-                SYNC_ENTITY_CLIPBOARD_ITEM,
-                &id.to_string(),
-                SYNC_OP_DELETE,
-                Some(tab_id),
-                item_key.as_deref(),
-                SYNC_SOURCE_LOCAL,
-            )
-            .await?;
-        }
-
-        for (id,) in &ids {
-            sqlx::query("DELETE FROM clipboard_items WHERE id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query("DELETE FROM sync_item_map WHERE local_id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        tx.commit().await?;
-
-        Ok(ids.len() as i64)
+        let ids = ids.into_iter().map(|(id,)| id).collect::<Vec<_>>();
+        Self::move_to_trash(pool, &ids).await
     }
 
     /// Move multiple items to another tab (batch update tab_id)
@@ -1246,12 +1267,11 @@ impl ClipboardRepository {
 
     /// Delete multiple items by their IDs in a single transaction
     /// Returns the number of items deleted
-    pub async fn delete_by_ids(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
+    pub async fn delete_by_ids_permanently(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
         log::info!(
             "[ClipboardRepository] delete_by_ids called - count: {}",
             ids.len()
         );
-
         if ids.is_empty() {
             return Ok(0);
         }
@@ -1296,6 +1316,11 @@ impl ClipboardRepository {
             result.rows_affected()
         );
         Ok(result.rows_affected() as i64)
+    }
+
+    /// Move multiple items to Trash while retaining their sync identity.
+    pub async fn delete_by_ids(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
+        Self::move_to_trash(pool, ids).await
     }
 
     /// Get all item types for a tab (for virtual scrolling height calculation)

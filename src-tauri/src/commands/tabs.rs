@@ -89,8 +89,8 @@ pub async fn tabs_rename(db: tauri::State<'_, Db>, id: i64, name: String) -> Res
     let tab = tabs.iter().find(|t| t.id == Some(id));
 
     if let Some(tab) = tab {
-        if tab.is_default.unwrap_or(0) == 1 {
-            return Err("Cannot rename default tab".to_string());
+        if tab.is_default.unwrap_or(0) == 1 || tab.is_trash.unwrap_or(0) == 1 {
+            return Err("Cannot rename protected tab".to_string());
         }
     } else {
         return Err("Tab not found".to_string());

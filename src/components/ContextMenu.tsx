@@ -6,7 +6,7 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
-import { FolderPlus, Copy, ChevronRight, ListTodo } from "lucide-react";
+import { FolderPlus, Copy, ChevronRight, ImagePlus, Languages, ListTodo, Pencil, Pin, Puzzle, QrCode, RotateCcw, Trash2, Upload } from "lucide-react";
 import { clipboard, ItemType, type ClipboardItem } from "../lib/tauri-api";
 import { useTabStore } from "../stores/tabStore";
 import { useClipboardStore } from "../stores/clipboardStore";
@@ -19,6 +19,7 @@ import {
 } from "../plugin/extensions";
 import { createPluginNetworkApi } from "../plugin/runtime/network";
 import { createLogger } from "../utils/logger";
+import { useConfirm } from "./ConfirmDialog";
 
 const logger = createLogger("ContextMenu");
 
@@ -39,6 +40,9 @@ interface ContextMenuProps {
   currentTabId?: number | null;
   batchItemIds?: Set<number>;
   onBatchActionComplete?: () => void;
+  onEdit?: () => void;
+  onTogglePin?: () => void;
+  isTrash?: boolean;
   children: React.ReactNode;
 }
 
@@ -134,19 +138,53 @@ function evaluateContextMenuCondition(
     return item?.type === itemTypeMatch[1];
   }
 
+  const positionMatch = normalized.match(
+    /^position\s*===\s*['"](badge|action|header|footer)['"]$/,
+  );
+  if (positionMatch) {
+    // Card actions retain their original action position when exposed in the
+    // context menu, so existing plugin conditions keep working.
+    return positionMatch[1] === "action";
+  }
+
   logger.warn("Unsupported plugin context-menu condition:", condition);
   return false;
 }
 
-function renderPluginMenuIcon(icon: string | undefined) {
-  if (!icon) return null;
+function renderPluginMenuIcon(
+  icon: string | undefined,
+  iconDataUrl: string | undefined,
+  pluginId: string,
+) {
+  if (iconDataUrl) {
+    return (
+      <img
+        src={iconDataUrl}
+        alt=""
+        aria-hidden="true"
+        className="mr-2 h-3.5 w-3.5 shrink-0 object-contain"
+      />
+    );
+  }
   if (icon === "list-todo") {
     return <ListTodo size={14} className="mr-2 shrink-0" />;
   }
-  if (icon.length <= 2) {
+  if (icon === "qr-code" || pluginId.includes("qrcode")) {
+    return <QrCode size={14} className="mr-2 shrink-0" />;
+  }
+  if (icon === "languages" || pluginId.includes("translate")) {
+    return <Languages size={14} className="mr-2 shrink-0" />;
+  }
+  if (icon === "image-plus") {
+    return <ImagePlus size={14} className="mr-2 shrink-0" />;
+  }
+  if (icon === "upload") {
+    return <Upload size={14} className="mr-2 shrink-0" />;
+  }
+  if (icon && icon.length <= 2) {
     return <span className="mr-2 shrink-0 text-xs leading-none">{icon}</span>;
   }
-  return null;
+  return <Puzzle size={14} className="mr-2 shrink-0" />;
 }
 
 export function ContextMenu({
@@ -155,6 +193,9 @@ export function ContextMenu({
   currentTabId,
   batchItemIds,
   onBatchActionComplete,
+  onEdit,
+  onTogglePin,
+  isTrash = false,
   children,
 }: ContextMenuProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -170,8 +211,23 @@ export function ContextMenu({
   const { tabs } = useTabStore();
   const { items, removeItem, updateItem } = useClipboardStore();
   const { getExtensions } = useExtensionManager();
-  const availableTabs = tabs.filter((t) => t.id !== currentTabId);
+  const { confirm: askConfirm } = useConfirm();
+  const isTrashTab = isTrash || tabs.some((tab) => tab.id === currentTabId && tab.is_trash);
+  const availableTabs = tabs.filter((t) => t.id !== currentTabId && !t.is_trash);
   const contextMenuExtensions = getExtensions("context-menu");
+  const cardActionExtensions = getExtensions("card");
+  const pluginActionExtensions = useMemo(() => {
+    const seenComponents = new Set<string>();
+
+    return [...cardActionExtensions, ...contextMenuExtensions].filter(
+      (extension) => {
+        const key = `${extension.pluginId}:${extension.component}`;
+        if (seenComponents.has(key)) return false;
+        seenComponents.add(key);
+        return true;
+      },
+    );
+  }, [cardActionExtensions, contextMenuExtensions]);
   const batchIds = useMemo(
     () =>
       batchItemIds?.has(itemId) && batchItemIds.size > 1
@@ -200,8 +256,12 @@ export function ContextMenu({
       : "light";
     const primaryItem = selectedItems[0];
 
-    return contextMenuExtensions.flatMap((extension) => {
-      if (!hasPermission(extension, "ui:context-menu")) {
+    return pluginActionExtensions.flatMap((extension) => {
+      const requiredPermission =
+        extension.pointType === "context-menu"
+          ? "ui:context-menu"
+          : "ui:extension";
+      if (!hasPermission(extension, requiredPermission)) {
         return [];
       }
 
@@ -211,14 +271,17 @@ export function ContextMenu({
 
       const plugin = window.CliporaxPlugins?.[extension.pluginId];
       const component = plugin?.extensions?.[extension.component];
-      if (!component?.getMenuItems) return [];
+      if (!component) return [];
 
       const props = {
         data: {
+          position:
+            extension.pointType === "card" ? "action" : undefined,
           item: primaryItem
             ? {
                 id: primaryItem.id,
                 type: primaryItem.type,
+                content: primaryItem.content,
                 is_pinned: primaryItem.is_pinned,
                 is_sensitive: primaryItem.is_sensitive,
               }
@@ -230,6 +293,7 @@ export function ContextMenu({
           items: selectedItems.map((item) => ({
             id: item.id,
             type: item.type,
+            content: item.content,
             is_pinned: item.is_pinned,
             is_sensitive: item.is_sensitive,
           })),
@@ -252,10 +316,32 @@ export function ContextMenu({
 
       if (component.shouldShow && !component.shouldShow(props)) return [];
 
+      if (!component.getMenuItems) {
+        if (extension.pointType !== "card" || !component.render) return [];
+
+        return [
+          {
+            extension,
+            item: {
+              id: extension.id,
+              label: extension.pluginName || extension.component,
+              icon: extension.icon,
+              action: () => {
+                const button = component.render?.(props);
+                button?.click();
+              },
+            },
+          },
+        ];
+      }
+
       try {
         return component.getMenuItems(props).map((menuItem) => ({
           extension,
-          item: menuItem,
+          item: {
+            ...menuItem,
+            icon: menuItem.icon ?? extension.icon,
+          },
         }));
       } catch (error) {
         logger.error("Failed to get plugin context menu items:", {
@@ -266,7 +352,7 @@ export function ContextMenu({
         return [];
       }
     });
-  }, [contextMenuExtensions, itemId, selectedItems]);
+  }, [itemId, pluginActionExtensions, selectedItems]);
 
   const closeMenu = useCallback(() => {
     setPosition(null);
@@ -468,6 +554,56 @@ export function ContextMenu({
     [batchIds, closeMenu, itemId, currentTabId, onBatchActionComplete],
   );
 
+  const handleRestore = useCallback(async () => {
+    try {
+      const ids = batchIds.length > 1 ? batchIds : [itemId];
+      await clipboard.restoreFromTrash(ids);
+      if (ids.length > 1) onBatchActionComplete?.();
+      else window.dispatchEvent(new CustomEvent("clipboard:action", { detail: { action: "delete", itemId } }));
+      closeMenu();
+    } catch (error) {
+      logger.error("Failed to restore item:", error);
+    }
+  }, [batchIds, closeMenu, itemId, onBatchActionComplete]);
+
+  const handleDelete = useCallback(async () => {
+    try {
+      const ids = batchIds.length > 1 ? batchIds : [itemId];
+      await clipboard.deleteByIds(ids);
+      if (ids.length > 1) onBatchActionComplete?.();
+      else window.dispatchEvent(new CustomEvent("clipboard:action", { detail: { action: "delete", itemId } }));
+      closeMenu();
+    } catch (error) {
+      logger.error("Failed to move item to Trash:", error);
+    }
+  }, [batchIds, closeMenu, itemId, onBatchActionComplete]);
+
+  const handleDeletePermanently = useCallback(async () => {
+    try {
+      const confirmed = await askConfirm({
+        title: "Delete permanently?",
+        message: "This item will be removed permanently and cannot be restored.",
+        confirmText: "Delete permanently",
+        confirmButtonClass: "bg-red-600 text-white",
+      });
+      if (!confirmed) return;
+
+      const ids = batchIds.length > 1 ? batchIds : [itemId];
+      await clipboard.deleteByIdsPermanently(ids);
+      if (ids.length > 1) onBatchActionComplete?.();
+      else {
+        window.dispatchEvent(
+          new CustomEvent("clipboard:action", {
+            detail: { action: "delete", itemId },
+          }),
+        );
+      }
+      closeMenu();
+    } catch (error) {
+      logger.error("Failed to permanently delete item:", error);
+    }
+  }, [askConfirm, batchIds, closeMenu, itemId, onBatchActionComplete]);
+
   const createPluginItemApi = useCallback(
     (extension: RegisteredExtension): PluginItemApi => {
       const requirePermission = (permission: string) => {
@@ -596,6 +732,32 @@ export function ContextMenu({
           maxWidth: `calc(100vw - ${VIEWPORT_PADDING * 2}px)`,
         }}
       >
+        {isTrashTab ? (
+          <>
+            <button type="button" onClick={handleRestore} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+              <RotateCcw size={14} className="mr-2" /> Restore
+            </button>
+            <button type="button" onClick={handleDeletePermanently} className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30">
+              <Trash2 size={14} className="mr-2" /> Delete permanently
+            </button>
+          </>
+        ) : (
+          <>
+            {onEdit && item.type !== ItemType.Image && (
+              <button type="button" onClick={() => { onEdit(); closeMenu(); }} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                <Pencil size={14} className="mr-2" /> Edit
+              </button>
+            )}
+            {onTogglePin && (
+              <button type="button" onClick={() => { onTogglePin(); closeMenu(); }} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                <Pin size={14} className="mr-2" /> {item.is_pinned ? "Unpin" : "Pin"}
+              </button>
+            )}
+          </>
+        )}
+        {isTrashTab && pluginContextMenuEntries.length > 0 && (
+          <div className="my-0.5 border-t border-gray-200 dark:border-gray-700" />
+        )}
         {pluginContextMenuEntries.length > 0 && (
           <>
             {pluginContextMenuEntries.map((entry) => (
@@ -608,7 +770,11 @@ export function ContextMenu({
                 title={entry.item.label}
               >
                 <span className="flex min-w-0 items-center">
-                  {renderPluginMenuIcon(entry.item.icon)}
+                  {renderPluginMenuIcon(
+                    entry.item.icon,
+                    entry.extension.iconDataUrl,
+                    entry.extension.pluginId,
+                  )}
                   <span className="truncate">{entry.item.label}</span>
                 </span>
               </button>
@@ -617,6 +783,7 @@ export function ContextMenu({
           </>
         )}
 
+        {!isTrashTab && <>
         {/* Move To Submenu Trigger */}
         <div
           className="relative group"
@@ -668,9 +835,9 @@ export function ContextMenu({
             </div>
           )}
         </div>
-
+        </>}
         {/* Copy To Submenu Trigger */}
-        <div
+        {!isTrashTab && <div
           className="relative group"
           onMouseEnter={(e) => handleSubMenuHover("copy", e)}
         >
@@ -719,7 +886,13 @@ export function ContextMenu({
               )}
             </div>
           )}
-        </div>
+        </div>}
+        {!isTrashTab && <>
+          <div className="my-0.5 border-t border-gray-200 dark:border-gray-700" />
+          <button type="button" onClick={handleDelete} className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30">
+            <Trash2 size={14} className="mr-2" /> Trash
+          </button>
+        </>}
       </div>
     </div>
   );

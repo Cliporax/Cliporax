@@ -17,6 +17,16 @@ export interface ClipboardListProps {
   searchMode?: "fuzzy" | "regex";
   searchScope?: "current" | "global";
   lineHeight?: "small" | "medium" | "large";
+  displayOptions?: {
+    showItemIndex: boolean;
+    showLineCount: boolean;
+    showSourceHost: boolean;
+    showActionButtons: boolean;
+    showEditButton: boolean;
+    showPinButton: boolean;
+    showPluginActionButtons: boolean;
+    pluginActionVisibility: Record<string, boolean>;
+  };
   tabId?: number | null; // Current active tab ID
   onEdit?: (item: {
     id: number;

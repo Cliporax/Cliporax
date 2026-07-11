@@ -49,6 +49,8 @@ pub struct ClipboardItem {
     pub display_order: Option<i32>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_from_tab_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -60,6 +62,7 @@ pub struct Tab {
     #[serde(serialize_with = "bool_int::serialize")]
     pub auto_capture: Option<i32>,
     pub created_at: Option<DateTime<Utc>>,
+    pub is_trash: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

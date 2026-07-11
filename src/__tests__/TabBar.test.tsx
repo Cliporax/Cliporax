@@ -6,12 +6,22 @@ import { TabBar } from "../components/TabBar";
 const mockSetSearchQuery = vi.fn();
 const mockSetActiveTab = vi.fn();
 const mockSetActivePluginTab = vi.fn();
+const pluginIconDataUrl = "data:image/svg+xml;base64,PHN2Zy8+";
 let mockActivePluginTabId: string | null = null;
-let mockPluginTabs = [
+let mockTabs: Array<Record<string, unknown>> = [];
+let mockPluginTabs: Array<{
+  id: string;
+  pluginId: string;
+  title: string;
+  iconDataUrl?: string;
+  component: string;
+  priority: number;
+}> = [
   {
     id: "plugin:com.cliporax.file-sync:FileSyncView",
     pluginId: "com.cliporax.file-sync",
     title: "File Sync",
+    iconDataUrl: undefined,
     component: "FileSyncView",
     priority: 20,
   },
@@ -19,10 +29,7 @@ let mockPluginTabs = [
 
 vi.mock("../stores/tabStore", () => ({
   useTabStore: () => ({
-    tabs: [
-      { id: 1, name: "Default", is_default: true },
-      { id: 2, name: "Work", is_default: false },
-    ],
+    tabs: mockTabs,
     activeTabId: 1,
     activePluginTabId: mockActivePluginTabId,
     isLoading: false,
@@ -72,11 +79,16 @@ const setViewport = (width: number, height: number) => {
 describe("TabBar", () => {
   beforeEach(() => {
     mockActivePluginTabId = null;
+    mockTabs = [
+      { id: 1, name: "Default", is_default: true, is_trash: 0 },
+      { id: 2, name: "Work", is_default: false, is_trash: 0 },
+    ];
     mockPluginTabs = [
       {
         id: "plugin:com.cliporax.file-sync:FileSyncView",
         pluginId: "com.cliporax.file-sync",
         title: "File Sync",
+        iconDataUrl: undefined,
         component: "FileSyncView",
         priority: 20,
       },
@@ -127,6 +139,34 @@ describe("TabBar", () => {
     );
     expect(mockSetActiveTab).not.toHaveBeenCalled();
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
+  });
+
+  it("does not render a numeric false trash flag before a tab name", () => {
+    render(<TabBar />);
+
+    expect(screen.getByText("Default").textContent).toBe("Default");
+    expect(screen.getByText("Work").textContent).toBe("Work");
+  });
+
+  it("renders a plugin tab's own icon when available", () => {
+    mockPluginTabs = [
+      {
+        id: "plugin:com.cliporax.file-sync:FileSyncView",
+        pluginId: "com.cliporax.file-sync",
+        title: "File Sync",
+        iconDataUrl: pluginIconDataUrl,
+        component: "FileSyncView",
+        priority: 20,
+      },
+    ];
+    render(<TabBar />);
+
+    expect(
+      screen
+        .getByRole("button", { name: "File Sync" })
+        .querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe(pluginIconDataUrl);
   });
 
   it("opens File Sync when a file item requests it", () => {

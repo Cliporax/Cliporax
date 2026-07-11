@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextMenu } from "../components/ContextMenu";
 import { clipboard, type ClipboardItem } from "../lib/tauri-api";
@@ -10,6 +10,8 @@ vi.mock("../lib/tauri-api", () => ({
     copyToTab: vi.fn(),
     moveToTabBatch: vi.fn(),
     copyToTabBatch: vi.fn(),
+    restoreFromTrash: vi.fn(),
+    deleteByIdsPermanently: vi.fn(),
   },
 }));
 
@@ -34,6 +36,10 @@ vi.mock("../plugin/extensions", () => ({
   useExtensionManager: () => ({
     getExtensions: () => [],
   }),
+}));
+
+vi.mock("../components/ConfirmDialog", () => ({
+  useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }),
 }));
 
 const item = (id: number): ClipboardItem => ({
@@ -87,6 +93,48 @@ describe("ContextMenu", () => {
 
     expect(menu.style.left).toBe("232px");
     expect(menu.style.top).toBe("228px");
+  });
+
+  it("keeps Trash as the last context-menu action", () => {
+    render(
+      <ContextMenu item={item(1)} itemId={1} currentTabId={1}>
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+
+    const menu = screen
+      .getByRole("button", { name: /move to/i })
+      .closest(".fixed") as HTMLDivElement;
+    const actions = within(menu).getAllByRole("button");
+
+    expect(actions[actions.length - 1]?.textContent).toContain("Trash");
+  });
+
+  it("permanently deletes an item from the Trash menu", async () => {
+    vi.mocked(clipboard.deleteByIdsPermanently).mockResolvedValue(1);
+
+    render(
+      <ContextMenu item={item(1)} itemId={1} currentTabId={1} isTrash>
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete permanently" }),
+    );
+
+    await waitFor(() => {
+      expect(clipboard.deleteByIdsPermanently).toHaveBeenCalledWith([1]);
+    });
   });
 
   it("closes an open item menu when another item is clicked", async () => {

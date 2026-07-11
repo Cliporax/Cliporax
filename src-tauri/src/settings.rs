@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -14,9 +15,29 @@ pub struct AppSettings {
     pub line_height: String,
     pub auto_start: bool,
     pub auto_hide: bool,
+    #[serde(default = "default_true")]
+    pub show_item_index: bool,
+    #[serde(default = "default_true")]
+    pub show_line_count: bool,
+    #[serde(default = "default_true")]
+    pub show_source_host: bool,
+    #[serde(default = "default_true")]
+    pub show_action_buttons: bool,
+    #[serde(default = "default_true")]
+    pub show_edit_button: bool,
+    #[serde(default = "default_true")]
+    pub show_pin_button: bool,
+    #[serde(default = "default_true")]
+    pub show_plugin_action_buttons: bool,
+    #[serde(default)]
+    pub plugin_action_visibility: HashMap<String, bool>,
 
     // Shortcut settings
     pub shortcut_toggle_window: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -28,6 +49,14 @@ impl Default for AppSettings {
             line_height: "medium".to_string(),
             auto_start: false,
             auto_hide: true,
+            show_item_index: true,
+            show_line_count: true,
+            show_source_host: true,
+            show_action_buttons: true,
+            show_edit_button: true,
+            show_pin_button: true,
+            show_plugin_action_buttons: true,
+            plugin_action_visibility: HashMap::new(),
             shortcut_toggle_window: "CmdOrControl+Shift+V".to_string(),
         }
     }
@@ -178,6 +207,14 @@ mod tests {
             line_height: "large".to_string(),
             auto_start: true,
             auto_hide: false,
+            show_item_index: true,
+            show_line_count: true,
+            show_source_host: true,
+            show_action_buttons: true,
+            show_edit_button: true,
+            show_pin_button: true,
+            show_plugin_action_buttons: true,
+            plugin_action_visibility: HashMap::new(),
             shortcut_toggle_window: "CmdOrControl+Shift+A".to_string(),
         };
 

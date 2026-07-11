@@ -61,6 +61,8 @@ interface ClipboardItemRaw {
   display_order?: number;
   created_at?: string;
   updated_at?: string;
+  deleted_at?: string;
+  deleted_from_tab_id?: number;
 }
 
 function rawBool(value: number | boolean | null | undefined): boolean {
@@ -139,6 +141,12 @@ export const tabs = {
 
 // Clipboard API
 export const clipboard = {
+  restoreFromTrash: async (ids: number[]): Promise<number> =>
+    tracedInvoke<number>("clipboard_restore_from_trash", { ids }),
+  deleteByIdsPermanently: async (ids: number[]): Promise<number> =>
+    tracedInvoke<number>("clipboard_delete_by_ids_permanently", { ids }),
+  purgeTrash: async (retentionDays = 30): Promise<number> =>
+    tracedInvoke<number>("clipboard_purge_trash", { retentionDays }),
   getByTab: async (
     tabId: number,
     limit?: number,
@@ -947,6 +955,14 @@ export interface AppSettings {
   line_height: string;
   auto_start: boolean;
   auto_hide: boolean;
+  show_item_index: boolean;
+  show_line_count: boolean;
+  show_source_host: boolean;
+  show_action_buttons: boolean;
+  show_edit_button: boolean;
+  show_pin_button: boolean;
+  show_plugin_action_buttons: boolean;
+  plugin_action_visibility: Record<string, boolean>;
   shortcut_toggle_window: string;
 }
 

@@ -11,7 +11,7 @@ import Settings, {
   ShortcutSettings,
 } from "./Settings";
 import { settings as settingsApi } from "../lib/tauri-api";
-import { PluginProvider } from "../plugin";
+import { ExtensionManagerProvider, PluginProvider } from "../plugin";
 import { createLogger } from "../utils/logger";
 import { useSettingsSync } from "../hooks/useSettingsSync";
 
@@ -76,14 +76,16 @@ const SettingsWindow: React.FC = () => {
   });
 
   return (
-    <PluginProvider>
-      <Settings
-        isWindow={true}
-        initialGeneralSettings={settings.general}
-        initialShortcutSettings={settings.shortcuts}
-        onSettingsChange={handleLocalSettingsChange}
-      />
-    </PluginProvider>
+    <ExtensionManagerProvider>
+      <PluginProvider>
+        <Settings
+          isWindow={true}
+          initialGeneralSettings={settings.general}
+          initialShortcutSettings={settings.shortcuts}
+          onSettingsChange={handleLocalSettingsChange}
+        />
+      </PluginProvider>
+    </ExtensionManagerProvider>
   );
 };
 

@@ -19,12 +19,14 @@ type ClipboardItem = {
 type TauriMockOptions = {
   items?: ClipboardItem[];
   failCommands?: Record<string, string>;
+  settings?: Partial<typeof defaultSettings>;
   plugins?: MockPlugin[];
 };
 
 type MockPlugin = {
   id: string;
   name: string;
+  iconDataUrl?: string;
   version?: string;
   description?: string;
   permissions?: string[];
@@ -46,6 +48,14 @@ const defaultSettings = {
   line_height: "medium",
   auto_start: false,
   auto_hide: true,
+  show_item_index: true,
+  show_line_count: true,
+  show_source_host: true,
+  show_action_buttons: true,
+  show_edit_button: true,
+  show_pin_button: true,
+  show_plugin_action_buttons: true,
+  plugin_action_visibility: {},
   shortcut_toggle_window: "CmdOrControl+Shift+V",
 };
 
@@ -150,6 +160,12 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
         items = items.filter((item) => !ids.has(item.id));
         return before - items.length;
       }
+      if (cmd === "clipboard_delete_by_ids_permanently") {
+        const ids = new Set(args.ids ?? []);
+        const before = items.length;
+        items = items.filter((item) => !ids.has(item.id));
+        return before - items.length;
+      }
       if (cmd === "clipboard_update_content") {
         items = items.map((item) =>
           item.id === args.id
@@ -216,7 +232,8 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
               name: plugin.name,
               version: plugin.version ?? "0.1.0",
               description: plugin.description ?? "",
-              author: { name: "Test" },
+            author: { name: "Test" },
+            icon: plugin.iconDataUrl ? "assets/icon.svg" : undefined,
               main: "main.js",
               type: "utility",
               permissions: (plugin.permissions ?? []).map((permission: string) => ({
@@ -240,6 +257,11 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
           const plugin = plugins.find((candidate: any) => candidate.id === args.pluginId);
           if (!plugin) throw new Error(`Plugin not found: ${args.pluginId}`);
           return plugin.script;
+        }
+        if (cmd === "plugin_read_icon") {
+          const plugin = plugins.find((candidate: any) => candidate.id === args.pluginId);
+          if (!plugin?.iconDataUrl) throw new Error("Plugin icon not found");
+          return plugin.iconDataUrl;
         }
         if (cmd.endsWith("get_all")) return [];
         if (cmd.includes("get_sources") || cmd.includes("get_plugins")) return [];
@@ -287,7 +309,7 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
   }, {
     initialItems: options.items ?? [],
     failCommands: options.failCommands ?? {},
-    settings: defaultSettings,
+    settings: { ...defaultSettings, ...options.settings },
     plugins: options.plugins ?? [],
   });
 }

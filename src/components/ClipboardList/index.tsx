@@ -77,6 +77,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       searchMode = "fuzzy",
       searchScope = "current",
       lineHeight = "medium",
+      displayOptions,
       tabId = null,
       onEdit,
       refreshTrigger,
@@ -345,6 +346,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       selectionRange,
       defaultTabId,
       isSearchMode,
+      isTrashTab: tabs.some((tab) => tab.id === defaultTabId && tab.is_trash),
       searchResults,
       cacheManagerRef,
       typeCacheRef,
@@ -1326,6 +1328,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
                     isPinned={!!item.is_pinned}
                     isSelected={selectedId === item.id}
                     lineHeight={lineHeight}
+                    displayOptions={displayOptions}
                     isMultiSelectMode={isMultiSelectMode}
                     isMultiSelected={
                       checkedIds.has(item.id) || isIndexInRange(index)

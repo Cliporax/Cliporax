@@ -25,6 +25,41 @@ test("opens settings from the main window control", async ({ page, mockTauri }) 
   await expect(page.getByTestId("settings-panel")).toBeVisible();
 });
 
+test("shows registered card and context-menu plugin actions", async ({
+  page,
+  mockTauri,
+}) => {
+  await mockTauri({
+    plugins: [
+      {
+        id: "com.example.translate",
+        name: "Translate",
+        iconDataUrl: "data:image/svg+xml;base64,PHN2Zy8+",
+        extensions: [{ point: "card", component: "TranslateButton" }],
+        script: "window.CliporaxPlugins = window.CliporaxPlugins || {}; window.CliporaxPlugins['com.example.translate'] = { extensions: {} };",
+      },
+      {
+        id: "com.example.todo",
+        name: "TODO",
+        permissions: ["ui:context-menu"],
+        extensions: [
+          {
+            point: "context-menu",
+            component: "MoveToTodoAction",
+            icon: "list-todo",
+          },
+        ],
+        script: "window.CliporaxPlugins = window.CliporaxPlugins || {}; window.CliporaxPlugins['com.example.todo'] = { extensions: {} };",
+      },
+    ],
+  });
+  await page.goto("/settings");
+
+  await expect(page.getByRole("button", { name: "Translate" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Translate" }).locator("img")).toBeVisible();
+  await expect(page.getByRole("button", { name: "TODO" })).toBeVisible();
+});
+
 test("keeps settings usable when save IPC fails", async ({ page, mockTauri }) => {
   await mockTauri({ failCommands: { settings_update: "save failed" } });
   await page.goto("/settings");

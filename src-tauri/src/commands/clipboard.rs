@@ -202,6 +202,41 @@ pub async fn clipboard_delete(db: tauri::State<'_, Db>, id: i64) -> Result<(), S
     }
 }
 
+#[tauri::command]
+pub async fn clipboard_restore_from_trash(
+    db: tauri::State<'_, Db>,
+    ids: Vec<i64>,
+) -> Result<i64, String> {
+    validate_ids(&ids)?;
+    ClipboardRepository::restore_from_trash(&db, &ids)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clipboard_delete_by_ids_permanently(
+    db: tauri::State<'_, Db>,
+    ids: Vec<i64>,
+) -> Result<i64, String> {
+    validate_ids(&ids)?;
+    ClipboardRepository::delete_by_ids_permanently(&db, &ids)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clipboard_purge_trash(
+    db: tauri::State<'_, Db>,
+    retention_days: i64,
+) -> Result<i64, String> {
+    if !(1..=3650).contains(&retention_days) {
+        return Err("retention_days must be between 1 and 3650".to_string());
+    }
+    ClipboardRepository::purge_trash(&db, retention_days)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Toggle pin status of a clipboard item
 #[tauri::command]
 pub async fn clipboard_toggle_pin(

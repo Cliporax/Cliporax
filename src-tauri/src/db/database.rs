@@ -49,6 +49,10 @@ pub async fn init_database(app_handle: &tauri::AppHandle) -> Result<Db, sqlx::Er
     run_migrations(&pool).await?;
     log::info!("[Database] Migrations completed");
 
+    if let Err(error) = crate::db::ClipboardRepository::purge_trash(&pool, 30).await {
+        log::warn!("[Database] Failed to purge expired Trash items: {}", error);
+    }
+
     Ok(pool)
 }
 
@@ -126,6 +130,21 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
         ),
     }
 
+    // Trash keeps deleted clipboard items recoverable without removing their
+    // durable sync identity. These columns are additive for existing databases.
+    for statement in [
+        "ALTER TABLE tabs ADD COLUMN is_trash INTEGER DEFAULT 0",
+        "ALTER TABLE clipboard_items ADD COLUMN deleted_at DATETIME",
+        "ALTER TABLE clipboard_items ADD COLUMN deleted_from_tab_id INTEGER",
+    ] {
+        if let Err(error) = sqlx::query(statement).execute(pool).await {
+            log::debug!(
+                "[Database] Trash migration already applied or skipped: {}",
+                error
+            );
+        }
+    }
+
     // Add auto_capture column if it doesn't exist (migration for mixed tab model)
     let add_auto_capture_result = sqlx::query(
         r#"
@@ -152,6 +171,14 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
             e
         ),
     }
+
+    sqlx::query(
+        "INSERT INTO tabs (name, is_default, auto_capture, is_trash) \
+         SELECT 'Trash', 0, 0, 1 \
+         WHERE NOT EXISTS (SELECT 1 FROM tabs WHERE is_trash = 1)",
+    )
+    .execute(pool)
+    .await?;
 
     // Cleanup: Ensure ONLY the default tab has auto_capture=1
     // This prevents multiple tabs from capturing clipboard content

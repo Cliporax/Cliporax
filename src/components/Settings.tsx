@@ -16,6 +16,12 @@ import {
   TestTube,
   Trash2,
   Loader2,
+  Hash,
+  List,
+  Pencil,
+  Pin,
+  ListTodo,
+  Languages,
 } from "lucide-react";
 import { createLogger } from "../utils/logger";
 import { withTrace } from "../utils/traced-invoke";
@@ -27,7 +33,7 @@ import {
   AppSettings,
 } from "../lib/tauri-api";
 import { useTheme } from "../contexts/ThemeContext";
-import { PluginProvider } from "../plugin";
+import { PluginProvider, useExtensionManager } from "../plugin";
 import PluginsTab from "./Settings/PluginsTab";
 import CloudSyncTab from "./Settings/CloudSyncTab";
 import { ResizeHandles } from "./ResizeHandles";
@@ -54,6 +60,14 @@ export interface GeneralSettings {
   lineHeight: "small" | "medium" | "large";
   autoStart: boolean;
   autoHide: boolean;
+  showItemIndex: boolean;
+  showLineCount: boolean;
+  showSourceHost: boolean;
+  showActionButtons: boolean;
+  showEditButton: boolean;
+  showPinButton: boolean;
+  showPluginActionButtons: boolean;
+  pluginActionVisibility: Record<string, boolean>;
 }
 
 export interface ShortcutSettings {
@@ -70,6 +84,14 @@ const defaultGeneralSettings: GeneralSettings = {
   lineHeight: "medium",
   autoStart: false,
   autoHide: true,
+  showItemIndex: true,
+  showLineCount: true,
+  showSourceHost: true,
+  showActionButtons: true,
+  showEditButton: true,
+  showPinButton: true,
+  showPluginActionButtons: true,
+  pluginActionVisibility: {},
 };
 
 const defaultShortcutSettings: ShortcutSettings = {
@@ -111,6 +133,14 @@ export const backendToFrontendSettings = (
     lineHeight: backend.line_height as GeneralSettings["lineHeight"],
     autoStart: backend.auto_start,
     autoHide: backend.auto_hide,
+    showItemIndex: backend.show_item_index,
+    showLineCount: backend.show_line_count,
+    showSourceHost: backend.show_source_host,
+    showActionButtons: backend.show_action_buttons,
+    showEditButton: backend.show_edit_button,
+    showPinButton: backend.show_pin_button,
+    showPluginActionButtons: backend.show_plugin_action_buttons,
+    pluginActionVisibility: backend.plugin_action_visibility ?? {},
   },
   shortcuts: {
     ...defaultShortcutSettings,
@@ -202,6 +232,14 @@ export const syncSettingsToBackend = (
           line_height: g.lineHeight,
           auto_start: g.autoStart,
           auto_hide: g.autoHide,
+          show_item_index: g.showItemIndex,
+          show_line_count: g.showLineCount,
+          show_source_host: g.showSourceHost,
+          show_action_buttons: g.showActionButtons,
+          show_edit_button: g.showEditButton,
+          show_pin_button: g.showPinButton,
+          show_plugin_action_buttons: g.showPluginActionButtons,
+          plugin_action_visibility: g.pluginActionVisibility,
           shortcut_toggle_window: toTauriShortcut(s.toggleWindow),
         });
       });
@@ -256,6 +294,7 @@ const Settings: React.FC<SettingsProps> = ({
   isWindow = false, // Defaults to non-standalone window mode
 }) => {
   const { resolvedTheme, setTheme } = useTheme();
+  const { getExtensions } = useExtensionManager();
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(
     initialGeneralSettings || defaultGeneralSettings,
@@ -264,6 +303,13 @@ const Settings: React.FC<SettingsProps> = ({
     initialShortcutSettings || defaultShortcutSettings,
   );
   const isDark = resolvedTheme === "dark";
+  const pluginActionExtensions = [
+    ...getExtensions("card"),
+    ...getExtensions("context-menu"),
+  ].filter(
+    (extension, index, extensions) =>
+      extensions.findIndex((candidate) => candidate.id === extension.id) === index,
+  );
   const { t } = useTranslation();
   const shortcutInfo = getShortcutInfo(t);
   const [editingShortcut, setEditingShortcut] = useState<
@@ -697,6 +743,54 @@ const Settings: React.FC<SettingsProps> = ({
               {option.label}
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <label className="text-sm font-medium" style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}>
+            Display on clipboard cards
+          </label>
+          <p className="mt-1 text-xs" style={{ color: isDark ? "#64748b" : "#9a9a98" }}>
+            Blue controls are shown on items; muted controls stay hidden.
+          </p>
+        </div>
+        <div className="rounded-xl border p-2.5" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.6)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+          <div className="flex h-10 items-center gap-1.5 rounded-lg border px-2" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.8)", borderColor: isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)" }}>
+            {generalSettings.showItemIndex && <span className="rounded border border-indigo-500/45 bg-indigo-500/10 px-1 py-0.5 text-[10px] font-semibold text-blue-500">#12</span>}
+            <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: isDark ? "#cbd5e1" : "#52525b" }}>A clipboard item preview</span>
+            {generalSettings.showLineCount && <span className="rounded-full border border-indigo-500/45 bg-indigo-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-500">3 lines</span>}
+            {generalSettings.showSourceHost && <span className="max-w-16 truncate rounded-full border border-indigo-500/45 bg-indigo-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-500">⌘ MacBook</span>}
+          </div>
+          <div className="mt-2 flex gap-2">
+            {([
+              ["showItemIndex", "Item number", <Hash size={14} key="icon" />],
+              ["showLineCount", "Line count", <List size={14} key="icon" />],
+              ["showSourceHost", "Source host", <Monitor size={14} key="icon" />],
+            ] as const).map(([key, label, icon]) => {
+              const enabled = generalSettings[key];
+              return <button key={key} type="button" title={label} aria-label={label} aria-pressed={enabled} onClick={() => { const newGeneral = { ...generalSettings, [key]: !enabled }; setGeneralSettings(newGeneral); syncSettingsToBackend(newGeneral, shortcutSettings); onSettingsChange?.(newGeneral, shortcutSettings); }} className="flex h-9 flex-1 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ color: enabled ? "#3b82f6" : isDark ? "#64748b" : "#a1a1aa", backgroundColor: enabled ? (isDark ? "rgba(59,130,246,0.18)" : "rgba(59,130,246,0.1)") : "transparent", borderColor: enabled ? "rgba(59,130,246,0.38)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)") }}>{icon}</button>;
+            })}
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium" style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}>Action buttons</span>
+          <span className="text-[10px]" style={{ color: isDark ? "#64748b" : "#9a9a98" }}>Configure each button</span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {([
+            ["showEditButton", "Edit", <Pencil size={14} key="icon" />],
+            ["showPinButton", "Pin", <Pin size={14} key="icon" />],
+          ] as const).map(([key, label, icon]) => {
+            const enabled = generalSettings[key];
+            return <button key={key} type="button" aria-pressed={enabled} onClick={() => { const newGeneral = { ...generalSettings, [key]: !enabled }; setGeneralSettings(newGeneral); syncSettingsToBackend(newGeneral, shortcutSettings); onSettingsChange?.(newGeneral, shortcutSettings); }} className="flex h-11 flex-col items-center justify-center rounded-lg border text-[10px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ color: enabled ? "#3b82f6" : isDark ? "#64748b" : "#a1a1aa", backgroundColor: enabled ? (isDark ? "rgba(59,130,246,0.18)" : "rgba(59,130,246,0.1)") : "transparent", borderColor: enabled ? "rgba(59,130,246,0.38)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)") }}>{icon}<span className="mt-0.5">{label}</span></button>;
+          })}
+          {pluginActionExtensions.map((extension) => {
+            const enabled = generalSettings.pluginActionVisibility[extension.id] !== false;
+            const label = extension.pluginName || extension.component;
+            const icon = extension.iconDataUrl ? <img src={extension.iconDataUrl} alt="" aria-hidden="true" className="h-3.5 w-3.5 object-contain" /> : extension.icon === "list-todo" ? <ListTodo size={14} /> : extension.pluginId.includes("translate") ? <Languages size={14} /> : <Puzzle size={14} />;
+            return <button key={extension.id} type="button" title={label} aria-label={label} aria-pressed={enabled} onClick={() => { const newGeneral = { ...generalSettings, pluginActionVisibility: { ...generalSettings.pluginActionVisibility, [extension.id]: !enabled } }; setGeneralSettings(newGeneral); syncSettingsToBackend(newGeneral, shortcutSettings); onSettingsChange?.(newGeneral, shortcutSettings); }} className="flex h-11 min-w-0 flex-col items-center justify-center rounded-lg border px-1 text-[10px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ color: enabled ? "#3b82f6" : isDark ? "#64748b" : "#a1a1aa", backgroundColor: enabled ? (isDark ? "rgba(59,130,246,0.18)" : "rgba(59,130,246,0.1)") : "transparent", borderColor: enabled ? "rgba(59,130,246,0.38)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)") }}>{icon}<span className="mt-0.5 max-w-full truncate">{label}</span></button>;
+          })}
         </div>
       </div>
 

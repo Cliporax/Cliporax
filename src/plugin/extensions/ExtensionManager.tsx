@@ -48,6 +48,7 @@ export interface CardExtensionData {
     is_pinned?: boolean;
   };
   position: "badge" | "action" | "header" | "footer";
+  pluginActionVisibility?: Record<string, boolean>;
 }
 
 export interface PluginTransferItem {
@@ -101,6 +102,7 @@ export interface RegisteredExtension {
   pointType: ExtensionPointType;
   component: string;
   icon?: string;
+  iconDataUrl?: string;
   config: Record<string, unknown>;
   priority: number;
   condition?: string;
@@ -421,6 +423,15 @@ export const ExtensionManagerProvider: React.FC<{
           );
 
           const pluginConfig = isRecord(detail.config) ? detail.config : {};
+          const iconDataUrl = manifest.icon
+            ? await pluginApi.readIcon(plugin.id).catch((error) => {
+                logger.warn("Failed to load plugin icon:", {
+                  pluginId: plugin.id,
+                  error,
+                });
+                return undefined;
+              })
+            : undefined;
 
           if (manifest.configSchema?.fields) {
             for (const field of manifest.configSchema.fields) {
@@ -465,6 +476,7 @@ export const ExtensionManagerProvider: React.FC<{
                 pointType: ext.point as ExtensionPointType,
                 component: ext.component,
                 icon: typeof ext.icon === "string" ? ext.icon : manifest.icon,
+                iconDataUrl,
                 config: pluginConfig,
                 priority: ext.priority || 0,
                 condition: ext.condition,
@@ -601,6 +613,14 @@ export const ExtensionManagerProvider: React.FC<{
       const results: React.ReactNode[] = [];
 
       for (const ext of extensions) {
+        const cardData = data as Partial<CardExtensionData>;
+        if (
+          pointType === "card" &&
+          cardData.position === "action" &&
+          cardData.pluginActionVisibility?.[ext.id] === false
+        ) {
+          continue;
+        }
         // Check condition
         if (!evaluateCondition(ext.condition, data)) {
           //   logger.debug("Condition not met:", ext.condition, "data:", data);
@@ -728,10 +748,11 @@ export const useCardExtensions = (
   item: CardExtensionData["item"],
   position: CardExtensionData["position"],
   theme: "light" | "dark",
+  pluginActionVisibility: Record<string, boolean> = {},
 ): React.ReactNode[] => {
   const { renderExtensions, getExtensions } = useExtensionManager();
 
-  const data: CardExtensionData = { item, position };
+  const data: CardExtensionData = { item, position, pluginActionVisibility };
   const context: ExtensionContext = {
     theme,
     settings: {},
@@ -766,6 +787,7 @@ export interface ContentTabExtension {
   pluginId: string;
   title: string;
   icon?: string;
+  iconDataUrl?: string;
   component: string;
   priority: number;
 }
@@ -777,6 +799,7 @@ export const useContentTabExtensions = (): ContentTabExtension[] => {
     pluginId: extension.pluginId,
     title: extension.pluginName,
     icon: extension.icon,
+    iconDataUrl: extension.iconDataUrl,
     component: extension.component,
     priority: extension.priority,
   }));

@@ -5,11 +5,12 @@ import { I18nextProvider } from 'react-i18next';
 import i18n from '../i18n';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import ClipboardCard from '../components/ClipboardCard';
+import { ConfirmDialogProvider } from '../components/ConfirmDialog';
 
 const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <ThemeProvider>
     <I18nextProvider i18n={i18n}>
-      {children}
+      <ConfirmDialogProvider>{children}</ConfirmDialogProvider>
     </I18nextProvider>
   </ThemeProvider>
 );
@@ -150,6 +151,28 @@ describe('ClipboardCard Component', () => {
     );
 
     expect(div.textContent).toContain('3 lines');
+  });
+
+  it('removes the index gutter when item numbers are hidden', () => {
+    const { div } = renderCard(
+      <ClipboardCard
+        {...defaultProps}
+        displayOptions={{
+          showItemIndex: false,
+          showLineCount: true,
+          showSourceHost: true,
+          showActionButtons: true,
+          showEditButton: true,
+          showPinButton: true,
+          showPluginActionButtons: true,
+          pluginActionVisibility: {},
+        }}
+      />,
+    );
+
+    const contentContainer = div.querySelector('p')?.parentElement;
+    expect(div.textContent).not.toContain('#1');
+    expect(contentContainer?.previousElementSibling).toBeNull();
   });
 
   it('highlights fuzzy search matches case-insensitively', () => {

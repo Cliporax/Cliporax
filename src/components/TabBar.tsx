@@ -5,7 +5,7 @@ import React, {
   useEffect,
   useLayoutEffect,
 } from "react";
-import { Plus, X, Edit2, ListTodo } from "lucide-react";
+import { Plus, X, Edit2, ListTodo, Puzzle, Trash2 } from "lucide-react";
 import { useTabStore } from "../stores/tabStore";
 import { useUIStore } from "../stores/uiStore";
 import { createLogger } from "../utils/logger";
@@ -55,15 +55,24 @@ const clampContextMenuPosition = (
   };
 };
 
-function renderPluginTabIcon(icon: string | undefined) {
-  if (!icon) return null;
+function renderPluginTabIcon(icon: string | undefined, iconDataUrl?: string) {
+  if (iconDataUrl) {
+    return (
+      <img
+        src={iconDataUrl}
+        alt=""
+        aria-hidden="true"
+        className="mr-1.5 h-3.5 w-3.5 shrink-0 object-contain"
+      />
+    );
+  }
   if (icon === "list-todo") {
     return <ListTodo size={14} className="mr-1.5 shrink-0" />;
   }
-  if (icon.length <= 2) {
+  if (icon && icon.length <= 2) {
     return <span className="mr-1.5 shrink-0 text-xs leading-none">{icon}</span>;
   }
-  return null;
+  return <Puzzle size={14} className="mr-1.5 shrink-0" />;
 }
 
 export function TabBar() {
@@ -232,7 +241,7 @@ export function TabBar() {
       e.stopPropagation();
 
       const tab = tabs.find((t) => t.id === tabId);
-      if (tab?.is_default) {
+      if (tab?.is_default || tab?.is_trash) {
         logger.warn("Cannot delete default tab");
         return;
       }
@@ -329,8 +338,8 @@ export function TabBar() {
 
       // Check if this is a default tab
       const tab = tabs.find((t) => t.id === tabId);
-      if (tab?.is_default) {
-        logger.warn("Cannot rename default tab");
+      if (tab?.is_default || tab?.is_trash) {
+        logger.warn("Cannot rename protected tab");
         closeContextMenu();
         return;
       }
@@ -385,7 +394,7 @@ export function TabBar() {
             onDoubleClick={(e) => {
               e.stopPropagation();
               // Don't allow rename for default tabs
-              if (!tab.is_default) {
+              if (!tab.is_default && !tab.is_trash) {
                 handleStartRename(tab.id!, tab.name);
               }
             }}
@@ -415,13 +424,16 @@ export function TabBar() {
                 autoFocus
               />
             ) : (
-              <span className="truncate max-w-28">
+              <span className="flex items-center truncate max-w-28">
+                {tab.is_trash ? (
+                  <Trash2 size={12} className="mr-1 shrink-0" />
+                ) : null}
                 {getTabDisplayName(tab)}
               </span>
             )}
 
             {/* Delete button (not for default tab) */}
-            {!tab.is_default && renamingTabId !== tab.id && (
+            {!tab.is_default && !tab.is_trash && renamingTabId !== tab.id && (
               <button
                 onClick={(e) => handleDeleteTab(e, tab.id!)}
                 className={`
@@ -459,7 +471,7 @@ export function TabBar() {
               }
             `}
           >
-            {renderPluginTabIcon(tab.icon)}
+            {renderPluginTabIcon(tab.icon, tab.iconDataUrl)}
             <span className="truncate">{tab.title}</span>
           </button>
         ))}

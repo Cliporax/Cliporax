@@ -2,9 +2,12 @@
 
 use crate::plugin::lifecycle::registry::{LoadResult, PluginDetail, PluginInfo, PluginRegistry};
 use crate::plugin::permission::definition::builtin_permissions_list;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+const MAX_PLUGIN_ICON_BYTES: u64 = 512 * 1024;
 
 /// Get all discovered plugins
 #[tauri::command]
@@ -225,4 +228,69 @@ pub async fn plugin_read_script(
     tokio::fs::read_to_string(&script_path)
         .await
         .map_err(|e| format!("Failed to read plugin script: {}", e))
+}
+
+/// Read the icon declared by a plugin manifest as an image data URL.
+#[tauri::command]
+pub async fn plugin_read_icon(
+    registry: tauri::State<'_, Arc<RwLock<PluginRegistry>>>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let (plugin_path, icon_path) = {
+        let reg = registry.read().await;
+        let plugin_path = reg
+            .get_plugin_path(&plugin_id)
+            .cloned()
+            .ok_or_else(|| format!("Plugin not found: {}", plugin_id))?;
+        let icon_path = reg
+            .get_manifest(&plugin_id)
+            .and_then(|manifest| manifest.icon.clone())
+            .ok_or_else(|| format!("Plugin {} does not declare an icon", plugin_id))?;
+        (plugin_path, icon_path)
+    };
+
+    let icon_relative_path = Path::new(&icon_path);
+    if icon_relative_path.is_absolute()
+        || icon_relative_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Plugin icon path must stay inside the plugin directory".to_string());
+    }
+
+    let mime_type = match icon_relative_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => return Err("Plugin icon must be SVG, PNG, JPEG, or WebP".to_string()),
+    };
+
+    let plugin_root = plugin_path
+        .canonicalize()
+        .map_err(|error| format!("Failed to canonicalize plugin directory: {}", error))?;
+    let icon_file_path = plugin_path.join(icon_relative_path);
+    let icon_file_path = icon_file_path
+        .canonicalize()
+        .map_err(|error| format!("Failed to canonicalize plugin icon: {}", error))?;
+    if !icon_file_path.starts_with(&plugin_root) {
+        return Err("Plugin icon path escapes the plugin directory".to_string());
+    }
+
+    let metadata = tokio::fs::metadata(&icon_file_path)
+        .await
+        .map_err(|error| format!("Failed to read plugin icon metadata: {}", error))?;
+    if metadata.len() > MAX_PLUGIN_ICON_BYTES {
+        return Err("Plugin icon exceeds the 512 KiB size limit".to_string());
+    }
+
+    let contents = tokio::fs::read(&icon_file_path)
+        .await
+        .map_err(|error| format!("Failed to read plugin icon: {}", error))?;
+    Ok(format!("data:{};base64,{}", mime_type, BASE64.encode(contents)))
 }

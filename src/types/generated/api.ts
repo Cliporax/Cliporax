@@ -48,6 +48,7 @@ export interface Tab {
   is_default: boolean;
   auto_capture: boolean;
   created_at: string | null;
+  is_trash?: boolean;
 }
 
 export type ApiResult<T> =

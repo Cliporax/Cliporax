@@ -16,6 +16,16 @@ interface ClipboardCardProps {
   isPinned: boolean;
   isSelected: boolean;
   lineHeight: "small" | "medium" | "large";
+  displayOptions?: {
+    showItemIndex: boolean;
+    showLineCount: boolean;
+    showSourceHost: boolean;
+    showActionButtons: boolean;
+    showEditButton: boolean;
+    showPinButton: boolean;
+    showPluginActionButtons: boolean;
+    pluginActionVisibility: Record<string, boolean>;
+  };
   isMultiSelectMode?: boolean;
   isMultiSelected?: boolean; // Whether selected in multi-select mode, shown highlighted
   batchItemIds?: Set<number>;
@@ -198,6 +208,16 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       isPinned,
       isSelected,
       lineHeight,
+      displayOptions = {
+        showItemIndex: true,
+        showLineCount: true,
+        showSourceHost: true,
+        showActionButtons: true,
+        showEditButton: true,
+        showPinButton: true,
+        showPluginActionButtons: true,
+        pluginActionVisibility: {},
+      },
       isMultiSelectMode = false,
       isMultiSelected = false,
       batchItemIds,
@@ -287,6 +307,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       { id, content, type, is_pinned: isPinned },
       "action",
       isDark ? "dark" : "light",
+      displayOptions.pluginActionVisibility,
     );
 
     // Debug log for images (commented to reduce noise)
@@ -543,6 +564,8 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
           isMultiSelectMode && isMultiSelected ? batchItemIds : undefined
         }
         onBatchActionComplete={onBatchActionComplete}
+        onEdit={onEdit}
+        onTogglePin={onTogglePin}
       >
         <div
           ref={ref}
@@ -629,10 +652,12 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
           }
         }}
       >
-        <div style={indexContainerStyle}>
-          <span style={indexBadgeStyle}>#{index}</span>
-          {isPinned && <span style={pinIndicatorStyle}>📌</span>}
-        </div>
+        {(displayOptions.showItemIndex || isPinned) && (
+          <div style={indexContainerStyle}>
+            {displayOptions.showItemIndex && <span style={indexBadgeStyle}>#{index}</span>}
+            {isPinned && <span style={pinIndicatorStyle}>📌</span>}
+          </div>
+        )}
         <div style={contentContainerStyle}>
           {isImage ? (
             <div style={imageContainerStyle}>
@@ -668,14 +693,14 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
           )}
         </div>
 
-        {type === "text" && lineCount > 1 && (
+        {displayOptions.showLineCount && type === "text" && lineCount > 1 && (
           <span style={lineBadgeStyle}>
             {t("clipboardCard.lineCount", { count: lineCount })}
           </span>
         )}
 
         {/* Source host badge */}
-        {sourceHost && (
+        {displayOptions.showSourceHost && sourceHost && (
           <span
             style={{
               flexShrink: 0,
@@ -703,10 +728,10 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
         )}
 
         {/* Action buttons - hidden by default, visible only on card hover, hidden in multi-select mode */}
-        {!isMultiSelectMode && (
+        {!isMultiSelectMode && (displayOptions.showEditButton || displayOptions.showPinButton || cardExtensions.length > 0) && (
           <div style={actionsStyle}>
             {/* Edit button - for text and file types */}
-            {(type === "text" || type === "file") && onEdit && (
+            {displayOptions.showEditButton && (type === "text" || type === "file") && onEdit && (
               <button
                 data-testid={`clipboard-card-${id}-edit`}
                 style={{
@@ -736,7 +761,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
             )}
             {/* Plugin extension buttons - rendered between edit and pin buttons */}
             {cardExtensions}
-            <button
+            {displayOptions.showPinButton && <button
               style={{
                 ...buttonStyle,
                 color: isPinned ? "#3b82f6" : isDark ? "#94a3b8" : "#71717a",
@@ -777,7 +802,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
               }}
             >
               📌
-            </button>
+            </button>}
           </div>
         )}
       </div>

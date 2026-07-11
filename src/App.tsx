@@ -543,6 +543,16 @@ function App() {
               searchMode={searchMode}
               searchScope={searchScope}
               lineHeight={generalSettings.lineHeight}
+              displayOptions={{
+                showItemIndex: generalSettings.showItemIndex,
+                showLineCount: generalSettings.showLineCount,
+                showSourceHost: generalSettings.showSourceHost,
+                showActionButtons: generalSettings.showActionButtons,
+                showEditButton: generalSettings.showEditButton,
+                showPinButton: generalSettings.showPinButton,
+                showPluginActionButtons: generalSettings.showPluginActionButtons,
+                pluginActionVisibility: generalSettings.pluginActionVisibility,
+              }}
               refreshTrigger={listRefreshTrigger}
               onEdit={(item) => {
                 logger.info("Opening editor for item:", item.id);

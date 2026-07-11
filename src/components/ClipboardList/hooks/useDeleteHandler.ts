@@ -45,6 +45,7 @@ export interface UseDeleteHandlerParams {
   selectionRange: { start: number; end: number } | null;
   defaultTabId: number | null;
   isSearchMode: boolean;
+  isTrashTab: boolean;
   searchResults: any[];
   cacheManagerRef: React.MutableRefObject<ClipboardCacheManager>;
   typeCacheRef: React.MutableRefObject<ItemTypeCache>;
@@ -64,6 +65,7 @@ export function useDeleteHandler({
   selectionRange,
   defaultTabId,
   isSearchMode,
+  isTrashTab,
   searchResults,
   cacheManagerRef,
   typeCacheRef,
@@ -76,6 +78,8 @@ export function useDeleteHandler({
   setSearchResults,
 }: UseDeleteHandlerParams): () => Promise<void> {
   const handleDeleteSelected = useCallback(async () => {
+    // Trash is recoverable-only; expiry cleanup performs permanent deletion.
+    if (isTrashTab) return;
     // Range selection mode: use backend range deletion
     if (isMultiSelectMode && selectionRange) {
       const start = Math.min(selectionRange.start, selectionRange.end);
@@ -354,6 +358,7 @@ export function useDeleteHandler({
     selectionRange,
     defaultTabId,
     isSearchMode,
+    isTrashTab,
     searchResults,
     cacheManagerRef,
     typeCacheRef,

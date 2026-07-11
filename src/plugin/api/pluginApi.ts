@@ -279,6 +279,17 @@ export const pluginApi = {
     });
   },
 
+  /** Read the plugin manifest icon as an image data URL. */
+  readIcon: async (pluginId: string): Promise<string> => {
+    return invokeIpc<string>({
+      logger,
+      label: "readIcon",
+      command: "plugin_read_icon",
+      args: { pluginId },
+      logArgs: [pluginId],
+    });
+  },
+
   getMarketSources: async (): Promise<PluginMarketSource[]> => {
     return invokeIpc<PluginMarketSource[]>({
       logger,

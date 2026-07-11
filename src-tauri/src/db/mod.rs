@@ -33,6 +33,7 @@ mod tests {
                 name TEXT NOT NULL,
                 is_default INTEGER DEFAULT 0,
                 auto_capture INTEGER DEFAULT 0,
+                is_trash INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -56,6 +57,8 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME,
+                deleted_from_tab_id INTEGER,
                 FOREIGN KEY (tab_id) REFERENCES tabs (id)
             )
             "#,

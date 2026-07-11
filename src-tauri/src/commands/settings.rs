@@ -53,6 +53,14 @@ pub async fn settings_update(
                 s.line_height = new_settings.line_height.clone();
                 s.auto_start = new_settings.auto_start;
                 s.auto_hide = new_settings.auto_hide;
+                s.show_item_index = new_settings.show_item_index;
+                s.show_line_count = new_settings.show_line_count;
+                s.show_source_host = new_settings.show_source_host;
+                s.show_action_buttons = new_settings.show_action_buttons;
+                s.show_edit_button = new_settings.show_edit_button;
+                s.show_pin_button = new_settings.show_pin_button;
+                s.show_plugin_action_buttons = new_settings.show_plugin_action_buttons;
+                s.plugin_action_visibility = new_settings.plugin_action_visibility.clone();
                 s.shortcut_toggle_window = new_settings.shortcut_toggle_window.clone();
             })
             .map_err(|e| {
