@@ -18,12 +18,14 @@ use cliporax_lib::{
     sync::repository::SyncRepository,
     sync::secrets::SecretStore,
     sync::service::SyncService,
-    ClipboardMonitor,
+    ClipboardMonitor, SettingsManager,
 };
 pub mod types;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use std::{process::Command, str};
 use tokio::sync::RwLock;
 
 // Track the last time window lost focus for debouncing
@@ -87,6 +89,117 @@ fn set_tray_icon(app: &tauri::AppHandle, active: bool) {
             log::warn!("[Main] WARN: Failed to load tray icon: {}", e);
         }
     }
+}
+
+fn auto_hide_enabled(app_handle: &tauri::AppHandle) -> bool {
+    app_handle
+        .try_state::<std::sync::Mutex<SettingsManager>>()
+        .and_then(|settings| {
+            settings
+                .lock()
+                .ok()
+                .map(|settings| settings.get().auto_hide)
+        })
+        // If settings are temporarily unavailable, keep the window visible instead
+        // of unexpectedly hiding it.
+        .unwrap_or(false)
+}
+
+fn auxiliary_window_has_focus(app_handle: &tauri::AppHandle) -> bool {
+    app_handle.webview_windows().iter().any(|(label, window)| {
+        (label.starts_with("preview-") || label == "settings")
+            && window.is_focused().unwrap_or(false)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn x11_cliporax_window_is_focused() -> Result<bool, String> {
+    let active_window = Command::new("xprop")
+        .args(["-root", "_NET_ACTIVE_WINDOW"])
+        .output()
+        .map_err(|error| format!("failed to query active X11 window: {}", error))?;
+    if !active_window.status.success() {
+        return Err("failed to read _NET_ACTIVE_WINDOW".to_string());
+    }
+
+    let active_window = str::from_utf8(&active_window.stdout)
+        .map_err(|error| format!("invalid _NET_ACTIVE_WINDOW response: {}", error))?;
+    let Some(window_id) = active_window.split_whitespace().last() else {
+        return Err("_NET_ACTIVE_WINDOW response did not contain a window id".to_string());
+    };
+    if window_id == "0x0" {
+        return Ok(false);
+    }
+
+    let window_class = Command::new("xprop")
+        .args(["-id", window_id, "WM_CLASS"])
+        .output()
+        .map_err(|error| format!("failed to query active X11 window class: {}", error))?;
+    if !window_class.status.success() {
+        return Err("failed to read active X11 window class".to_string());
+    }
+
+    let window_class = str::from_utf8(&window_class.stdout)
+        .map_err(|error| format!("invalid WM_CLASS response: {}", error))?;
+    Ok(window_class.contains("\"cliporax\""))
+}
+
+/// Tauri's Focused(false) callback can be missed by KDE/X11 even when the native
+/// window receives FocusOut. Polling is Linux-only and deliberately uses the same
+/// safety guards as the event path before hiding the main window.
+#[cfg(target_os = "linux")]
+fn spawn_linux_auto_hide_fallback(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut unfocused_since: Option<Instant> = None;
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+
+        loop {
+            interval.tick().await;
+
+            let Some(window) = app_handle.get_webview_window("main") else {
+                continue;
+            };
+
+            let is_visible = window.is_visible().unwrap_or(false);
+            let is_focused = match x11_cliporax_window_is_focused() {
+                Ok(is_focused) => is_focused,
+                Err(error) => {
+                    log::debug!("[Main] DEBUG: Linux focus fallback unavailable: {}", error);
+                    unfocused_since = None;
+                    continue;
+                }
+            };
+            let should_keep_visible = !auto_hide_enabled(&app_handle)
+                || app_handle
+                    .try_state::<Arc<WindowState>>()
+                    .is_some_and(|state| state.should_prevent_auto_hide())
+                || auxiliary_window_has_focus(&app_handle);
+
+            if !is_visible || is_focused || should_keep_visible {
+                unfocused_since = None;
+                continue;
+            }
+
+            let elapsed = unfocused_since.get_or_insert_with(Instant::now).elapsed();
+            if elapsed < Duration::from_millis(350) {
+                continue;
+            }
+
+            log::info!("[Main] Linux focus fallback hiding unfocused main window");
+            if let Err(error) = window.hide() {
+                log::warn!(
+                    "[Main] WARN: Linux focus fallback failed to hide window: {}",
+                    error
+                );
+            } else if let Err(error) = window.set_always_on_top(false) {
+                log::warn!(
+                    "[Main] WARN: Linux focus fallback failed to clear always-on-top: {}",
+                    error
+                );
+            }
+            unfocused_since = None;
+        }
+    });
 }
 
 fn main() {
@@ -242,6 +355,9 @@ fn main() {
                 Ok::<(), Box<dyn std::error::Error>>(())
             })?;
 
+            #[cfg(target_os = "linux")]
+            spawn_linux_auto_hide_fallback(app.handle().clone());
+
             // Create system tray
             create_tray(app)?;
 
@@ -364,6 +480,11 @@ fn main() {
                         // (common on Linux with some window managers)
                         if let Some(state) = &window_state {
                             state.set_shortcut_in_progress(false);
+                        }
+
+                        if !auto_hide_enabled(window.app_handle()) {
+                            log::debug!("[Main] DEBUG: Auto-hide disabled in settings");
+                            return;
                         }
 
                         // Check if window is pinned by user - this completely disables auto-hide
@@ -556,6 +677,8 @@ fn main() {
             plugin_get_state,
             plugin_read_script,
             plugin_read_icon,
+            plugin_storage_get,
+            plugin_storage_set,
             plugin_market_get_sources,
             plugin_market_refresh,
             plugin_market_get_plugins,

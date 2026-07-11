@@ -394,6 +394,7 @@ impl SyncEngine {
         let crypto_key = self.get_crypto_key(profile_id).await.ok().flatten();
         let is_same_device_snapshot = manifest.device_id == prepared.device_id;
         let mut remote_order = None;
+        let mut remote_plugin_data = Vec::new();
         let mut missing_same_device_tab_keys = HashSet::new();
 
         if let Some(order_ref) = &manifest.order {
@@ -442,6 +443,11 @@ impl SyncEngine {
             remote_order = Some(order);
         } else if is_same_device_snapshot {
             return Ok(report);
+        }
+        if let Some(plugin_ref) = &manifest.plugin_data {
+            let bytes = provider.get(&plugin_ref.path).await.map_err(|e| SyncError::provider(format!("Failed to download plugin data: {}", e)))?;
+            let decoded = decode_snapshot_file(&bytes, &prepared.profile, crypto_key.as_ref())?;
+            remote_plugin_data = serde_json::from_slice(&decoded)?;
         }
 
         let mut remote_items = Vec::new();
@@ -505,6 +511,7 @@ impl SyncEngine {
             .repository
             .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
             .await?;
+        self.repository.apply_snapshot_plugin_data(remote_plugin_data).await?;
 
         if let Some(order) = remote_order {
             let order_to_apply = if is_same_device_snapshot {
@@ -800,6 +807,16 @@ impl SyncEngine {
             }
         }
 
+        let plugin_data = self.repository.list_snapshot_plugin_data().await?;
+        let plugin_json = serde_json::to_vec(&plugin_data)?;
+        let plugin_hash = sha256_hex(&plugin_json);
+        let plugin_path = "plugins/data.json".to_string();
+        let previous_plugin_hash = previous_manifest.as_ref().and_then(|manifest| manifest.plugin_data.as_ref()).map(|reference| reference.hash.as_str());
+        if previous_plugin_hash != Some(plugin_hash.as_str()) {
+            let data = encode_snapshot_file(&plugin_json, profile, crypto_key.as_ref())?;
+            provider.put(&plugin_path, data).await?;
+        }
+
         let manifest = SnapshotManifest {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
             app: APP_NAME.to_string(),
@@ -815,6 +832,7 @@ impl SyncEngine {
                 path: order_path,
                 hash: order_hash,
             }),
+            plugin_data: Some(SnapshotFileRef { path: plugin_path, hash: plugin_hash }),
         };
         write_manifest(provider, "", &manifest).await?;
         self.cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
@@ -1141,6 +1159,7 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 is_default INTEGER DEFAULT 0,
+                is_trash INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -1162,6 +1181,8 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ,deleted_at DATETIME,
+                deleted_from_tab_id INTEGER
             )
             "#,
         )
@@ -1242,6 +1263,7 @@ mod tests {
                         path: "order/default.json".to_string(),
                         hash: String::new(),
                     }),
+                    plugin_data: None,
                 })?,
             )
             .await?;
@@ -1301,6 +1323,10 @@ mod tests {
             revision: 0,
             last_modified_by: "device_a".to_string(),
             deleted: false,
+            is_trashed: false,
+            deleted_at: None,
+            deleted_from_tab_key: None,
+            deleted_from_tab_name: None,
         };
         let shard = SnapshotItemShard {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -1336,6 +1362,7 @@ mod tests {
                         path: "order/default.json".to_string(),
                         hash: sha256_hex(&order_json),
                     }),
+                    plugin_data: None,
                 })?,
             )
             .await?;

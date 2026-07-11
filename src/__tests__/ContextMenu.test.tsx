@@ -5,12 +5,16 @@ import { ContextMenu } from "../components/ContextMenu";
 import { clipboard, type ClipboardItem } from "../lib/tauri-api";
 
 vi.mock("../lib/tauri-api", () => ({
+  ItemType: {
+    Image: "image",
+  },
   clipboard: {
     moveToTab: vi.fn(),
     copyToTab: vi.fn(),
     moveToTabBatch: vi.fn(),
     copyToTabBatch: vi.fn(),
     restoreFromTrash: vi.fn(),
+    deleteByIds: vi.fn(),
     deleteByIdsPermanently: vi.fn(),
   },
 }));
@@ -113,6 +117,91 @@ describe("ContextMenu", () => {
     const actions = within(menu).getAllByRole("button");
 
     expect(actions[actions.length - 1]?.textContent).toContain("Trash");
+  });
+
+  it("opens the editor when E is pressed while the menu is open", () => {
+    const onEdit = vi.fn();
+
+    render(
+      <ContextMenu item={item(1)} itemId={1} currentTabId={1} onEdit={onEdit}>
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.keyDown(document, { key: "e" });
+
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /move to/i })).toBeNull();
+  });
+
+  it("does not use E when editing is unavailable", () => {
+    const onEdit = vi.fn();
+
+    render(
+      <ContextMenu
+        item={{ ...item(1), type: "image" as ClipboardItem["type"] }}
+        itemId={1}
+        currentTabId={1}
+        onEdit={onEdit}
+      >
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.keyDown(document, { key: "e" });
+
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /move to/i })).toBeTruthy();
+  });
+
+  it("runs other built-in menu shortcuts", async () => {
+    const onTogglePin = vi.fn();
+    vi.mocked(clipboard.deleteByIds).mockResolvedValue(1);
+
+    const { unmount } = render(
+      <ContextMenu
+        item={item(1)}
+        itemId={1}
+        currentTabId={1}
+        onTogglePin={onTogglePin}
+      >
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.keyDown(document, { key: "p" });
+    expect(onTogglePin).toHaveBeenCalledOnce();
+    unmount();
+
+    render(
+      <ContextMenu item={item(1)} itemId={1} currentTabId={1}>
+        <button type="button">Item 2</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 2" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.keyDown(document, { key: "m" });
+    expect(screen.getByRole("button", { name: "Work" })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: "t" });
+    await waitFor(() => {
+      expect(clipboard.deleteByIds).toHaveBeenCalledWith([1]);
+    });
   });
 
   it("permanently deletes an item from the Trash menu", async () => {

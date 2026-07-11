@@ -320,6 +320,15 @@ pub struct RemoteClipboardItem {
     pub last_modified_by: String,
     #[serde(default)]
     pub deleted: bool,
+    /// Recoverable deletion is a normal item update, distinct from a tombstone.
+    #[serde(default)]
+    pub is_trashed: bool,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub deleted_from_tab_key: Option<String>,
+    #[serde(default)]
+    pub deleted_from_tab_name: Option<String>,
 }
 
 /// Remote manifest for snapshot-based sync.
@@ -335,6 +344,16 @@ pub struct SnapshotManifest {
     #[serde(default)]
     pub item_shards: Vec<SnapshotShardRef>,
     pub order: Option<SnapshotFileRef>,
+    #[serde(default)]
+    pub plugin_data: Option<SnapshotFileRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemotePluginData {
+    pub plugin_id: String,
+    pub storage_key: String,
+    pub value: serde_json::Value,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

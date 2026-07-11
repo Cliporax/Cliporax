@@ -279,6 +279,11 @@ export const pluginApi = {
     });
   },
 
+  storageGet: async <T>(pluginId: string, key: string): Promise<T | null> =>
+    invokeIpc<T | null>({ logger, label: "storageGet", command: "plugin_storage_get", args: { pluginId, key }, logArgs: [pluginId, key] }),
+  storageSet: async (pluginId: string, key: string, value: unknown): Promise<void> =>
+    invokeIpc<void>({ logger, label: "storageSet", command: "plugin_storage_set", args: { pluginId, key, value }, logArgs: [pluginId, key] }),
+
   /** Read the plugin manifest icon as an image data URL. */
   readIcon: async (pluginId: string): Promise<string> => {
     return invokeIpc<string>({

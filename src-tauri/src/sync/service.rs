@@ -489,10 +489,10 @@ fn normalize_legacy_default_remote_root(remote_root: &str) -> String {
     }
 
     let without_trailing_slash = trimmed.trim_end_matches('/');
-    if without_trailing_slash.ends_with("/Cliporax/v1") {
+    if let Some(prefix) = without_trailing_slash.strip_suffix("/Cliporax/v1") {
         return format!(
             "{}/cliporax/v1{}",
-            &without_trailing_slash[..without_trailing_slash.len() - "/Cliporax/v1".len()],
+            prefix,
             &trimmed[without_trailing_slash.len()..]
         );
     }

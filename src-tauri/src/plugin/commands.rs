@@ -2,12 +2,50 @@
 
 use crate::plugin::lifecycle::registry::{LoadResult, PluginDetail, PluginInfo, PluginRegistry};
 use crate::plugin::permission::definition::builtin_permissions_list;
+use crate::db::database::Db;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const MAX_PLUGIN_ICON_BYTES: u64 = 512 * 1024;
+const MAX_PLUGIN_STORAGE_KEY_BYTES: usize = 256;
+const MAX_PLUGIN_STORAGE_VALUE_BYTES: usize = 1024 * 1024;
+
+fn validate_plugin_storage_input(plugin_id: &str, key: &str, value: Option<&serde_json::Value>) -> Result<(), String> {
+    if plugin_id.trim().is_empty() || plugin_id.len() > 200 || key.trim().is_empty() || key.len() > MAX_PLUGIN_STORAGE_KEY_BYTES {
+        return Err("Invalid plugin storage identifier".to_string());
+    }
+    if let Some(value) = value {
+        if serde_json::to_vec(value).map_err(|_| "Invalid plugin storage value".to_string())?.len() > MAX_PLUGIN_STORAGE_VALUE_BYTES {
+            return Err("Plugin storage value exceeds 1 MiB".to_string());
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_storage_permission(registry: &Arc<RwLock<PluginRegistry>>, plugin_id: &str) -> Result<(), String> {
+    let registry = registry.read().await;
+    let manifest = registry.get_manifest(plugin_id).ok_or_else(|| "Plugin not found".to_string())?;
+    if manifest.permissions.iter().any(|permission| permission.permission == "system:storage") { Ok(()) } else { Err("Plugin lacks system:storage permission".to_string()) }
+}
+
+#[tauri::command]
+pub async fn plugin_storage_get(registry: tauri::State<'_, Arc<RwLock<PluginRegistry>>>, db: tauri::State<'_, Db>, plugin_id: String, key: String) -> Result<Option<serde_json::Value>, String> {
+    validate_plugin_storage_input(&plugin_id, &key, None)?;
+    ensure_storage_permission(registry.inner(), &plugin_id).await?;
+    let value: Option<String> = sqlx::query_scalar("SELECT value_json FROM plugin_sync_data WHERE plugin_id = ? AND storage_key = ?").bind(&plugin_id).bind(&key).fetch_optional(db.inner()).await.map_err(|e| e.to_string())?;
+    value.map(|value| serde_json::from_str(&value).map_err(|_| "Stored plugin data is invalid".to_string())).transpose()
+}
+
+#[tauri::command]
+pub async fn plugin_storage_set(registry: tauri::State<'_, Arc<RwLock<PluginRegistry>>>, db: tauri::State<'_, Db>, plugin_id: String, key: String, value: serde_json::Value) -> Result<(), String> {
+    validate_plugin_storage_input(&plugin_id, &key, Some(&value))?;
+    ensure_storage_permission(registry.inner(), &plugin_id).await?;
+    let json = serde_json::to_string(&value).map_err(|_| "Invalid plugin storage value".to_string())?;
+    sqlx::query("INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')").bind(&plugin_id).bind(&key).bind(json).execute(db.inner()).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 /// Get all discovered plugins
 #[tauri::command]

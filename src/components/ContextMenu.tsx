@@ -64,6 +64,28 @@ interface RuntimeContextMenuEntry {
   item: PluginContextMenuItem;
 }
 
+interface MenuShortcutAction {
+  key: string;
+  action: () => void;
+}
+
+const getMenuShortcutKey = (label: string) =>
+  label.trim().match(/[a-z]/i)?.[0]?.toUpperCase() ?? null;
+
+function MenuShortcutHint({ label }: { label: string }) {
+  const shortcutKey = getMenuShortcutKey(label);
+
+  if (!shortcutKey) return null;
+
+  return (
+    <span
+      aria-hidden="true"
+      data-shortcut={shortcutKey}
+      className="ml-auto text-[10px] text-gray-400 after:content-[attr(data-shortcut)] dark:text-gray-500"
+    />
+  );
+}
+
 const getViewportSize = () => ({
   width: window.innerWidth || document.documentElement.clientWidth,
   height: window.innerHeight || document.documentElement.clientHeight,
@@ -202,6 +224,8 @@ export function ContextMenu({
   const [subMenu, setSubMenu] = useState<SubMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const subMenuRef = useRef<HTMLDivElement>(null);
+  const moveMenuTriggerRef = useRef<HTMLDivElement>(null);
+  const copyMenuTriggerRef = useRef<HTMLDivElement>(null);
   // Unique ID for this menu instance, used to distinguish itself from others
   // when the global "menu opened" event fires.
   const menuInstanceId = useRef(
@@ -359,6 +383,11 @@ export function ContextMenu({
     setSubMenu(null);
   }, []);
 
+  const handleEdit = useCallback(() => {
+    onEdit?.();
+    closeMenu();
+  }, [closeMenu, onEdit]);
+
   const isInsideOpenMenu = useCallback((target: EventTarget | null) => {
     if (!(target instanceof Node)) return false;
 
@@ -396,7 +425,7 @@ export function ContextMenu({
     };
   }, [closeMenu, isInsideOpenMenu, position]);
 
-  // Close menu on escape
+  // Close menu on escape.
   useEffect(() => {
     if (!position) return;
 
@@ -702,6 +731,105 @@ export function ContextMenu({
     [availableTabs.length],
   );
 
+  const handleOpenSubMenu = useCallback(
+    (menuType: SubMenuType) => {
+      const trigger =
+        menuType === "move"
+          ? moveMenuTriggerRef.current
+          : copyMenuTriggerRef.current;
+      if (!trigger) return;
+
+      setSubMenu({
+        ...getSubMenuLayout(
+          trigger.getBoundingClientRect(),
+          availableTabs.length,
+        ),
+        type: menuType,
+      });
+    },
+    [availableTabs.length],
+  );
+
+  const menuShortcutActions = useMemo<MenuShortcutAction[]>(() => {
+    const actions: MenuShortcutAction[] = [];
+    const addAction = (label: string, action: () => void) => {
+      const key = getMenuShortcutKey(label);
+      if (key) actions.push({ key, action });
+    };
+
+    if (isTrashTab) {
+      addAction("Restore", () => void handleRestore());
+      addAction("Delete permanently", () => void handleDeletePermanently());
+    } else {
+      if (onEdit && item.type !== ItemType.Image) {
+        addAction("Edit", handleEdit);
+      }
+      if (onTogglePin) {
+        addAction(item.is_pinned ? "Unpin" : "Pin", () => {
+          onTogglePin();
+          closeMenu();
+        });
+      }
+    }
+
+    pluginContextMenuEntries.forEach((entry) => {
+      if (!entry.item.disabled) {
+        addAction(entry.item.label, () => {
+          void handlePluginContextMenuAction(entry);
+        });
+      }
+    });
+
+    if (!isTrashTab) {
+      addAction("Move to", () => handleOpenSubMenu("move"));
+      addAction("Copy to", () => handleOpenSubMenu("copy"));
+      addAction("Trash", () => void handleDelete());
+    }
+
+    return actions;
+  }, [
+    closeMenu,
+    handleDelete,
+    handleDeletePermanently,
+    handleEdit,
+    handleOpenSubMenu,
+    handlePluginContextMenuAction,
+    handleRestore,
+    isTrashTab,
+    item.is_pinned,
+    item.type,
+    onEdit,
+    onTogglePin,
+    pluginContextMenuEntries,
+  ]);
+
+  useEffect(() => {
+    if (!position) return;
+
+    const handleMenuShortcut = (e: KeyboardEvent) => {
+      if (
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey ||
+        e.repeat ||
+        e.isComposing
+      ) {
+        return;
+      }
+
+      const action = menuShortcutActions.find(
+        ({ key }) => key === e.key.toUpperCase(),
+      );
+      if (!action) return;
+
+      e.preventDefault();
+      action.action();
+    };
+
+    document.addEventListener("keydown", handleMenuShortcut);
+    return () => document.removeEventListener("keydown", handleMenuShortcut);
+  }, [menuShortcutActions, position]);
+
   if (!position) {
     return (
       <div
@@ -736,21 +864,25 @@ export function ContextMenu({
           <>
             <button type="button" onClick={handleRestore} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
               <RotateCcw size={14} className="mr-2" /> Restore
+              <MenuShortcutHint label="Restore" />
             </button>
             <button type="button" onClick={handleDeletePermanently} className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30">
               <Trash2 size={14} className="mr-2" /> Delete permanently
+              <MenuShortcutHint label="Delete permanently" />
             </button>
           </>
         ) : (
           <>
             {onEdit && item.type !== ItemType.Image && (
-              <button type="button" onClick={() => { onEdit(); closeMenu(); }} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+              <button type="button" onClick={handleEdit} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <Pencil size={14} className="mr-2" /> Edit
+                <MenuShortcutHint label="Edit" />
               </button>
             )}
             {onTogglePin && (
               <button type="button" onClick={() => { onTogglePin(); closeMenu(); }} className="w-full flex items-center px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <Pin size={14} className="mr-2" /> {item.is_pinned ? "Unpin" : "Pin"}
+                <MenuShortcutHint label={item.is_pinned ? "Unpin" : "Pin"} />
               </button>
             )}
           </>
@@ -776,6 +908,7 @@ export function ContextMenu({
                     entry.extension.pluginId,
                   )}
                   <span className="truncate">{entry.item.label}</span>
+                  <MenuShortcutHint label={entry.item.label} />
                 </span>
               </button>
             ))}
@@ -786,17 +919,20 @@ export function ContextMenu({
         {!isTrashTab && <>
         {/* Move To Submenu Trigger */}
         <div
+          ref={moveMenuTriggerRef}
           className="relative group"
           onMouseEnter={(e) => handleSubMenuHover("move", e)}
         >
           <button
             type="button"
+            onClick={() => handleOpenSubMenu("move")}
             className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
           >
             <div className="flex items-center min-w-0">
               <FolderPlus size={14} className="mr-2" />
               <span className="truncate">Move to</span>
             </div>
+            <MenuShortcutHint label="Move to" />
             <ChevronRight size={12} className="ml-2 shrink-0" />
           </button>
 
@@ -838,17 +974,20 @@ export function ContextMenu({
         </>}
         {/* Copy To Submenu Trigger */}
         {!isTrashTab && <div
+          ref={copyMenuTriggerRef}
           className="relative group"
           onMouseEnter={(e) => handleSubMenuHover("copy", e)}
         >
           <button
             type="button"
+            onClick={() => handleOpenSubMenu("copy")}
             className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
           >
             <div className="flex items-center min-w-0">
               <Copy size={14} className="mr-2" />
               <span className="truncate">Copy to</span>
             </div>
+            <MenuShortcutHint label="Copy to" />
             <ChevronRight size={12} className="ml-2 shrink-0" />
           </button>
 
@@ -891,6 +1030,7 @@ export function ContextMenu({
           <div className="my-0.5 border-t border-gray-200 dark:border-gray-700" />
           <button type="button" onClick={handleDelete} className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30">
             <Trash2 size={14} className="mr-2" /> Trash
+            <MenuShortcutHint label="Trash" />
           </button>
         </>}
       </div>

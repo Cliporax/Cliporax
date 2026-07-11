@@ -114,6 +114,16 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
         ),
     }
 
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS plugin_sync_data (
+            plugin_id TEXT NOT NULL,
+            storage_key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (plugin_id, storage_key)
+        )"#,
+    ).execute(pool).await?;
+
     // Add display_order column if it doesn't exist (migration for drag reorder)
     let add_order_result = sqlx::query(
         r#"

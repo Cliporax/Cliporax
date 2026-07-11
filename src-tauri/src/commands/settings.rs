@@ -1,7 +1,29 @@
 //! Settings management commands
 
-use crate::settings::{AppSettings, SettingsManager};
+use crate::settings::{
+    AppSettings, SettingsManager, MAX_EXCLUDED_TEXT_PATTERNS, MAX_EXCLUDED_TEXT_PATTERN_LEN,
+};
+use regex::Regex;
 use tauri::Emitter;
+
+fn validate_excluded_text_patterns(patterns: &[String]) -> Result<(), String> {
+    if patterns.len() > MAX_EXCLUDED_TEXT_PATTERNS {
+        return Err(format!(
+            "excluded_text_patterns cannot exceed {} patterns",
+            MAX_EXCLUDED_TEXT_PATTERNS
+        ));
+    }
+    for pattern in patterns {
+        if pattern.trim().is_empty() || pattern.len() > MAX_EXCLUDED_TEXT_PATTERN_LEN {
+            return Err(format!(
+                "each excluded_text_patterns entry must be 1-{} bytes",
+                MAX_EXCLUDED_TEXT_PATTERN_LEN
+            ));
+        }
+        Regex::new(pattern).map_err(|error| format!("invalid excluded text pattern: {}", error))?;
+    }
+    Ok(())
+}
 
 /// Get all settings
 #[tauri::command]
@@ -30,6 +52,8 @@ pub async fn settings_update(
     app_handle: tauri::AppHandle,
     new_settings: AppSettings,
 ) -> Result<(), String> {
+    validate_excluded_text_patterns(&new_settings.excluded_text_patterns)?;
+
     log::info!(
         "[Command] settings_update called, line_height: {}",
         new_settings.line_height
@@ -53,6 +77,7 @@ pub async fn settings_update(
                 s.line_height = new_settings.line_height.clone();
                 s.auto_start = new_settings.auto_start;
                 s.auto_hide = new_settings.auto_hide;
+                s.excluded_text_patterns = new_settings.excluded_text_patterns.clone();
                 s.show_item_index = new_settings.show_item_index;
                 s.show_line_count = new_settings.show_line_count;
                 s.show_source_host = new_settings.show_source_host;
@@ -85,6 +110,18 @@ pub async fn settings_update(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_excluded_text_patterns;
+
+    #[test]
+    fn validates_excluded_text_patterns() {
+        assert!(validate_excluded_text_patterns(&[r"(?i)^password:".to_string()]).is_ok());
+        assert!(validate_excluded_text_patterns(&["[".to_string()]).is_err());
+        assert!(validate_excluded_text_patterns(&[" ".to_string()]).is_err());
+    }
 }
 
 /// Update toggle window shortcut

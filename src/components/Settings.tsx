@@ -60,6 +60,7 @@ export interface GeneralSettings {
   lineHeight: "small" | "medium" | "large";
   autoStart: boolean;
   autoHide: boolean;
+  excludedTextPatterns: string[];
   showItemIndex: boolean;
   showLineCount: boolean;
   showSourceHost: boolean;
@@ -84,6 +85,7 @@ const defaultGeneralSettings: GeneralSettings = {
   lineHeight: "medium",
   autoStart: false,
   autoHide: true,
+  excludedTextPatterns: [],
   showItemIndex: true,
   showLineCount: true,
   showSourceHost: true,
@@ -133,6 +135,7 @@ export const backendToFrontendSettings = (
     lineHeight: backend.line_height as GeneralSettings["lineHeight"],
     autoStart: backend.auto_start,
     autoHide: backend.auto_hide,
+    excludedTextPatterns: backend.excluded_text_patterns ?? [],
     showItemIndex: backend.show_item_index,
     showLineCount: backend.show_line_count,
     showSourceHost: backend.show_source_host,
@@ -232,6 +235,7 @@ export const syncSettingsToBackend = (
           line_height: g.lineHeight,
           auto_start: g.autoStart,
           auto_hide: g.autoHide,
+          excluded_text_patterns: g.excludedTextPatterns,
           show_item_index: g.showItemIndex,
           show_line_count: g.showLineCount,
           show_source_host: g.showSourceHost,
@@ -402,7 +406,9 @@ const Settings: React.FC<SettingsProps> = ({
           prev.maxImages === initialGeneralSettings.maxImages &&
           prev.lineHeight === initialGeneralSettings.lineHeight &&
           prev.autoStart === initialGeneralSettings.autoStart &&
-          prev.autoHide === initialGeneralSettings.autoHide
+          prev.autoHide === initialGeneralSettings.autoHide &&
+          prev.excludedTextPatterns.join("\n") ===
+            initialGeneralSettings.excludedTextPatterns.join("\n")
         ) {
           logger.debug("[Settings] initialGeneralSettings unchanged, skipping");
           return prev;
@@ -675,8 +681,9 @@ const Settings: React.FC<SettingsProps> = ({
   ];
 
   const renderGeneralSettings = () => (
-    <div className="space-y-6">
-      <div className="space-y-3">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="order-1 space-y-3 rounded-xl border p-4 lg:col-span-2" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.appearance")}</p>
         <label
           className="text-sm font-medium transition-colors duration-300"
           style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
@@ -746,7 +753,47 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="order-5 space-y-3 rounded-xl border p-4 lg:col-span-2" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.captureFilter")}</p>
+        <label
+          className="text-sm font-medium transition-colors duration-300"
+          style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
+        >
+          {t("settings.general.excludedTextPatterns")}
+        </label>
+        <textarea
+          value={generalSettings.excludedTextPatterns.join("\n")}
+          onChange={(e) => {
+            const excludedTextPatterns = e.target.value
+              .split(/\r?\n/)
+              .map((pattern) => pattern.trim())
+              .filter(Boolean);
+            const newGeneral = { ...generalSettings, excludedTextPatterns };
+            setGeneralSettings(newGeneral);
+            syncSettingsToBackend(newGeneral, shortcutSettings);
+            onSettingsChange?.(newGeneral, shortcutSettings);
+          }}
+          className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition-all"
+          style={{
+            backgroundColor: isDark
+              ? "rgba(255,255,255,0.05)"
+              : "rgba(255,255,255,0.7)",
+            border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.06)"}`,
+            color: isDark ? "#e2e8f0" : "#4a4a48",
+          }}
+          rows={4}
+          placeholder={"(?i)^password:\n(?s)^.{0,1}$"}
+        />
+        <p
+          style={{ color: isDark ? "#64748b" : "#9a9a98" }}
+          className="text-xs"
+        >
+          {t("settings.general.excludedTextPatternsHint")}
+        </p>
+      </div>
+
+      <div className="order-6 space-y-3 rounded-xl border p-4 lg:col-span-2" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.clipboardCards")}</p>
         <div>
           <label className="text-sm font-medium" style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}>
             Display on clipboard cards
@@ -795,7 +842,8 @@ const Settings: React.FC<SettingsProps> = ({
       </div>
 
       {/* Language Selector */}
-      <div className="space-y-3">
+      <div className="order-2 space-y-3 rounded-xl border p-4" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.language")}</p>
         <label
           className="text-sm font-medium transition-colors duration-300"
           style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
@@ -844,7 +892,8 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="order-4 space-y-3 rounded-xl border p-4" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.historyLimits")}</p>
         <label
           className="text-sm font-medium transition-colors duration-300"
           style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
@@ -880,7 +929,7 @@ const Settings: React.FC<SettingsProps> = ({
         </p>
       </div>
 
-      <div className="space-y-3">
+      <div className="order-4 space-y-3 rounded-xl border p-4" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
         <label
           className="text-sm font-medium transition-colors duration-300"
           style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
@@ -910,7 +959,8 @@ const Settings: React.FC<SettingsProps> = ({
         />
       </div>
 
-      <div className="space-y-3">
+      <div className="order-3 space-y-3 rounded-xl border p-4" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.cardDensity")}</p>
         <label
           className="text-sm font-medium transition-colors duration-300"
           style={{ color: isDark ? "#cbd5e1" : "#5a5a58" }}
@@ -992,7 +1042,8 @@ const Settings: React.FC<SettingsProps> = ({
         </p>
       </div>
 
-      <div className="space-y-4 pt-2">
+      <div className="order-7 space-y-4 rounded-xl border p-4 lg:col-span-2" style={{ backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "rgba(255,255,255,0.55)", borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: isDark ? "#94a3b8" : "#71717a" }}>{t("settings.general.groups.windowBehavior")}</p>
         <div
           className="flex items-center justify-between p-4 rounded-xl"
           style={{

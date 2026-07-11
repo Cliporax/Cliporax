@@ -11,9 +11,39 @@ pub struct SyncRepository {
     pool: Db,
 }
 
+#[derive(sqlx::FromRow)]
+struct SnapshotRow {
+    id: Option<i64>, item_type: String, content: String, content_hash: Option<String>,
+    metadata: Option<String>, tags: Option<String>, tab_id: Option<i64>, tab_name: Option<String>,
+    tab_is_default: i32, tab_is_trash: i32, deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    deleted_from_tab_name: Option<String>, deleted_from_tab_is_default: i32,
+    is_sensitive: Option<i32>, is_pinned: Option<i32>, _display_order: Option<i32>,
+    created_at: Option<chrono::DateTime<chrono::Utc>>, updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    item_key: Option<String>, stable_seq: Option<i64>,
+}
+
 impl SyncRepository {
     pub fn new(pool: Db) -> Self {
         Self { pool }
+    }
+
+    pub async fn list_snapshot_plugin_data(&self) -> Result<Vec<RemotePluginData>, SyncError> {
+        let rows: Vec<(String, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "SELECT plugin_id, storage_key, value_json, updated_at FROM plugin_sync_data ORDER BY plugin_id, storage_key",
+        ).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().filter_map(|(plugin_id, storage_key, value_json, updated_at)| {
+            serde_json::from_str(&value_json).ok().map(|value| RemotePluginData { plugin_id, storage_key, value, updated_at: updated_at.to_rfc3339() })
+        }).collect())
+    }
+
+    pub async fn apply_snapshot_plugin_data(&self, records: Vec<RemotePluginData>) -> Result<(), SyncError> {
+        for record in records {
+            let value_json = serde_json::to_string(&record.value)?;
+            sqlx::query(
+                "INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, datetime(?)) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE datetime(excluded.updated_at) >= datetime(plugin_sync_data.updated_at)",
+            ).bind(record.plugin_id).bind(record.storage_key).bind(value_json).bind(record.updated_at).execute(&self.pool).await?;
+        }
+        Ok(())
     }
 
     /// Get or create device ID for this installation
@@ -751,25 +781,21 @@ impl SyncRepository {
     ) -> Result<Vec<RemoteClipboardItem>, SyncError> {
         let mut sql = String::from(
             r#"
-            SELECT ci.id,
-                   ci.type,
-                   ci.content,
-                   ci.content_hash,
-                   ci.metadata,
-                   ci.tags,
-                   ci.tab_id,
-                   t.name,
-                   COALESCE(t.is_default, 0),
-                   ci.is_sensitive,
-                   ci.is_pinned,
-                   ci.display_order,
-                   ci.created_at,
-                   ci.updated_at,
-                   sim.item_key,
-                   sim.stable_seq
+            SELECT ci.id AS id,
+                   ci.type AS item_type,
+                   ci.content AS content, ci.content_hash AS content_hash, ci.metadata AS metadata,
+                   ci.tags AS tags, ci.tab_id AS tab_id, t.name AS tab_name,
+                   COALESCE(t.is_default, 0) AS tab_is_default,
+                   COALESCE(t.is_trash, 0) AS tab_is_trash, ci.deleted_at AS deleted_at,
+                   origin.name AS deleted_from_tab_name,
+                   COALESCE(origin.is_default, 0) AS deleted_from_tab_is_default,
+                   ci.is_sensitive AS is_sensitive, ci.is_pinned AS is_pinned,
+                   ci.display_order AS _display_order, ci.created_at AS created_at,
+                   ci.updated_at AS updated_at, sim.item_key AS item_key, sim.stable_seq AS stable_seq
             FROM clipboard_items ci
             LEFT JOIN sync_item_map sim ON sim.local_id = ci.id
             LEFT JOIN tabs t ON t.id = ci.tab_id
+            LEFT JOIN tabs origin ON origin.id = ci.deleted_from_tab_id
             "#,
         );
 
@@ -791,25 +817,6 @@ impl SyncRepository {
 
         sql.push_str(" ORDER BY COALESCE(sim.stable_seq, ci.id), ci.id");
 
-        type SnapshotRow = (
-            Option<i64>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            i32,
-            Option<i32>,
-            Option<i32>,
-            Option<i32>,
-            Option<chrono::DateTime<chrono::Utc>>,
-            Option<chrono::DateTime<chrono::Utc>>,
-            Option<String>,
-            Option<i64>,
-        );
-
         let mut query = sqlx::query_as::<_, SnapshotRow>(&sql);
         if profile.sync_tabs.mode == TabSyncMode::Selected {
             for tab_id in &profile.sync_tabs.selected_tab_ids {
@@ -821,30 +828,12 @@ impl SyncRepository {
         let mut items = Vec::with_capacity(rows.len());
 
         for row in rows {
-            let (
-                local_id,
-                item_type,
-                content,
-                content_hash,
-                metadata,
-                tags,
-                tab_id,
-                tab_name,
-                tab_is_default,
-                is_sensitive,
-                is_pinned,
-                _display_order,
-                created_at,
-                updated_at,
-                item_key,
-                stable_seq,
-            ) = row;
-            let local_id = local_id.ok_or_else(|| {
+            let local_id = row.id.ok_or_else(|| {
                 SyncError::validation("Snapshot item is missing local id".to_string())
             })?;
-            let created_at = created_at.unwrap_or_else(chrono::Utc::now);
-            let (item_key, stable_seq) = match item_key {
-                Some(item_key) => (item_key, stable_seq),
+            let created_at = row.created_at.unwrap_or_else(chrono::Utc::now);
+            let (item_key, stable_seq) = match row.item_key {
+                Some(item_key) => (item_key, row.stable_seq),
                 None => {
                     let item_key = self
                         .get_or_create_item_key(local_id, created_at, device_id)
@@ -876,29 +865,33 @@ impl SyncRepository {
                 stable_seq,
                 device_id: device_id.to_string(),
                 local_id: Some(local_id),
-                item_type,
-                content: Some(content),
+                item_type: row.item_type,
+                content: Some(row.content),
                 blob_path: None,
                 blob_mime: None,
-                content_hash,
+                content_hash: row.content_hash,
                 created_at: created_at.to_rfc3339(),
-                updated_at: updated_at.unwrap_or_else(chrono::Utc::now).to_rfc3339(),
+                updated_at: row.updated_at.unwrap_or_else(chrono::Utc::now).to_rfc3339(),
                 tab_key: Some(tab_key_for_snapshot(
-                    tab_id,
-                    tab_name.as_deref(),
-                    tab_is_default != 0,
+                    row.tab_id,
+                    row.tab_name.as_deref(),
+                    row.tab_is_default != 0,
                 )),
-                tab_name,
-                tags: parse_sync_tags(tags.as_deref()),
-                is_pinned: is_pinned.unwrap_or(0) != 0,
-                is_sensitive: is_sensitive.unwrap_or(0) != 0,
-                metadata: metadata
+                tab_name: row.tab_name,
+                tags: parse_sync_tags(row.tags.as_deref()),
+                is_pinned: row.is_pinned.unwrap_or(0) != 0,
+                is_sensitive: row.is_sensitive.unwrap_or(0) != 0,
+                metadata: row.metadata
                     .as_deref()
                     .and_then(|value| serde_json::from_str(value).ok())
                     .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
                 revision: 0,
                 last_modified_by: device_id.to_string(),
                 deleted: false,
+                is_trashed: row.tab_is_trash != 0 || row.deleted_at.is_some(),
+                deleted_at: row.deleted_at.map(|value| value.to_rfc3339()),
+                deleted_from_tab_key: row.deleted_from_tab_name.as_deref().map(|name| tab_key_for_snapshot(None, Some(name), row.deleted_from_tab_is_default != 0)),
+                deleted_from_tab_name: row.deleted_from_tab_name,
             });
         }
 
@@ -1161,12 +1154,8 @@ impl SyncRepository {
 
             let metadata_json =
                 serde_json::to_string(&item.metadata).unwrap_or_else(|_| "{}".to_string());
-            let tab_id = local_id_for_remote_tab(
-                item.tab_key.as_deref(),
-                item.tab_name.as_deref(),
-                &self.pool,
-            )
-            .await?;
+            let tab_id = if item.is_trashed { Some(trash_tab_id(&self.pool).await?) } else { local_id_for_remote_tab(item.tab_key.as_deref(), item.tab_name.as_deref(), &self.pool).await? };
+            let deleted_from_tab_id = if item.is_trashed { local_id_for_remote_tab(item.deleted_from_tab_key.as_deref(), item.deleted_from_tab_name.as_deref(), &self.pool).await? } else { None };
 
             sqlx::query(
                 r#"
@@ -1179,6 +1168,8 @@ impl SyncRepository {
                     tab_id = ?,
                     is_pinned = ?,
                     is_sensitive = ?,
+                    deleted_at = ?,
+                    deleted_from_tab_id = ?,
                     updated_at = datetime('now')
                 WHERE id = ?
                 "#,
@@ -1191,6 +1182,8 @@ impl SyncRepository {
             .bind(tab_id)
             .bind(if item.is_pinned { 1 } else { 0 })
             .bind(if item.is_sensitive { 1 } else { 0 })
+            .bind(item.deleted_at.as_deref())
+            .bind(deleted_from_tab_id)
             .bind(local_id)
             .execute(&self.pool)
             .await?;
@@ -1227,18 +1220,14 @@ impl SyncRepository {
             let metadata_json =
                 serde_json::to_string(&item.metadata).unwrap_or_else(|_| "{}".to_string());
 
-            let tab_id = local_id_for_remote_tab(
-                item.tab_key.as_deref(),
-                item.tab_name.as_deref(),
-                &self.pool,
-            )
-            .await?;
+            let tab_id = if item.is_trashed { Some(trash_tab_id(&self.pool).await?) } else { local_id_for_remote_tab(item.tab_key.as_deref(), item.tab_name.as_deref(), &self.pool).await? };
+            let deleted_from_tab_id = if item.is_trashed { local_id_for_remote_tab(item.deleted_from_tab_key.as_deref(), item.deleted_from_tab_name.as_deref(), &self.pool).await? } else { None };
 
             let result = sqlx::query(
                 r#"
                 INSERT INTO clipboard_items 
-                (type, content, content_hash, metadata, tags, tab_id, is_sensitive, is_pinned, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (type, content, content_hash, metadata, tags, tab_id, is_sensitive, is_pinned, deleted_at, deleted_from_tab_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 "#,
             )
             .bind(&item.item_type)
@@ -1249,6 +1238,8 @@ impl SyncRepository {
             .bind(tab_id)
             .bind(if item.is_sensitive { 1 } else { 0 })
             .bind(if item.is_pinned { 1 } else { 0 })
+            .bind(item.deleted_at.as_deref())
+            .bind(deleted_from_tab_id)
             .execute(&self.pool)
             .await?;
 
@@ -1667,6 +1658,7 @@ mod tests {
                 name TEXT NOT NULL,
                 is_default INTEGER DEFAULT 0,
                 auto_capture INTEGER DEFAULT 0,
+                is_trash INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -1689,6 +1681,8 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ,deleted_at DATETIME,
+                deleted_from_tab_id INTEGER
             )
             "#,
         )
@@ -1812,6 +1806,10 @@ mod tests {
             revision: 0,
             last_modified_by: "device_b".to_string(),
             deleted: false,
+            is_trashed: false,
+            deleted_at: None,
+            deleted_from_tab_key: None,
+            deleted_from_tab_name: None,
         }
     }
 

@@ -57,6 +57,10 @@ pub fn encode_clipboard_item(
         revision: 0,
         last_modified_by: device_id,
         deleted: false,
+        is_trashed: false,
+        deleted_at: None,
+        deleted_from_tab_key: None,
+        deleted_from_tab_name: None,
     };
 
     // Serialize to JSON

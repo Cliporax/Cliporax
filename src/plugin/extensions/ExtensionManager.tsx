@@ -358,6 +358,10 @@ export const ExtensionManagerProvider: React.FC<{
   ) => {
     if (!loadedScriptIds.has(pluginId)) {
       const scriptContent = await pluginApi.readScript(pluginId);
+      (window as Window & { CliporaxPluginStorage?: Record<string, unknown> }).CliporaxPluginStorage = {
+        get: (key: string) => pluginApi.storageGet(pluginId, key),
+        set: (key: string, value: unknown) => pluginApi.storageSet(pluginId, key, value),
+      };
       const script = document.createElement("script");
       script.dataset.cliporaxPluginId = pluginId;
       script.textContent = scriptContent;

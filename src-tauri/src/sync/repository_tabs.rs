@@ -62,6 +62,19 @@ pub(super) async fn local_id_for_remote_tab(
     default_tab_id(pool).await
 }
 
+pub(super) async fn trash_tab_id(pool: &sqlx::SqlitePool) -> Result<i64, SyncError> {
+    if let Some((id,)) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tabs WHERE is_trash = 1 LIMIT 1")
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(id);
+    }
+    Ok(sqlx::query("INSERT INTO tabs (name, is_default, auto_capture, is_trash) VALUES ('Trash', 0, 0, 1)")
+        .execute(pool)
+        .await?
+        .last_insert_rowid())
+}
+
 pub(super) async fn local_id_for_tab_key(
     tab_key: &str,
     pool: &sqlx::SqlitePool,

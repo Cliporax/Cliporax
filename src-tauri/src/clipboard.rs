@@ -1,4 +1,5 @@
 use crate::db::{ClipboardItemInput, ClipboardRepository, Db, Metadata};
+use crate::settings::SettingsManager;
 use arboard::Clipboard;
 use base64::{engine::general_purpose, Engine as _};
 use image::{
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
@@ -56,6 +57,26 @@ fn emit_clipboard_changed(
             Err(e) => log::error!("[Clipboard] Failed to emit event: {}", e),
         }
     });
+}
+
+fn excluded_text_patterns(app_handle: &tauri::AppHandle) -> Vec<String> {
+    app_handle
+        .try_state::<std::sync::Mutex<SettingsManager>>()
+        .and_then(|settings| {
+            settings
+                .lock()
+                .ok()
+                .map(|settings| settings.get().excluded_text_patterns.clone())
+        })
+        .unwrap_or_default()
+}
+
+fn text_matches_exclusion_pattern(content: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pattern| {
+        Regex::new(pattern)
+            .map(|regex| regex.is_match(content))
+            .unwrap_or(false)
+    })
 }
 
 async fn item_tab_id(db: &Db, item_id: i64) -> Option<i64> {
@@ -117,9 +138,9 @@ fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_file_uri_list;
     #[cfg(target_os = "linux")]
     use super::{file_uri_from_path, linux_file_clipboard_payload};
+    use super::{looks_like_file_uri_list, text_matches_exclusion_pattern};
     #[cfg(target_os = "linux")]
     use std::path::{Path, PathBuf};
 
@@ -130,6 +151,17 @@ mod tests {
             "open file:///tmp/one in the file manager"
         ));
         assert!(!looks_like_file_uri_list(""));
+    }
+
+    #[test]
+    fn filters_text_matching_exclusion_patterns() {
+        let patterns = vec![r"(?i)^password:".to_string(), r"(?s)^.{0,1}$".to_string()];
+        assert!(text_matches_exclusion_pattern(
+            "Password: secret",
+            &patterns
+        ));
+        assert!(text_matches_exclusion_pattern("中", &patterns));
+        assert!(!text_matches_exclusion_pattern("clipboard text", &patterns));
     }
 
     #[cfg(target_os = "linux")]
@@ -937,6 +969,23 @@ impl ClipboardMonitor {
             if current_file_content.is_empty() && !current_text.is_empty() {
                 let last = last_text.lock().await.clone();
                 if current_text != last {
+                    if text_matches_exclusion_pattern(
+                        &current_text,
+                        &excluded_text_patterns(&app_handle),
+                    ) {
+                        log::debug!(
+                            "[Clipboard] Skipping text clipboard item matching exclusion pattern"
+                        );
+                        *last_text.lock().await = current_text.clone();
+                        *last_image_hash.lock().await = String::new();
+                        *last_processed_image_hash.lock().await = String::new();
+                        #[cfg(target_os = "linux")]
+                        if let Some(timestamp) = linux_clipboard_timestamp.as_deref() {
+                            *last_linux_clipboard_timestamp.lock().await = timestamp.to_string();
+                        }
+                        continue;
+                    }
+
                     log::debug!(
                         "[Clipboard] Text change detected, length: {}",
                         current_text.len()

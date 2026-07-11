@@ -73,6 +73,17 @@
       },
       "maxTextItems": "最大文本条目数",
       "maxImageItems": "最大图片条目数",
+      "excludedTextPatterns": "排除文本规则",
+      "excludedTextPatternsHint": "每行一条 Rust 正则表达式，匹配的复制文本不会保存到历史记录。",
+      "groups": {
+        "appearance": "外观",
+        "language": "语言",
+        "cardDensity": "卡片密度",
+        "historyLimits": "历史容量",
+        "captureFilter": "采集过滤",
+        "clipboardCards": "剪贴板卡片",
+        "windowBehavior": "窗口行为"
+      },
       "limitHint": "超出限制时旧条目将自动删除",
       "cardSize": "卡片大小",
       "cardSizeHint": "调整卡片字体大小，所有尺寸均为单行显示。",

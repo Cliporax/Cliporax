@@ -52,11 +52,17 @@ test("TODO plugin supports grouped, movable, editable items with tab icon", asyn
   await expect(page.getByRole("button", { name: "Add group" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Create TODO group" }).click();
-  await page.getByLabel("New TODO group").fill("Work");
-  await page.getByRole("button", { name: "Add group" }).click();
+  const groupInput = page.getByLabel("New TODO group");
+  await expect(groupInput).toHaveCSS("font-size", "12px");
+  await expect(groupInput).toHaveCSS("height", "32px");
+  await groupInput.fill("Work");
+  await groupInput.press("Enter");
   await page.getByRole("button", { name: "Create TODO item" }).click();
-  await page.getByRole("textbox", { name: "Add TODO item" }).fill("Prepare release notes");
-  await page.getByRole("button", { name: "Save new TODO item" }).click();
+  const addItemInput = page.getByRole("textbox", { name: "Add TODO item" });
+  await expect(addItemInput).toHaveCSS("font-size", "12px");
+  await expect(addItemInput).toHaveCSS("height", "40px");
+  await addItemInput.fill("Prepare release notes");
+  await addItemInput.press("Enter");
 
   await expect(page.getByText("Prepare release notes")).toBeVisible();
 
@@ -69,10 +75,28 @@ test("TODO plugin supports grouped, movable, editable items with tab icon", asyn
   await expect(page.getByText("Prepare release notes")).toBeVisible();
 
   await page.getByRole("button", { name: "Edit TODO: Prepare release notes" }).click();
-  await page
-    .getByRole("textbox", { name: "Edit TODO: Prepare release notes" })
-    .fill("Prepare release notes v2");
-  await page.getByRole("button", { name: "Save TODO: Prepare release notes" }).click();
+  const editor = page.getByRole("textbox", { name: "Edit TODO: Prepare release notes" });
+  await expect(editor).toBeVisible();
+  const editorLayout = await editor.evaluate((element) => {
+    const editorBounds = element.getBoundingClientRect();
+    const rowBounds = element.closest(".todo-pro-item")?.getBoundingClientRect();
+    return {
+      rightInset: rowBounds ? Math.round(rowBounds.right - editorBounds.right) : Number.POSITIVE_INFINITY,
+      height: Math.round(editorBounds.height),
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(editorLayout.rightInset).toBeLessThanOrEqual(12);
+  expect(editorLayout.height).toBeLessThanOrEqual(editorLayout.viewportHeight * 0.34 + 1);
+  await editor.press("Escape");
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "TODO", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Edit TODO: Prepare release notes" }).click();
+  const reopenedEditor = page.getByRole("textbox", { name: "Edit TODO: Prepare release notes" });
+  await expect(reopenedEditor).toBeVisible();
+  await reopenedEditor.fill("Prepare release notes v2");
+  await reopenedEditor.press("Enter");
 
   await expect(page.getByText("Prepare release notes v2")).toBeVisible();
   await expect(page.getByText("Prepare release notes", { exact: true })).toHaveCount(0);
@@ -101,7 +125,7 @@ test("TODO plugin layout stays usable at compact width", async ({
   await page.getByRole("button", { name: "TODO" }).click();
   await page.getByRole("button", { name: "Create TODO item" }).click();
   await page.getByRole("textbox", { name: "Add TODO item" }).fill("Compact layout task");
-  await page.getByRole("button", { name: "Save new TODO item" }).click();
+  await page.getByRole("textbox", { name: "Add TODO item" }).press("Enter");
 
   await expect(page.getByText("Compact layout task")).toBeVisible();
   await expect

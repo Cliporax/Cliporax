@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 
 const SETTINGS_FILE: &str = "settings.json";
+pub const MAX_EXCLUDED_TEXT_PATTERNS: usize = 32;
+pub const MAX_EXCLUDED_TEXT_PATTERN_LEN: usize = 512;
 
 /// All application settings stored in a single JSON file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +17,8 @@ pub struct AppSettings {
     pub line_height: String,
     pub auto_start: bool,
     pub auto_hide: bool,
+    #[serde(default)]
+    pub excluded_text_patterns: Vec<String>,
     #[serde(default = "default_true")]
     pub show_item_index: bool,
     #[serde(default = "default_true")]
@@ -49,6 +53,7 @@ impl Default for AppSettings {
             line_height: "medium".to_string(),
             auto_start: false,
             auto_hide: true,
+            excluded_text_patterns: Vec::new(),
             show_item_index: true,
             show_line_count: true,
             show_source_host: true,
@@ -191,6 +196,7 @@ mod tests {
         let settings = AppSettings::default();
         assert_eq!(settings.theme, "dark");
         assert_eq!(settings.max_items, 1000);
+        assert!(settings.excluded_text_patterns.is_empty());
         assert_eq!(settings.shortcut_toggle_window, "CmdOrControl+Shift+V");
     }
 
@@ -207,6 +213,7 @@ mod tests {
             line_height: "large".to_string(),
             auto_start: true,
             auto_hide: false,
+            excluded_text_patterns: vec!["(?i)^password:".to_string()],
             show_item_index: true,
             show_line_count: true,
             show_source_host: true,
@@ -224,6 +231,29 @@ mod tests {
         let loaded = SettingsManager::load_from_file(&path).unwrap();
         assert_eq!(loaded.theme, "light");
         assert_eq!(loaded.max_items, 500);
+        assert_eq!(loaded.excluded_text_patterns, vec!["(?i)^password:"]);
         assert_eq!(loaded.shortcut_toggle_window, "CmdOrControl+Shift+A");
+    }
+
+    #[test]
+    fn missing_excluded_text_patterns_uses_the_default() {
+        let parsed_settings: Result<AppSettings, _> = serde_json::from_str(
+            r#"{
+                "theme": "dark",
+                "max_items": 1000,
+                "max_images": 500,
+                "line_height": "medium",
+                "auto_start": false,
+                "auto_hide": true,
+                "shortcut_toggle_window": "CmdOrControl+Shift+V"
+            }"#,
+        );
+        assert!(parsed_settings.is_ok());
+        let settings = match parsed_settings {
+            Ok(settings) => settings,
+            Err(_) => return,
+        };
+
+        assert!(settings.excluded_text_patterns.is_empty());
     }
 }

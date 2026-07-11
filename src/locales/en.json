@@ -73,6 +73,17 @@
       },
       "maxTextItems": "Max text items",
       "maxImageItems": "Max image items",
+      "excludedTextPatterns": "Exclude text patterns",
+      "excludedTextPatternsHint": "One Rust regular expression per line. Matching copied text is not saved to history.",
+      "groups": {
+        "appearance": "Appearance",
+        "language": "Language",
+        "cardDensity": "Card density",
+        "historyLimits": "History limits",
+        "captureFilter": "Capture filter",
+        "clipboardCards": "Clipboard cards",
+        "windowBehavior": "Window behavior"
+      },
       "limitHint": "Old items will be auto-deleted when limit exceeded",
       "cardSize": "Card size",
       "cardSizeHint": "Adjust card font size. All sizes display single-line text.",

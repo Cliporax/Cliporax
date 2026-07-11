@@ -955,6 +955,7 @@ export interface AppSettings {
   line_height: string;
   auto_start: boolean;
   auto_hide: boolean;
+  excluded_text_patterns: string[];
   show_item_index: boolean;
   show_line_count: boolean;
   show_source_host: boolean;

@@ -662,13 +662,25 @@ impl ClipboardRepository {
             .take(ids.len())
             .collect::<Vec<_>>()
             .join(",");
+        let mut tx = pool.begin().await?;
+        let keys: Vec<(i64, Option<String>)> = {
+            let sql = format!("SELECT ci.id, sim.item_key FROM clipboard_items ci LEFT JOIN sync_item_map sim ON sim.local_id = ci.id WHERE ci.id IN ({}) AND ci.tab_id != ?", placeholders);
+            let mut query = sqlx::query_as(&sql);
+            for id in ids { query = query.bind(id); }
+            query.bind(trash_id).fetch_all(&mut *tx).await?
+        };
         let sql = format!("UPDATE clipboard_items SET deleted_from_tab_id = tab_id, tab_id = ?, deleted_at = datetime('now'), is_pinned = 0 WHERE id IN ({}) AND tab_id != ?", placeholders);
         let mut query = sqlx::query(&sql).bind(trash_id);
         for id in ids {
             query = query.bind(id);
         }
         query = query.bind(trash_id);
-        Ok(query.execute(pool).await?.rows_affected() as i64)
+        let affected = query.execute(&mut *tx).await?.rows_affected() as i64;
+        for (id, item_key) in keys {
+            record_sync_change_tx(&mut tx, SYNC_ENTITY_CLIPBOARD_ITEM, &id.to_string(), SYNC_OP_UPDATE, Some(trash_id), item_key.as_deref(), SYNC_SOURCE_LOCAL).await?;
+        }
+        tx.commit().await?;
+        Ok(affected)
     }
 
     pub async fn restore_from_trash(pool: &Db, ids: &[i64]) -> Result<i64, Error> {
@@ -680,12 +692,24 @@ impl ClipboardRepository {
             .take(ids.len())
             .collect::<Vec<_>>()
             .join(",");
+        let mut tx = pool.begin().await?;
+        let keys: Vec<(i64, Option<String>)> = {
+            let sql = format!("SELECT ci.id, sim.item_key FROM clipboard_items ci LEFT JOIN sync_item_map sim ON sim.local_id = ci.id WHERE ci.id IN ({}) AND ci.tab_id = ?", placeholders);
+            let mut query = sqlx::query_as(&sql);
+            for id in ids { query = query.bind(id); }
+            query.bind(trash_id).fetch_all(&mut *tx).await?
+        };
         let sql = format!("UPDATE clipboard_items SET tab_id = COALESCE(deleted_from_tab_id, tab_id), deleted_from_tab_id = NULL, deleted_at = NULL WHERE id IN ({}) AND tab_id = ?", placeholders);
         let mut query = sqlx::query(&sql);
         for id in ids {
             query = query.bind(id);
         }
-        Ok(query.bind(trash_id).execute(pool).await?.rows_affected() as i64)
+        let affected = query.bind(trash_id).execute(&mut *tx).await?.rows_affected() as i64;
+        for (id, item_key) in keys {
+            record_sync_change_tx(&mut tx, SYNC_ENTITY_CLIPBOARD_ITEM, &id.to_string(), SYNC_OP_UPDATE, None, item_key.as_deref(), SYNC_SOURCE_LOCAL).await?;
+        }
+        tx.commit().await?;
+        Ok(affected)
     }
 
     pub async fn purge_trash(pool: &Db, retention_days: i64) -> Result<i64, Error> {
