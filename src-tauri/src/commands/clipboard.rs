@@ -126,6 +126,19 @@ pub async fn clipboard_get_by_tab(
     }
 }
 
+/// Get one clipboard item by ID for event-driven cache updates.
+#[tauri::command]
+pub async fn clipboard_get_by_id(
+    db: tauri::State<'_, Db>,
+    id: i64,
+) -> Result<Option<ClipboardItem>, String> {
+    validate_positive_id("id", id)?;
+    ClipboardRepository::get_by_id(&db, id).await.map_err(|e| {
+        log::error!("[Command] clipboard_get_by_id failed for id {}: {}", id, e);
+        e.to_string()
+    })
+}
+
 /// Get the latest clipboard item for incremental updates
 #[tauri::command]
 pub async fn clipboard_get_latest(

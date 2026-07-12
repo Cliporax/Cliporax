@@ -8,6 +8,7 @@ import { ItemType, type ClipboardItem } from "../types/generated/api";
 vi.mock("../lib/tauri-api", () => ({
   clipboard: {
     getAllTypes: vi.fn(),
+    getById: vi.fn(),
     getLatest: vi.fn(),
     getTotalCount: vi.fn(),
   },
@@ -76,6 +77,47 @@ describe("useDataLoading incremental updates", () => {
     });
     expect(setTotalCount).toHaveBeenCalledWith(1);
     expect(setCacheVersion).toHaveBeenCalledOnce();
+  });
+
+  it("uses the event item ID for an in-place update without falling back to latest", async () => {
+    const cacheManager = new ClipboardCacheManager();
+    const typeCache = new ItemTypeCache();
+    cacheManager.addItems([makeItem("old content", "2026-07-03T00:00:00Z")], 0);
+    typeCache.setType(0, "text");
+
+    vi.mocked(clipboard.getById).mockResolvedValue({
+      ...makeItem("new content", "2026-07-03T00:01:00Z"),
+      id: 2,
+      tab_id: 1,
+    });
+    vi.mocked(clipboard.getTotalCount).mockResolvedValue(2);
+
+    const { result } = renderHook(() =>
+      useDataLoading({
+        defaultTabId: 1,
+        totalCount: 1,
+        isAutoCaptureTab: true,
+        isSearchMode: false,
+        visibleStartIndex: 0,
+        visibleEndIndex: 0,
+        isMultiDraggingRef: { current: false },
+        cacheManagerRef: { current: cacheManager },
+        typeCacheRef: { current: typeCache },
+        containerRef: { current: null },
+        setTotalCount: vi.fn(),
+        setIsLoading: vi.fn(),
+        setCacheVersion: vi.fn(),
+      }),
+    );
+
+    await act(async () => {
+      await result.current.incrementalUpdate({ itemIds: [2], tabIds: [1] });
+    });
+
+    expect(clipboard.getById).toHaveBeenCalledWith(2);
+    expect(clipboard.getLatest).not.toHaveBeenCalled();
+    expect(cacheManager.getItem(0)).toMatchObject({ id: 2, content: "new content" });
+    expect(cacheManager.getItem(1)).toMatchObject({ id: 1, content: "old content" });
   });
 
   it("inserts a new unpinned item after pinned items without clearing the cache", async () => {

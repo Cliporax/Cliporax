@@ -193,6 +193,13 @@ export const clipboard = {
       throw error;
     }
   },
+  getById: async (id: number): Promise<ClipboardItem | null> => {
+    const result = await tracedInvoke<ClipboardItemRaw | null>(
+      "clipboard_get_by_id",
+      { id },
+    );
+    return result ? transformItem(result) : null;
+  },
   /// Get the latest clipboard item for incremental updates
   getLatest: async (tabId: number): Promise<ClipboardItem | null> => {
     log("info", "API", "clipboard.getLatest() called - tabId:", tabId);

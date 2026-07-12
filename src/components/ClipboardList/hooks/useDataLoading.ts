@@ -1,7 +1,12 @@
 import { useCallback, useRef } from "react";
 import { createLogger } from "../../../utils/logger";
 import { perfMeasure } from "../../../utils/perf";
-import { tabs, clipboard, events } from "../../../lib/tauri-api";
+import {
+  tabs,
+  clipboard,
+  events,
+  type ClipboardChangedPayload,
+} from "../../../lib/tauri-api";
 import { PAGE_SIZE, OVERSCAN, TYPE_PRELOAD_LIMIT } from "../constants";
 import type { ItemTypeCache, ClipboardCacheManager } from "../cache";
 
@@ -29,7 +34,7 @@ export interface UseDataLoadingReturn {
   forceLoadVisibleRange: () => void;
   refreshList: () => Promise<void>;
   initializeData: () => Promise<void>;
-  incrementalUpdate: () => Promise<void>;
+  incrementalUpdate: (payload?: ClipboardChangedPayload | null) => Promise<void>;
 }
 
 export function useDataLoading({
@@ -277,7 +282,7 @@ export function useDataLoading({
   }, [setTotalCount, setCacheVersion, typeCacheRef]);
 
   // Incremental update
-  const incrementalUpdate = useCallback(async () => {
+  const incrementalUpdate = useCallback(async (payload?: ClipboardChangedPayload | null) => {
     if (defaultTabId === null || isMultiDraggingRef.current) return;
 
     try {
@@ -295,7 +300,20 @@ export function useDataLoading({
         return;
       }
 
-      const latestItem = await clipboard.getLatest(defaultTabId);
+      const eventItemIds = payload?.itemIds?.filter((id) => id > 0) ?? [];
+      const eventItems = eventItemIds.length
+        ? await Promise.all(eventItemIds.map((id) => clipboard.getById(id)))
+        : [];
+      const latestItem = eventItems.length
+        ? eventItems.find((item) => item?.tab_id === defaultTabId) ?? null
+        : await clipboard.getLatest(defaultTabId);
+
+      if (eventItems.length && !latestItem) {
+        logger.debug(
+          `[ClipboardList] Clipboard event had no item for tab ${defaultTabId}`,
+        );
+        return;
+      }
       if (latestItem && latestItem.id !== null && latestItem.id !== undefined) {
         const getInsertionIndex = () => {
           if (latestItem.is_pinned) return 0;
@@ -381,7 +399,6 @@ export function useDataLoading({
       }
     } catch (error) {
       logger.error("[ClipboardList] Incremental update failed:", error);
-      refreshList();
     }
   }, [
     defaultTabId,
@@ -392,7 +409,6 @@ export function useDataLoading({
     typeCacheRef,
     setTotalCount,
     setCacheVersion,
-    refreshList,
   ]);
 
   return {

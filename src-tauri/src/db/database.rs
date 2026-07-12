@@ -122,7 +122,9 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (plugin_id, storage_key)
         )"#,
-    ).execute(pool).await?;
+    )
+    .execute(pool)
+    .await?;
 
     // Add display_order column if it doesn't exist (migration for drag reorder)
     let add_order_result = sqlx::query(

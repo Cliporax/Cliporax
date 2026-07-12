@@ -102,7 +102,8 @@ impl SyncService {
         };
 
         let publishes_to_new_root = existing.as_ref().is_none_or(|profile| {
-            profile.provider != sync_profile.provider || profile.remote_root != sync_profile.remote_root
+            profile.provider != sync_profile.provider
+                || profile.remote_root != sync_profile.remote_root
         });
         self.repository.upsert_profile(sync_profile.clone()).await?;
         if publishes_to_new_root {

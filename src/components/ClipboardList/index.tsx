@@ -862,7 +862,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
             );
             return;
           }
-          incrementalUpdateRef.current();
+          incrementalUpdateRef.current(payload);
         })
         .then((nextUnlisten) => {
           if (disposed) {

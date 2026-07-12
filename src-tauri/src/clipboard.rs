@@ -125,9 +125,9 @@ fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
     #[cfg(target_os = "windows")]
     {
         let _ = clipboard;
-        return Clipboard::new()
+        Clipboard::new()
             .and_then(|mut clip| clip.get_text())
-            .unwrap_or_default();
+            .unwrap_or_default()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -183,10 +183,10 @@ fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<(usize, usize, Vec<
     #[cfg(target_os = "windows")]
     {
         let _ = clipboard;
-        return Clipboard::new()
+        Clipboard::new()
             .and_then(|mut clip| clip.get_image())
             .ok()
-            .map(|image| (image.width, image.height, image.bytes.to_vec()));
+            .map(|image| (image.width, image.height, image.bytes.to_vec()))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -234,6 +234,7 @@ fn clipboard_path_from_value(value: &str) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn looks_like_file_uri_list(content: &str) -> bool {
     let mut lines = content
         .lines()
@@ -341,23 +342,10 @@ fn get_windows_clipboard_sequence_number() -> u32 {
 
 #[cfg(target_os = "windows")]
 async fn get_windows_file_list() -> Option<Vec<String>> {
-    let mut command = tokio::process::Command::new("powershell");
-    command
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_millis(800), command.output())
+    tokio::task::spawn_blocking(get_windows_file_list_sync)
         .await
-        .ok()?
-        .ok()?;
-    existing_absolute_paths(&output.stdout, output.status.success())
+        .ok()
+        .flatten()
 }
 
 #[cfg(target_os = "macos")]
@@ -385,18 +373,54 @@ fn get_macos_file_list() -> Option<Vec<String>> {
 }
 
 #[cfg(target_os = "windows")]
-fn existing_absolute_paths(bytes: &[u8], successful: bool) -> Option<Vec<String>> {
-    if !successful || bytes.is_empty() {
+fn get_windows_file_list_sync() -> Option<Vec<String>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    const CF_HDROP: u32 = 15;
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseClipboard() };
+        }
+    }
+
+    if unsafe { IsClipboardFormatAvailable(CF_HDROP) }.is_err() {
         return None;
     }
-    let paths = String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.exists())
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+
+    unsafe { OpenClipboard(HWND::default()) }.ok()?;
+    let _clipboard_guard = ClipboardGuard;
+
+    let handle = unsafe { GetClipboardData(CF_HDROP) }.ok()?;
+    let hdrop = HDROP(handle.0);
+    let file_count = unsafe { DragQueryFileW(hdrop, u32::MAX, None) };
+    if file_count == 0 {
+        return None;
+    }
+
+    let mut paths = Vec::with_capacity(file_count as usize);
+    for index in 0..file_count {
+        let char_count = unsafe { DragQueryFileW(hdrop, index, None) };
+        if char_count == 0 {
+            continue;
+        }
+
+        let mut buffer = vec![0u16; char_count as usize + 1];
+        let copied = unsafe { DragQueryFileW(hdrop, index, Some(&mut buffer)) };
+        if copied == 0 {
+            continue;
+        }
+
+        let path = PathBuf::from(String::from_utf16_lossy(&buffer[..copied as usize]));
+        if path.is_absolute() && path.exists() {
+            paths.push(path.to_string_lossy().into_owned());
+        }
+    }
+
     (!paths.is_empty()).then_some(paths)
 }
 
@@ -1544,7 +1568,7 @@ impl ClipboardMonitor {
                 .collect::<Vec<_>>()
                 .join(",");
             let script = format!("Set-Clipboard -LiteralPath @({})", quoted_paths);
-            let status = Command::new("powershell")
+            let status = std::process::Command::new("powershell")
                 .arg("-NoProfile")
                 .arg("-NonInteractive")
                 .arg("-WindowStyle")
@@ -1557,7 +1581,7 @@ impl ClipboardMonitor {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 return Ok(());
             }
-            return Err(format!("PowerShell Set-Clipboard failed: {}", status).into());
+            Err(format!("PowerShell Set-Clipboard failed: {}", status).into())
         }
 
         #[cfg(target_os = "macos")]

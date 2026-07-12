@@ -601,6 +601,7 @@ fn main() {
             tabs_rename,
             // Clipboard commands
             clipboard_get_by_tab,
+            clipboard_get_by_id,
             clipboard_get_latest,
             clipboard_create,
             clipboard_delete,

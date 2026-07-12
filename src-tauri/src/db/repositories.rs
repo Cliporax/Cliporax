@@ -512,6 +512,13 @@ impl ClipboardRepository {
         result
     }
 
+    pub async fn get_by_id(pool: &Db, id: i64) -> Result<Option<ClipboardItem>, Error> {
+        sqlx::query_as::<_, ClipboardItem>("SELECT * FROM clipboard_items WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+    }
+
     pub async fn get_latest_by_tab(pool: &Db, tab_id: i64) -> Result<Option<ClipboardItem>, Error> {
         sqlx::query_as::<_, ClipboardItem>(
             r#"
@@ -666,7 +673,9 @@ impl ClipboardRepository {
         let keys: Vec<(i64, Option<String>)> = {
             let sql = format!("SELECT ci.id, sim.item_key FROM clipboard_items ci LEFT JOIN sync_item_map sim ON sim.local_id = ci.id WHERE ci.id IN ({}) AND ci.tab_id != ?", placeholders);
             let mut query = sqlx::query_as(&sql);
-            for id in ids { query = query.bind(id); }
+            for id in ids {
+                query = query.bind(id);
+            }
             query.bind(trash_id).fetch_all(&mut *tx).await?
         };
         let sql = format!("UPDATE clipboard_items SET deleted_from_tab_id = tab_id, tab_id = ?, deleted_at = datetime('now'), is_pinned = 0 WHERE id IN ({}) AND tab_id != ?", placeholders);
@@ -677,7 +686,16 @@ impl ClipboardRepository {
         query = query.bind(trash_id);
         let affected = query.execute(&mut *tx).await?.rows_affected() as i64;
         for (id, item_key) in keys {
-            record_sync_change_tx(&mut tx, SYNC_ENTITY_CLIPBOARD_ITEM, &id.to_string(), SYNC_OP_UPDATE, Some(trash_id), item_key.as_deref(), SYNC_SOURCE_LOCAL).await?;
+            record_sync_change_tx(
+                &mut tx,
+                SYNC_ENTITY_CLIPBOARD_ITEM,
+                &id.to_string(),
+                SYNC_OP_UPDATE,
+                Some(trash_id),
+                item_key.as_deref(),
+                SYNC_SOURCE_LOCAL,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(affected)
@@ -696,7 +714,9 @@ impl ClipboardRepository {
         let keys: Vec<(i64, Option<String>)> = {
             let sql = format!("SELECT ci.id, sim.item_key FROM clipboard_items ci LEFT JOIN sync_item_map sim ON sim.local_id = ci.id WHERE ci.id IN ({}) AND ci.tab_id = ?", placeholders);
             let mut query = sqlx::query_as(&sql);
-            for id in ids { query = query.bind(id); }
+            for id in ids {
+                query = query.bind(id);
+            }
             query.bind(trash_id).fetch_all(&mut *tx).await?
         };
         let sql = format!("UPDATE clipboard_items SET tab_id = COALESCE(deleted_from_tab_id, tab_id), deleted_from_tab_id = NULL, deleted_at = NULL WHERE id IN ({}) AND tab_id = ?", placeholders);
@@ -704,9 +724,22 @@ impl ClipboardRepository {
         for id in ids {
             query = query.bind(id);
         }
-        let affected = query.bind(trash_id).execute(&mut *tx).await?.rows_affected() as i64;
+        let affected = query
+            .bind(trash_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as i64;
         for (id, item_key) in keys {
-            record_sync_change_tx(&mut tx, SYNC_ENTITY_CLIPBOARD_ITEM, &id.to_string(), SYNC_OP_UPDATE, None, item_key.as_deref(), SYNC_SOURCE_LOCAL).await?;
+            record_sync_change_tx(
+                &mut tx,
+                SYNC_ENTITY_CLIPBOARD_ITEM,
+                &id.to_string(),
+                SYNC_OP_UPDATE,
+                None,
+                item_key.as_deref(),
+                SYNC_SOURCE_LOCAL,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(affected)

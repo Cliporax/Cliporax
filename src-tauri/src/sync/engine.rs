@@ -445,7 +445,9 @@ impl SyncEngine {
             return Ok(report);
         }
         if let Some(plugin_ref) = &manifest.plugin_data {
-            let bytes = provider.get(&plugin_ref.path).await.map_err(|e| SyncError::provider(format!("Failed to download plugin data: {}", e)))?;
+            let bytes = provider.get(&plugin_ref.path).await.map_err(|e| {
+                SyncError::provider(format!("Failed to download plugin data: {}", e))
+            })?;
             let decoded = decode_snapshot_file(&bytes, &prepared.profile, crypto_key.as_ref())?;
             remote_plugin_data = serde_json::from_slice(&decoded)?;
         }
@@ -511,7 +513,9 @@ impl SyncEngine {
             .repository
             .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
             .await?;
-        self.repository.apply_snapshot_plugin_data(remote_plugin_data).await?;
+        self.repository
+            .apply_snapshot_plugin_data(remote_plugin_data)
+            .await?;
 
         if let Some(order) = remote_order {
             let order_to_apply = if is_same_device_snapshot {
@@ -811,7 +815,10 @@ impl SyncEngine {
         let plugin_json = serde_json::to_vec(&plugin_data)?;
         let plugin_hash = sha256_hex(&plugin_json);
         let plugin_path = "plugins/data.json".to_string();
-        let previous_plugin_hash = previous_manifest.as_ref().and_then(|manifest| manifest.plugin_data.as_ref()).map(|reference| reference.hash.as_str());
+        let previous_plugin_hash = previous_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.plugin_data.as_ref())
+            .map(|reference| reference.hash.as_str());
         if previous_plugin_hash != Some(plugin_hash.as_str()) {
             let data = encode_snapshot_file(&plugin_json, profile, crypto_key.as_ref())?;
             provider.put(&plugin_path, data).await?;
@@ -832,7 +839,10 @@ impl SyncEngine {
                 path: order_path,
                 hash: order_hash,
             }),
-            plugin_data: Some(SnapshotFileRef { path: plugin_path, hash: plugin_hash }),
+            plugin_data: Some(SnapshotFileRef {
+                path: plugin_path,
+                hash: plugin_hash,
+            }),
         };
         write_manifest(provider, "", &manifest).await?;
         self.cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
