@@ -773,6 +773,34 @@ impl SyncRepository {
         Ok(!self.list_unsynced_changes(profile).await?.is_empty())
     }
 
+    /// Queue a complete local snapshot for publication. This is used when a
+    /// profile starts targeting a different remote root: the remote is treated
+    /// as a new destination, not as a source to migrate from.
+    pub async fn queue_full_snapshot_upload(&self, profile_id: &str) -> Result<(), SyncError> {
+        sqlx::query(
+            r#"
+            INSERT INTO sync_changes (entity_type, entity_id, operation, source, changed_at)
+            SELECT 'snapshot', ?, 'replace', 'local', datetime('now')
+            WHERE NOT EXISTS (
+                SELECT 1 FROM sync_changes
+                WHERE entity_type = 'snapshot'
+                  AND entity_id = ?
+                  AND source = 'local'
+                  AND synced_at IS NULL
+            )
+            "#,
+        )
+        .bind(profile_id)
+        .bind(profile_id)
+        .execute(&self.pool)
+        .await?;
+        log::info!(
+            "[Sync::Repository] Queued complete local snapshot for profile {}",
+            profile_id
+        );
+        Ok(())
+    }
+
     /// Return the current local clipboard snapshot with stable remote identity.
     pub async fn list_snapshot_items(
         &self,
@@ -1825,6 +1853,27 @@ mod tests {
         assert_eq!(stored.id, profile.id);
         assert_eq!(stored.name, profile.name);
         assert_eq!(stored.provider, profile.provider);
+    }
+
+    #[tokio::test]
+    async fn queued_full_snapshot_upload_is_visible_once_as_a_local_change() {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool);
+        let profile = test_profile();
+        repository.upsert_profile(profile.clone()).await.unwrap();
+
+        repository
+            .queue_full_snapshot_upload(&profile.id)
+            .await
+            .unwrap();
+        repository
+            .queue_full_snapshot_upload(&profile.id)
+            .await
+            .unwrap();
+
+        let changes = repository.list_unsynced_changes(&profile).await.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].entity_type, "snapshot");
     }
 
     #[tokio::test]

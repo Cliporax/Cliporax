@@ -52,17 +52,11 @@ impl SyncService {
     }
 
     pub async fn list_profiles(&self) -> Result<Vec<SyncProfileSummary>, SyncError> {
-        let mut profiles = self.repository.list_profiles().await?;
-        for profile in &mut profiles {
-            profile.remote_root = normalize_legacy_default_remote_root(&profile.remote_root);
-        }
-        Ok(profiles)
+        self.repository.list_profiles().await
     }
 
     pub async fn get_profile(&self, profile_id: &str) -> Result<SyncProfile, SyncError> {
-        let mut profile = self.repository.get_profile(profile_id).await?;
-        profile.remote_root = normalize_legacy_default_remote_root(&profile.remote_root);
-        Ok(profile)
+        self.repository.get_profile(profile_id).await
     }
 
     pub async fn upsert_profile(&self, input: SyncProfileInput) -> Result<(), SyncError> {
@@ -94,7 +88,7 @@ impl SyncService {
             id: input.id.clone(),
             name: input.name,
             provider,
-            remote_root: normalize_legacy_default_remote_root(&input.remote_root),
+            remote_root: input.remote_root.trim().to_string(),
             sync_tabs: input.sync_tabs.unwrap_or_default(),
             sync_plugins: input.sync_plugins.unwrap_or_default(),
             encryption,
@@ -107,7 +101,16 @@ impl SyncService {
             updated_at: None,
         };
 
-        self.repository.upsert_profile(sync_profile).await
+        let publishes_to_new_root = existing.as_ref().is_none_or(|profile| {
+            profile.provider != sync_profile.provider || profile.remote_root != sync_profile.remote_root
+        });
+        self.repository.upsert_profile(sync_profile.clone()).await?;
+        if publishes_to_new_root {
+            self.repository
+                .queue_full_snapshot_upload(&sync_profile.id)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn delete_profile(&self, profile_id: &str) -> Result<(), SyncError> {
@@ -479,27 +482,6 @@ impl SyncService {
     }
 }
 
-fn normalize_legacy_default_remote_root(remote_root: &str) -> String {
-    let trimmed = remote_root.trim();
-    if trimmed == "Cliporax/v1" {
-        return "cliporax/v1".to_string();
-    }
-    if trimmed == "/Cliporax/v1" {
-        return "/cliporax/v1".to_string();
-    }
-
-    let without_trailing_slash = trimmed.trim_end_matches('/');
-    if let Some(prefix) = without_trailing_slash.strip_suffix("/Cliporax/v1") {
-        return format!(
-            "{}/cliporax/v1{}",
-            prefix,
-            &trimmed[without_trailing_slash.len()..]
-        );
-    }
-
-    trimmed.to_string()
-}
-
 fn parse_sync_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -533,44 +515,5 @@ impl TryFrom<&str> for SyncProviderKind {
                 other
             ))),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_legacy_default_remote_root;
-
-    #[test]
-    fn normalizes_legacy_default_remote_root_case() {
-        assert_eq!(
-            normalize_legacy_default_remote_root("Cliporax/v1"),
-            "cliporax/v1"
-        );
-        assert_eq!(
-            normalize_legacy_default_remote_root("/Cliporax/v1"),
-            "/cliporax/v1"
-        );
-        assert_eq!(
-            normalize_legacy_default_remote_root(
-                "https://dav.example.com/remote.php/dav/files/me/Cliporax/v1"
-            ),
-            "https://dav.example.com/remote.php/dav/files/me/cliporax/v1"
-        );
-        assert_eq!(
-            normalize_legacy_default_remote_root("sftp://example.com:22/Cliporax/v1"),
-            "sftp://example.com:22/cliporax/v1"
-        );
-    }
-
-    #[test]
-    fn preserves_user_modified_remote_root() {
-        assert_eq!(
-            normalize_legacy_default_remote_root("custom/Path"),
-            "custom/Path"
-        );
-        assert_eq!(
-            normalize_legacy_default_remote_root("https://dav.example.com/Data/v2"),
-            "https://dav.example.com/Data/v2"
-        );
     }
 }
