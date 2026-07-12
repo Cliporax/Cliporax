@@ -9,7 +9,7 @@ on:
       draft:
         description: "Create the GitHub release as a draft"
         type: boolean
-        default: true
+        default: false
       prerelease:
         description: "Mark the GitHub release as a prerelease"
         type: boolean
@@ -179,12 +179,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLIPORAX_BUILD_TARGET: ${{ matrix.target }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Ad-hoc sign macOS apps so Apple Silicon can run them without a
+          # Developer ID. The DMG remains unnotarized and may require users to
+          # allow it in Privacy & Security on first launch.
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && '-' || '' }}
         with:
           tauriScript: npm run tauri
           tagName: ${{ steps.release-notes.outputs.tag }}

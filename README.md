@@ -157,21 +157,11 @@ Sync-related code is mainly located in:
 
 ## Release Packaging
 
-GitHub release builds for macOS must be signed and notarized. Unsigned DMGs downloaded from GitHub are blocked by Gatekeeper and can show `"Cliporax" is damaged and can't be opened`.
-
-Set these repository secrets before creating a macOS release:
-
-- `APPLE_CERTIFICATE`: base64-encoded `.p12` Developer ID Application certificate.
-- `APPLE_CERTIFICATE_PASSWORD`: password for the `.p12` certificate.
-- `APPLE_SIGNING_IDENTITY`: Developer ID Application signing identity.
-- `APPLE_ID`: Apple ID used for notarization.
-- `APPLE_PASSWORD`: app-specific password for the Apple ID.
-- `APPLE_TEAM_ID`: Apple Developer team ID.
-
-If any secret is missing, release CI still compiles both macOS targets and
-uploads unsigned `.app` ZIPs as workflow artifacts for inspection. It does not
-attach an unsigned DMG to the GitHub release, because downloaded unsigned DMGs
-are rejected by Gatekeeper. Add all six secrets to publish macOS release assets.
+GitHub release builds use ad-hoc signing for macOS, so a paid Apple Developer ID
+is not required. These builds are not notarized: Gatekeeper may require users to
+allow Cliporax in Privacy & Security on first launch. Official trusted
+distribution still requires a Developer ID Application certificate and Apple
+notarization credentials.
 
 ## Roadmap Notes
 
