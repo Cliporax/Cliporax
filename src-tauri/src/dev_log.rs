@@ -229,11 +229,14 @@ pub struct DualLogger {
 
 #[cfg(debug_assertions)]
 impl log::Log for DualLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info || metadata.target().starts_with("cliporax")
     }
 
     fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
         // Get the current trace context
         let trace_id = crate::trace_context::get_trace_id();
         let span_id = crate::trace_context::get_span_id();

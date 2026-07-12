@@ -396,7 +396,7 @@ impl SyncProvider for WebDavProvider {
 
     /// Get metadata for a single path using PROPFIND with Depth: 0
     async fn stat(&self, path: &str) -> Result<Option<RemoteObject>, SyncError> {
-        log::debug!("[Sync::WebDAV] Stat: {}", path);
+        log::trace!("[Sync::WebDAV] Stat: {}", path);
 
         let url = self.build_url(path);
         let body = build_propfind_body();
@@ -453,7 +453,7 @@ impl SyncProvider for WebDavProvider {
 
     /// Download file content using GET
     async fn get(&self, path: &str) -> Result<Vec<u8>, SyncError> {
-        log::debug!("[Sync::WebDAV] Getting: {}", path);
+        log::trace!("[Sync::WebDAV] Getting: {}", path);
 
         let url = self.build_url(path);
 
@@ -481,13 +481,13 @@ impl SyncProvider for WebDavProvider {
             .await
             .map_err(|e| SyncError::provider(format!("Failed to read response body: {}", e)))?;
 
-        log::debug!("[Sync::WebDAV] Got {} bytes from {}", bytes.len(), path);
+        log::trace!("[Sync::WebDAV] Got {} bytes from {}", bytes.len(), path);
         Ok(bytes.to_vec())
     }
 
     /// Upload file content using PUT
     async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), SyncError> {
-        log::debug!("[Sync::WebDAV] Putting: {} ({} bytes)", path, data.len());
+        log::trace!("[Sync::WebDAV] Putting: {} ({} bytes)", path, data.len());
 
         self.ensure_base_collection().await?;
 
@@ -508,7 +508,7 @@ impl SyncProvider for WebDavProvider {
 
         let status = resp.status();
         if status.is_success() || status == StatusCode::CREATED {
-            log::debug!("[Sync::WebDAV] Successfully put {}", path);
+            log::trace!("[Sync::WebDAV] Successfully put {}", path);
             Ok(())
         } else {
             let body_text = resp.text().await.unwrap_or_default();
@@ -521,7 +521,7 @@ impl SyncProvider for WebDavProvider {
 
     /// Create directory hierarchy using MKCOL requests
     async fn mkdir_all(&self, path: &str) -> Result<(), SyncError> {
-        log::debug!("[Sync::WebDAV] Mkdir: {}", path);
+        log::trace!("[Sync::WebDAV] Mkdir: {}", path);
 
         // Split path into components and create each directory in sequence
         let path = path.trim_start_matches('/').trim_end_matches('/');
@@ -551,10 +551,10 @@ impl SyncProvider for WebDavProvider {
                 || status == StatusCode::OK
                 || status == StatusCode::NO_CONTENT
             {
-                log::debug!("[Sync::WebDAV] Created directory: {}", partial);
+                log::trace!("[Sync::WebDAV] Created directory: {}", partial);
             } else if status == StatusCode::METHOD_NOT_ALLOWED {
                 // Directory already exists
-                log::debug!("[Sync::WebDAV] Directory already exists: {}", partial);
+                log::trace!("[Sync::WebDAV] Directory already exists: {}", partial);
             } else if status == StatusCode::CONFLICT {
                 // Parent doesn't exist - this shouldn't happen with sequential creation
                 return Err(SyncError::provider(format!(
@@ -569,7 +569,7 @@ impl SyncProvider for WebDavProvider {
                 let stat_result = self.stat(&dir_path).await;
                 match stat_result {
                     Ok(Some(_)) => {
-                        log::debug!(
+                        log::trace!(
                             "[Sync::WebDAV] Directory already exists (verified): {}",
                             partial
                         );
@@ -589,7 +589,7 @@ impl SyncProvider for WebDavProvider {
 
     /// Move/rename object using MOVE request
     async fn move_object(&self, from: &str, to: &str) -> Result<(), SyncError> {
-        log::debug!("[Sync::WebDAV] Move: {} -> {}", from, to);
+        log::trace!("[Sync::WebDAV] Move: {} -> {}", from, to);
 
         let from_url = self.build_url(from);
         let to_url = self.build_url(to);
@@ -605,7 +605,7 @@ impl SyncProvider for WebDavProvider {
         let status = resp.status();
         if status.is_success() || status == StatusCode::CREATED || status == StatusCode::NO_CONTENT
         {
-            log::debug!("[Sync::WebDAV] Successfully moved {} -> {}", from, to);
+            log::trace!("[Sync::WebDAV] Successfully moved {} -> {}", from, to);
             Ok(())
         } else {
             let body_text = resp.text().await.unwrap_or_default();
@@ -618,7 +618,7 @@ impl SyncProvider for WebDavProvider {
 
     /// Delete object using DELETE request
     async fn delete(&self, path: &str) -> Result<(), SyncError> {
-        log::debug!("[Sync::WebDAV] Delete: {}", path);
+        log::trace!("[Sync::WebDAV] Delete: {}", path);
 
         let url = self.build_url(path);
 
@@ -630,11 +630,11 @@ impl SyncProvider for WebDavProvider {
 
         let status = resp.status();
         if status.is_success() || status == StatusCode::NO_CONTENT {
-            log::debug!("[Sync::WebDAV] Successfully deleted {}", path);
+            log::trace!("[Sync::WebDAV] Successfully deleted {}", path);
             Ok(())
         } else if status == StatusCode::NOT_FOUND {
             // Already deleted or never existed - treat as success
-            log::debug!("[Sync::WebDAV] Already deleted or not found: {}", path);
+            log::trace!("[Sync::WebDAV] Already deleted or not found: {}", path);
             Ok(())
         } else {
             let body_text = resp.text().await.unwrap_or_default();

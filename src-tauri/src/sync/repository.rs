@@ -1144,6 +1144,17 @@ impl SyncRepository {
     ) -> Result<ApplyItemResult, SyncError> {
         log::info!("[Sync::Repository] Applying remote item: {}", item.item_key);
 
+        let created_at = chrono::DateTime::parse_from_rfc3339(&item.created_at)
+            .map_err(|error| {
+                SyncError::validation(format!("Remote item created_at is invalid: {}", error))
+            })?
+            .with_timezone(&chrono::Utc);
+        let updated_at = chrono::DateTime::parse_from_rfc3339(&item.updated_at)
+            .map_err(|error| {
+                SyncError::validation(format!("Remote item updated_at is invalid: {}", error))
+            })?
+            .with_timezone(&chrono::Utc);
+
         let existing_local_id = self.find_local_id_by_item_key(&item.item_key).await?;
 
         if let Some(local_id) = existing_local_id {
@@ -1198,7 +1209,8 @@ impl SyncRepository {
                     is_sensitive = ?,
                     deleted_at = ?,
                     deleted_from_tab_id = ?,
-                    updated_at = datetime('now')
+                    created_at = ?,
+                    updated_at = ?
                 WHERE id = ?
                 "#,
             )
@@ -1212,6 +1224,8 @@ impl SyncRepository {
             .bind(if item.is_sensitive { 1 } else { 0 })
             .bind(item.deleted_at.as_deref())
             .bind(deleted_from_tab_id)
+            .bind(created_at)
+            .bind(updated_at)
             .bind(local_id)
             .execute(&self.pool)
             .await?;
@@ -1254,8 +1268,8 @@ impl SyncRepository {
             let result = sqlx::query(
                 r#"
                 INSERT INTO clipboard_items 
-                (type, content, content_hash, metadata, tags, tab_id, is_sensitive, is_pinned, deleted_at, deleted_from_tab_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (type, content, content_hash, metadata, tags, tab_id, is_sensitive, is_pinned, deleted_at, deleted_from_tab_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&item.item_type)
@@ -1268,6 +1282,8 @@ impl SyncRepository {
             .bind(if item.is_pinned { 1 } else { 0 })
             .bind(item.deleted_at.as_deref())
             .bind(deleted_from_tab_id)
+            .bind(created_at)
+            .bind(updated_at)
             .execute(&self.pool)
             .await?;
 
@@ -1853,6 +1869,32 @@ mod tests {
         assert_eq!(stored.id, profile.id);
         assert_eq!(stored.name, profile.name);
         assert_eq!(stored.provider, profile.provider);
+    }
+
+    #[tokio::test]
+    async fn remote_apply_preserves_snapshot_timestamps() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool);
+        let profile = test_profile();
+        let mut item = remote_item("device_b_1_1", "remote content", "remote-hash");
+
+        repository
+            .apply_remote_item(&profile, item.clone(), None)
+            .await?;
+
+        item.created_at = "2026-05-14T23:00:00Z".to_string();
+        item.updated_at = "2026-05-16T01:02:03Z".to_string();
+        repository
+            .apply_remote_item(&profile, item.clone(), None)
+            .await?;
+
+        let snapshot = repository
+            .list_snapshot_items(&profile, "device_a")
+            .await?;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].created_at, "2026-05-14T23:00:00+00:00");
+        assert_eq!(snapshot[0].updated_at, "2026-05-16T01:02:03+00:00");
+        Ok(())
     }
 
     #[tokio::test]
