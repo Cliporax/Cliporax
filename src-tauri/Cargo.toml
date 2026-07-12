@@ -1,6 +1,6 @@
 [package]
 name = "cliporax"
-version = "1.2.2"
+version = "1.2.3"
 description = "A modern clipboard manager with privacy-first AI"
 authors = ["Cliporax Team"]
 license = "MIT"
