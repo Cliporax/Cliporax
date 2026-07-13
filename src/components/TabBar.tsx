@@ -25,6 +25,15 @@ interface ContextMenuPosition {
   y: number;
 }
 
+interface TabPointerDrag {
+  pointerId: number;
+  tabId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  target: { tabId: number; after: boolean } | null;
+}
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), Math.max(min, max));
 
@@ -81,8 +90,9 @@ export function TabBar() {
     activeTabId,
     activePluginTabId,
     isLoading,
-    loadTabs,
+    isReordering,
     createTab,
+    reorderTabs,
     deleteTab,
     renameTab,
     setActiveTab,
@@ -104,6 +114,13 @@ export function TabBar() {
     tabId: number;
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [draggedTabId, setDraggedTabId] = useState<number | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    tabId: number;
+    after: boolean;
+  } | null>(null);
+  const pointerDragRef = useRef<TabPointerDrag | null>(null);
+  const suppressTabClickRef = useRef(false);
 
   useEffect(() => {
     if (
@@ -208,6 +225,7 @@ export function TabBar() {
 
   const handleTabClick = useCallback(
     (tabId: number) => {
+      if (suppressTabClickRef.current) return;
       closeContextMenu();
       // If a plugin tab is active, always allow switching to a native tab.
       // Without the activePluginTabId check, clicking the same native tab
@@ -361,6 +379,129 @@ export function TabBar() {
     closeContextMenu();
   }, [closeContextMenu, contextMenu, tabs, handleStartRename]);
 
+  const clearTabDrag = useCallback(() => {
+    pointerDragRef.current = null;
+    setDraggedTabId(null);
+    setDropTarget(null);
+  }, []);
+
+  const persistTabDrop = useCallback(
+    async (draggedId: number, target: { tabId: number; after: boolean }) => {
+      const reorderedIds = tabs
+        .map((tab) => tab.id)
+        .filter((id): id is number => id !== null && id !== draggedId);
+      const targetIndex = reorderedIds.indexOf(target.tabId);
+      if (targetIndex < 0) return;
+      reorderedIds.splice(
+        targetIndex + (target.after ? 1 : 0),
+        0,
+        draggedId,
+      );
+
+      try {
+        await reorderTabs(reorderedIds);
+      } catch (error) {
+        logger.error("Failed to reorder tabs:", error);
+        toast.error("Failed to save tab order. Please try again.");
+      }
+    },
+    [reorderTabs, tabs, toast],
+  );
+
+  const handleTabPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, tabId: number) => {
+      if (
+        event.button !== 0 ||
+        isReordering ||
+        renamingTabId !== null ||
+        (event.target as HTMLElement).closest("button, input")
+      ) {
+        return;
+      }
+      pointerDragRef.current = {
+        pointerId: event.pointerId,
+        tabId,
+        startX: event.clientX,
+        startY: event.clientY,
+        active: false,
+        target: null,
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      closeContextMenu();
+    },
+    [closeContextMenu, isReordering, renamingTabId],
+  );
+
+  const handleTabPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = pointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+
+      if (!drag.active) {
+        const distance = Math.hypot(
+          event.clientX - drag.startX,
+          event.clientY - drag.startY,
+        );
+        if (distance < 5) return;
+        drag.active = true;
+        setDraggedTabId(drag.tabId);
+      }
+
+      event.preventDefault();
+      const targetElement = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-native-tab-id]"),
+      ).find((element) => {
+        const bounds = element.getBoundingClientRect();
+        const withinX =
+          event.clientX >= bounds.left &&
+          event.clientX <= bounds.left + bounds.width;
+        const withinY =
+          bounds.height === 0 ||
+          (event.clientY >= bounds.top &&
+            event.clientY <= bounds.top + bounds.height);
+        return withinX && withinY;
+      });
+      const targetId = Number(targetElement?.dataset.nativeTabId);
+      if (!targetElement || !Number.isSafeInteger(targetId) || targetId === drag.tabId) {
+        drag.target = null;
+        setDropTarget(null);
+        return;
+      }
+      const bounds = targetElement.getBoundingClientRect();
+      const nextTarget = {
+        tabId: targetId,
+        after: event.clientX >= bounds.left + bounds.width / 2,
+      };
+      drag.target = nextTarget;
+      setDropTarget(nextTarget);
+    },
+    [],
+  );
+
+  const handleTabPointerEnd = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = pointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      if (drag.active) {
+        suppressTabClickRef.current = true;
+        window.setTimeout(() => {
+          suppressTabClickRef.current = false;
+        }, 0);
+      }
+      const target = drag.target;
+      const draggedId = drag.tabId;
+      clearTabDrag();
+      if (event.type === "pointerup" && drag.active && target) {
+        void persistTabDrop(draggedId, target);
+      }
+    },
+    [clearTabDrag, persistTabDrop],
+  );
+
   if (isLoading && tabs.length === 0) {
     return (
       <div className="flex items-center justify-center h-8 px-4 border-t border-gray-200 dark:border-gray-700">
@@ -386,10 +527,21 @@ export function TabBar() {
       }}
     >
       {/* Tab List */}
-      <div className="flex-1 flex items-center space-x-1 overflow-x-auto">
+      <div
+        className="flex-1 flex items-center space-x-1 overflow-x-auto"
+        role="tablist"
+        aria-label="Clipboard tabs"
+      >
         {tabs.map((tab) => (
           <div
             key={tab.id}
+            role="tab"
+            data-native-tab-id={tab.id}
+            aria-selected={tab.id === activeTabId && activePluginTabId === null}
+            onPointerDown={(event) => handleTabPointerDown(event, tab.id!)}
+            onPointerMove={handleTabPointerMove}
+            onPointerUp={handleTabPointerEnd}
+            onPointerCancel={handleTabPointerEnd}
             onClick={() => handleTabClick(tab.id!)}
             onDoubleClick={(e) => {
               e.stopPropagation();
@@ -400,8 +552,9 @@ export function TabBar() {
             }}
             onContextMenu={(e) => handleTabContextMenu(e, tab.id!)}
             className={`
-              group flex items-center px-2.5 py-1 rounded-md cursor-pointer transition-colors
+              group relative flex touch-none items-center px-2.5 py-1 rounded-md cursor-grab active:cursor-grabbing transition-colors
               text-xs font-medium select-none
+              ${draggedTabId === tab.id ? "opacity-50" : ""}
               ${
                 tab.id === activeTabId && activePluginTabId === null
                   ? "bg-indigo-500 dark:bg-indigo-600 text-white"
@@ -409,6 +562,16 @@ export function TabBar() {
               }
             `}
           >
+            {dropTarget?.tabId === tab.id ? (
+              <span
+                data-testid="tab-drop-indicator"
+                data-position={dropTarget.after ? "after" : "before"}
+                aria-hidden="true"
+                className={`pointer-events-none absolute top-0.5 bottom-0.5 z-10 w-0.5 rounded-full bg-indigo-500 shadow-[0_0_4px_rgba(99,102,241,0.8)] ${
+                  dropTarget.after ? "-right-0.5" : "-left-0.5"
+                }`}
+              />
+            ) : null}
             {renamingTabId === tab.id ? (
               <input
                 ref={renameInputRef}

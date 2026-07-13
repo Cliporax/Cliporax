@@ -32,6 +32,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tab_repository_keeps_trash_last_until_reordered() -> Result<(), sqlx::Error> {
+        let pool = setup_test_db().await;
+        let trash_id = TabRepository::get_trash_tab_id(&pool).await?;
+        let work_id = TabRepository::create(&pool, "Work").await?;
+
+        let tabs = TabRepository::get_all(&pool).await?;
+        assert_eq!(
+            tabs.iter().map(|tab| tab.name.as_str()).collect::<Vec<_>>(),
+            vec!["Clipboard", "Work", "Trash"]
+        );
+
+        let default_id = tabs[0]
+            .id
+            .ok_or_else(|| sqlx::Error::Protocol("Default tab is missing an id".to_string()))?;
+        TabRepository::reorder(&pool, &[trash_id, default_id, work_id]).await?;
+        let reordered = TabRepository::get_all(&pool).await?;
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|tab| tab.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Trash", "Clipboard", "Work"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_tab_repository_delete_records_sync_deletes() -> Result<(), sqlx::Error> {
         let pool = setup_test_db().await;
         let tab_id = TabRepository::create(&pool, "Delete Me").await?;

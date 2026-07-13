@@ -1,5 +1,33 @@
 use crate::sync::error::SyncError;
 
+async fn insert_synced_tab(name: &str, pool: &sqlx::SqlitePool) -> Result<i64, SyncError> {
+    let mut tx = pool.begin().await?;
+    let max_order: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(display_order), -1) FROM tabs")
+        .fetch_one(&mut *tx)
+        .await?;
+    let trash_order: Option<i64> =
+        sqlx::query_scalar("SELECT display_order FROM tabs WHERE is_trash = 1 LIMIT 1")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let insert_order = if trash_order == Some(max_order) {
+        sqlx::query("UPDATE tabs SET display_order = ? WHERE is_trash = 1")
+            .bind(max_order + 1)
+            .execute(&mut *tx)
+            .await?;
+        max_order
+    } else {
+        max_order + 1
+    };
+    let id = sqlx::query("INSERT INTO tabs (name, display_order) VALUES (?, ?)")
+        .bind(name)
+        .bind(insert_order)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid();
+    tx.commit().await?;
+    Ok(id)
+}
+
 pub(super) fn tab_key_for_local_id(tab_id: Option<i64>) -> String {
     tab_id
         .map(|id| format!("tab:{}", id))
@@ -52,11 +80,7 @@ pub(super) async fn local_id_for_remote_tab(
         if let Some(id) = find_tab_id_by_name(&name, pool).await? {
             return Ok(Some(id));
         }
-        let result = sqlx::query("INSERT INTO tabs (name) VALUES (?)")
-            .bind(&name)
-            .execute(pool)
-            .await?;
-        return Ok(Some(result.last_insert_rowid()));
+        return Ok(Some(insert_synced_tab(&name, pool).await?));
     }
 
     default_tab_id(pool).await
@@ -71,7 +95,8 @@ pub(super) async fn trash_tab_id(pool: &sqlx::SqlitePool) -> Result<i64, SyncErr
         return Ok(id);
     }
     Ok(sqlx::query(
-        "INSERT INTO tabs (name, is_default, auto_capture, is_trash) VALUES ('Trash', 0, 0, 1)",
+        "INSERT INTO tabs (name, is_default, auto_capture, is_trash, display_order) \
+         VALUES ('Trash', 0, 0, 1, (SELECT COALESCE(MAX(display_order), -1) + 1 FROM tabs))",
     )
     .execute(pool)
     .await?
@@ -119,11 +144,7 @@ pub(super) async fn local_id_for_order_tab(
         if let Some(id) = find_tab_id_by_name(&name, pool).await? {
             return Ok(Some(id));
         }
-        let result = sqlx::query("INSERT INTO tabs (name) VALUES (?)")
-            .bind(name)
-            .execute(pool)
-            .await?;
-        return Ok(Some(result.last_insert_rowid()));
+        return Ok(Some(insert_synced_tab(&name, pool).await?));
     }
 
     local_id_for_tab_key(tab_key, pool).await

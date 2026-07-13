@@ -59,9 +59,11 @@ pub struct TabRepository;
 impl TabRepository {
     pub async fn get_all(pool: &Db) -> Result<Vec<Tab>, Error> {
         log::debug!("[TabRepository] get_all called");
-        let result = sqlx::query_as::<_, Tab>("SELECT * FROM tabs ORDER BY created_at ASC")
-            .fetch_all(pool)
-            .await;
+        let result = sqlx::query_as::<_, Tab>(
+            "SELECT * FROM tabs ORDER BY display_order ASC, created_at ASC, id ASC",
+        )
+        .fetch_all(pool)
+        .await;
         match &result {
             Ok(tabs) => log::debug!("[TabRepository] get_all returned {} tabs", tabs.len()),
             Err(e) => log::error!("[TabRepository] get_all failed: {}", e),
@@ -108,7 +110,8 @@ impl TabRepository {
         }
 
         Ok(sqlx::query(
-            "INSERT INTO tabs (name, is_default, auto_capture, is_trash) VALUES ('Trash', 0, 0, 1)",
+            "INSERT INTO tabs (name, is_default, auto_capture, is_trash, display_order) \
+             VALUES ('Trash', 0, 0, 1, (SELECT COALESCE(MAX(display_order), -1) + 1 FROM tabs))",
         )
         .execute(pool)
         .await?
@@ -118,8 +121,26 @@ impl TabRepository {
     pub async fn create(pool: &Db, name: &str) -> Result<i64, Error> {
         log::info!("[TabRepository] create called with name: {}", name);
         let mut tx = pool.begin().await?;
-        let result = sqlx::query("INSERT INTO tabs (name) VALUES (?)")
+        let max_order: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(display_order), -1) FROM tabs")
+                .fetch_one(&mut *tx)
+                .await?;
+        let trash_order: Option<i64> =
+            sqlx::query_scalar("SELECT display_order FROM tabs WHERE is_trash = 1 LIMIT 1")
+                .fetch_optional(&mut *tx)
+                .await?;
+        let insert_order = if trash_order == Some(max_order) {
+            sqlx::query("UPDATE tabs SET display_order = ? WHERE is_trash = 1")
+                .bind(max_order + 1)
+                .execute(&mut *tx)
+                .await?;
+            max_order
+        } else {
+            max_order + 1
+        };
+        let result = sqlx::query("INSERT INTO tabs (name, display_order) VALUES (?, ?)")
             .bind(name)
+            .bind(insert_order)
             .execute(&mut *tx)
             .await?;
         let id = result.last_insert_rowid();
@@ -136,6 +157,31 @@ impl TabRepository {
         tx.commit().await?;
         log::info!("[TabRepository] create success, id: {}", id);
         Ok(id)
+    }
+
+    pub async fn reorder(pool: &Db, ordered_ids: &[i64]) -> Result<(), Error> {
+        let mut tx = pool.begin().await?;
+        let existing_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM tabs ORDER BY id ASC")
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut requested_ids = ordered_ids.to_vec();
+        requested_ids.sort_unstable();
+
+        if requested_ids != existing_ids {
+            return Err(Error::Protocol(
+                "Tab order must contain every tab exactly once".to_string(),
+            ));
+        }
+
+        for (display_order, id) in ordered_ids.iter().enumerate() {
+            sqlx::query("UPDATE tabs SET display_order = ? WHERE id = ?")
+                .bind(display_order as i64)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn delete(pool: &Db, id: i64) -> Result<(), Error> {

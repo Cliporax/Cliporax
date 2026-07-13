@@ -90,6 +90,16 @@ describe("Tauri API Tests", () => {
       expect(mockInvoke).toHaveBeenCalledWith("tabs_delete", { id: tabId });
     });
 
+    it("should reorder tabs successfully", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+
+      await tauriApi.tabs.reorder([1, 3, 2]);
+
+      expect(mockInvoke).toHaveBeenCalledWith("tabs_reorder", {
+        orderedIds: [1, 3, 2],
+      });
+    });
+
     it("should rename tab successfully", async () => {
       const tabId = 2;
       const name = "Work";

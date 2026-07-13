@@ -6,6 +6,7 @@ import { TabBar } from "../components/TabBar";
 const mockSetSearchQuery = vi.fn();
 const mockSetActiveTab = vi.fn();
 const mockSetActivePluginTab = vi.fn();
+const mockReorderTabs = vi.fn();
 const pluginIconDataUrl = "data:image/svg+xml;base64,PHN2Zy8+";
 let mockActivePluginTabId: string | null = null;
 let mockTabs: Array<Record<string, unknown>> = [];
@@ -33,8 +34,9 @@ vi.mock("../stores/tabStore", () => ({
     activeTabId: 1,
     activePluginTabId: mockActivePluginTabId,
     isLoading: false,
-    loadTabs: vi.fn(),
+    isReordering: false,
     createTab: vi.fn(),
+    reorderTabs: mockReorderTabs,
     deleteTab: vi.fn(),
     renameTab: vi.fn(),
     setActiveTab: mockSetActiveTab,
@@ -82,6 +84,7 @@ describe("TabBar", () => {
     mockTabs = [
       { id: 1, name: "Default", is_default: true, is_trash: 0 },
       { id: 2, name: "Work", is_default: false, is_trash: 0 },
+      { id: 3, name: "Trash", is_default: false, is_trash: 1 },
     ];
     mockPluginTabs = [
       {
@@ -146,6 +149,48 @@ describe("TabBar", () => {
 
     expect(screen.getByText("Default").textContent).toBe("Default");
     expect(screen.getByText("Work").textContent).toBe("Work");
+  });
+
+  it("renders Trash after all regular tabs by default", () => {
+    render(<TabBar />);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Default",
+      "Work",
+      "Trash",
+    ]);
+  });
+
+  it("persists a dragged tab order", async () => {
+    render(<TabBar />);
+    const workTab = screen.getByRole("tab", { name: /Work/ });
+    const defaultTab = screen.getByRole("tab", { name: "Default" });
+    vi.spyOn(defaultTab, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 100,
+      height: 20,
+    } as DOMRect);
+    fireEvent.pointerDown(workTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 100,
+      clientY: 10,
+    });
+    fireEvent.pointerMove(workTab, {
+      pointerId: 1,
+      clientX: 0,
+      clientY: 10,
+    });
+    fireEvent.pointerUp(workTab, {
+      pointerId: 1,
+      clientX: 0,
+      clientY: 10,
+    });
+
+    await waitFor(() => {
+      expect(mockReorderTabs).toHaveBeenCalledWith([2, 1, 3]);
+    });
   });
 
   it("renders a plugin tab's own icon when available", () => {

@@ -8,10 +8,12 @@ interface TabState {
   activeTabId: number | null;
   activePluginTabId: string | null;
   isLoading: boolean;
+  isReordering: boolean;
 
   // Actions
   loadTabs: () => Promise<void>;
   createTab: (name: string) => Promise<void>;
+  reorderTabs: (orderedIds: number[]) => Promise<void>;
   deleteTab: (id: number) => Promise<void>;
   renameTab: (id: number, name: string) => Promise<void>;
   setActiveTab: (tabId: number) => void;
@@ -25,6 +27,7 @@ export const useTabStore = create<TabState>((set, get) => ({
   activeTabId: null,
   activePluginTabId: null,
   isLoading: false,
+  isReordering: false,
 
   // Actions
   loadTabs: async () => {
@@ -52,6 +55,34 @@ export const useTabStore = create<TabState>((set, get) => ({
       await get().loadTabs();
     } catch (error) {
       console.error("[tabStore] Failed to create tab:", error);
+      throw error;
+    }
+  },
+
+  reorderTabs: async (orderedIds: number[]) => {
+    const state = get();
+    if (state.isReordering) return;
+
+    const previousTabs = state.tabs;
+    const tabsById = new Map(
+      previousTabs.flatMap((tab) => (tab.id === null ? [] : [[tab.id, tab]])),
+    );
+    if (
+      orderedIds.length !== previousTabs.length ||
+      new Set(orderedIds).size !== orderedIds.length ||
+      orderedIds.some((id) => !tabsById.has(id))
+    ) {
+      throw new Error("Tab order must contain every tab exactly once");
+    }
+
+    const reorderedTabs = orderedIds.map((id) => tabsById.get(id)!);
+    set({ tabs: reorderedTabs, isReordering: true });
+    try {
+      await tabsApi.reorder(orderedIds);
+      set({ isReordering: false });
+    } catch (error) {
+      set({ tabs: previousTabs, isReordering: false });
+      console.error("[tabStore] Failed to reorder tabs:", error);
       throw error;
     }
   },

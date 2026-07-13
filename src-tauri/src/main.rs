@@ -598,6 +598,7 @@ fn main() {
             // Tab commands
             tabs_get_all,
             tabs_create,
+            tabs_reorder,
             tabs_delete,
             tabs_rename,
             // Clipboard commands

@@ -117,6 +117,16 @@ export const tabs = {
       throw error;
     }
   },
+  reorder: async (orderedIds: number[]): Promise<void> => {
+    log("info", "API", "tabs.reorder() called");
+    try {
+      await invoke<void>("tabs_reorder", { orderedIds });
+      log("info", "API", "tabs.reorder() success");
+    } catch (error) {
+      log("error", "API", "tabs.reorder() failed", error);
+      throw error;
+    }
+  },
   delete: async (id: number): Promise<void> => {
     log("info", "API", "tabs.delete() called with id:", id);
     try {

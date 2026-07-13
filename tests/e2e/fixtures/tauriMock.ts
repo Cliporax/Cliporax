@@ -18,9 +18,19 @@ type ClipboardItem = {
 
 type TauriMockOptions = {
   items?: ClipboardItem[];
+  tabs?: MockTab[];
   failCommands?: Record<string, string>;
   settings?: Partial<typeof defaultSettings>;
   plugins?: MockPlugin[];
+};
+
+type MockTab = {
+  id: number;
+  name: string;
+  is_default: boolean;
+  auto_capture: boolean;
+  is_trash?: boolean;
+  created_at: string;
 };
 
 type MockPlugin = {
@@ -78,20 +88,12 @@ export function makeClipboardItems(count: number): ClipboardItem[] {
 }
 
 async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
-  await page.addInitScript(({ initialItems, failCommands, settings, plugins }) => {
+  await page.addInitScript(({ initialItems, initialTabs, failCommands, settings, plugins }) => {
     const listeners = new Map<string, Map<number, Function>>();
     let nextCallbackId = 1;
     let items = [...initialItems];
     let appSettings = { ...settings };
-    const tabs = [
-      {
-        id: 1,
-        name: "Clipboard",
-        is_default: true,
-        auto_capture: true,
-        created_at: "2026-01-01T00:00:00.000Z",
-      },
-    ];
+    let tabs = [...initialTabs];
 
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -104,6 +106,11 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
       if (cmd === "app_ready") return true;
       if (cmd === "dev_log_write") return null;
       if (cmd === "tabs_get_all") return clone(tabs);
+      if (cmd === "tabs_reorder") {
+        const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+        tabs = (args.orderedIds ?? []).map((id: number) => byId.get(id));
+        return null;
+      }
       if (cmd === "tabs_create") return tabs.length + 1;
       if (cmd === "tabs_delete" || cmd === "tabs_rename") return null;
 
@@ -308,6 +315,15 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
     };
   }, {
     initialItems: options.items ?? [],
+    initialTabs: options.tabs ?? [
+      {
+        id: 1,
+        name: "Clipboard",
+        is_default: true,
+        auto_capture: true,
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    ],
     failCommands: options.failCommands ?? {},
     settings: { ...defaultSettings, ...options.settings },
     plugins: options.plugins ?? [],

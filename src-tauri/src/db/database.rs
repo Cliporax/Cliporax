@@ -126,7 +126,7 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Add display_order column if it doesn't exist (migration for drag reorder)
+    // Add item display_order column if it doesn't exist (migration for drag reorder)
     let add_order_result = sqlx::query(
         r#"
         ALTER TABLE clipboard_items ADD COLUMN display_order INTEGER DEFAULT 0
@@ -141,6 +141,14 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
             e
         ),
     }
+
+    // Tab order is persisted independently from creation time. The initial
+    // migration is normalized after all built-in tabs have been ensured below.
+    let added_tab_order =
+        sqlx::query("ALTER TABLE tabs ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await
+            .is_ok();
 
     // Trash keeps deleted clipboard items recoverable without removing their
     // durable sync identity. These columns are additive for existing databases.
@@ -185,8 +193,9 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
     }
 
     sqlx::query(
-        "INSERT INTO tabs (name, is_default, auto_capture, is_trash) \
-         SELECT 'Trash', 0, 0, 1 \
+        "INSERT INTO tabs (name, is_default, auto_capture, is_trash, display_order) \
+         SELECT 'Trash', 0, 0, 1, \
+                (SELECT COALESCE(MAX(display_order), -1) + 1 FROM tabs) \
          WHERE NOT EXISTS (SELECT 1 FROM tabs WHERE is_trash = 1)",
     )
     .execute(pool)
@@ -286,6 +295,23 @@ async fn run_migrations(pool: &Db) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     log::info!("[Database] Default tab ensured (duplicates cleaned)");
+
+    if added_tab_order {
+        let mut tx = pool.begin().await?;
+        let ordered_ids: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM tabs ORDER BY is_trash ASC, created_at ASC, id ASC")
+                .fetch_all(&mut *tx)
+                .await?;
+        for (display_order, id) in ordered_ids.iter().enumerate() {
+            sqlx::query("UPDATE tabs SET display_order = ? WHERE id = ?")
+                .bind(display_order as i64)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        log::info!("[Database] Initialized tab display order with Trash last");
+    }
 
     // Log current state
     let tabs: Result<Vec<(i64, String, i32)>, _> =
@@ -743,6 +769,23 @@ async fn create_file_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
 #[cfg(test)]
 mod file_sync_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn migrations_are_idempotent_with_existing_trash() -> Result<(), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await?;
+
+        run_migrations(&pool).await?;
+        run_migrations(&pool).await?;
+
+        let trash_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tabs WHERE is_trash = 1")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(trash_count, 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn file_sync_sequences_are_scoped_per_profile_and_device() -> Result<(), sqlx::Error> {

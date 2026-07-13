@@ -3,6 +3,7 @@
 use crate::db::{Db, Tab, TabRepository};
 
 const MAX_TAB_NAME_LEN: usize = 64;
+const MAX_TAB_COUNT: usize = 4096;
 
 fn validate_tab_id(id: i64) -> Result<(), String> {
     if id <= 0 {
@@ -23,6 +24,25 @@ fn validate_tab_name(name: &str) -> Result<&str, String> {
         ));
     }
     Ok(trimmed_name)
+}
+
+fn validate_tab_order(ordered_ids: &[i64]) -> Result<(), String> {
+    if ordered_ids.is_empty() {
+        return Err("Tab order cannot be empty".to_string());
+    }
+    if ordered_ids.len() > MAX_TAB_COUNT {
+        return Err(format!("Tab order cannot exceed {} entries", MAX_TAB_COUNT));
+    }
+    if ordered_ids.iter().any(|id| *id <= 0) {
+        return Err("Tab ids must be positive".to_string());
+    }
+    let mut unique_ids = ordered_ids.to_vec();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+    if unique_ids.len() != ordered_ids.len() {
+        return Err("Tab order cannot contain duplicate ids".to_string());
+    }
+    Ok(())
 }
 
 /// Get all tabs
@@ -55,6 +75,31 @@ pub async fn tabs_create(db: tauri::State<'_, Db>, name: String) -> Result<i64, 
             log::error!("[Command] tabs_create failed: {}", e);
             Err(e.to_string())
         }
+    }
+}
+
+/// Persist the complete display order for native tabs.
+#[tauri::command]
+pub async fn tabs_reorder(db: tauri::State<'_, Db>, ordered_ids: Vec<i64>) -> Result<(), String> {
+    validate_tab_order(&ordered_ids)?;
+    TabRepository::reorder(&db, &ordered_ids)
+        .await
+        .map_err(|error| {
+            log::error!("[Command] tabs_reorder failed: {}", error);
+            error.to_string()
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_tab_order;
+
+    #[test]
+    fn tab_order_rejects_invalid_id_lists() {
+        assert!(validate_tab_order(&[]).is_err());
+        assert!(validate_tab_order(&[1, 1]).is_err());
+        assert!(validate_tab_order(&[1, 0]).is_err());
+        assert!(validate_tab_order(&[1, 2, 3]).is_ok());
     }
 }
 
