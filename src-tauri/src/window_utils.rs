@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -285,22 +286,57 @@ pub fn restore_focused_window() -> Result<(), Box<dyn std::error::Error + Send +
 
             #[cfg(target_os = "macos")]
             {
+                use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+
                 log::info!(
                     "[WindowUtils] Restoring focus to application (macOS): {} (pid {})",
                     info.app_name,
                     info.process_id
                 );
-                let output = Command::new("open").args(["-a", &info.app_name]).output()?;
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    log::error!(
-                        "[WindowUtils] Failed to restore macOS application focus: {}",
-                        stderr.trim()
-                    );
-                    return Err(
-                        format!("macOS application activation failed: {}", stderr.trim()).into(),
-                    );
+                let process_id = i32::try_from(info.process_id)
+                    .map_err(|_| format!("Invalid macOS process id: {}", info.process_id))?;
+                let missing_application_error = format!(
+                    "Previously focused macOS application is no longer running: {} (pid {})",
+                    info.app_name, info.process_id
+                );
+                let application =
+                    NSRunningApplication::runningApplicationWithProcessIdentifier(process_id)
+                        .ok_or(missing_application_error)?;
+
+                if application.isHidden() && !application.unhide() {
+                    return Err(format!(
+                        "Failed to unhide macOS application: {} (pid {})",
+                        info.app_name, info.process_id
+                    )
+                    .into());
+                }
+
+                // Target the exact process that owned the insertion point. `open -a` only
+                // addresses an application by name and returns before activation completes,
+                // so Cmd+V can otherwise be delivered while Cliporax still owns focus.
+                #[allow(deprecated)]
+                let activation_options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
+                if !application.activateWithOptions(activation_options) {
+                    return Err(format!(
+                        "Failed to request macOS application activation: {} (pid {})",
+                        info.app_name, info.process_id
+                    )
+                    .into());
+                }
+
+                let activation_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(750);
+                while !application.isActive() && std::time::Instant::now() < activation_deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                if !application.isActive() {
+                    return Err(format!(
+                        "Timed out waiting for macOS application focus: {} (pid {})",
+                        info.app_name, info.process_id
+                    )
+                    .into());
                 }
                 log::info!("[WindowUtils] Focus restored successfully (macOS)");
             }

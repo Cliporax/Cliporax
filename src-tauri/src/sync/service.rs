@@ -101,10 +101,13 @@ impl SyncService {
             updated_at: None,
         };
 
-        let publishes_to_new_root = existing.as_ref().is_none_or(|profile| {
-            profile.provider != sync_profile.provider
-                || profile.remote_root != sync_profile.remote_root
-        });
+        let publishes_to_new_root = match existing.as_ref() {
+            Some(profile) => {
+                profile.provider != sync_profile.provider
+                    || profile.remote_root != sync_profile.remote_root
+            }
+            None => true,
+        };
         self.repository.upsert_profile(sync_profile.clone()).await?;
         if publishes_to_new_root {
             self.repository

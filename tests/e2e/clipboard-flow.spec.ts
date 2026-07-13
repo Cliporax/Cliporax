@@ -31,6 +31,38 @@ test("opens the editor for text items", async ({ page, mockTauri }) => {
   );
 });
 
+test("double-clicks an item to copy and paste it into the previous app", async ({
+  page,
+  mockTauri,
+}) => {
+  await mockTauri({ items: makeClipboardItems(20) });
+  await page.goto("/");
+
+  const card = page.getByTestId("clipboard-card-1");
+  await expect(card).toBeVisible();
+  await card.dblclick();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__cliporaxTauriCalls
+          .map((call: { cmd: string }) => call.cmd)
+          .filter((command: string) =>
+            [
+              "clipboard_copy",
+              "clipboard_move_to_top",
+              "window_hide_and_paste",
+            ].includes(command),
+          ),
+      ),
+    )
+    .toEqual([
+      "clipboard_copy",
+      "clipboard_move_to_top",
+      "window_hide_and_paste",
+    ]);
+});
+
 test("deletes a selected clipboard item", async ({ page, mockTauri }) => {
   await mockTauri({ items: makeClipboardItems(20) });
   await page.goto("/");

@@ -105,6 +105,7 @@ fn auto_hide_enabled(app_handle: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "linux")]
 fn auxiliary_window_has_focus(app_handle: &tauri::AppHandle) -> bool {
     app_handle.webview_windows().iter().any(|(label, window)| {
         (label.starts_with("preview-") || label == "settings")

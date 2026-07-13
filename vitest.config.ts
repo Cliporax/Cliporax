@@ -1,6 +1,14 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
+const nodeMajorVersion = Number.parseInt(process.versions.node.split('.')[0], 10);
+if (nodeMajorVersion >= 25) {
+  const nodeOptions = process.env.NODE_OPTIONS ?? '';
+  if (!nodeOptions.includes('--no-experimental-webstorage')) {
+    process.env.NODE_OPTIONS = `${nodeOptions} --no-experimental-webstorage`.trim();
+  }
+}
+
 export default defineConfig({
   plugins: [react()],
   test: {

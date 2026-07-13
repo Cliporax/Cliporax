@@ -136,49 +136,6 @@ fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[cfg(target_os = "linux")]
-    use super::{file_uri_from_path, linux_file_clipboard_payload};
-    use super::{looks_like_file_uri_list, text_matches_exclusion_pattern};
-    #[cfg(target_os = "linux")]
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn recognizes_only_pure_file_uri_text() {
-        assert!(looks_like_file_uri_list("file:///tmp/one\nfile:///tmp/two"));
-        assert!(!looks_like_file_uri_list(
-            "open file:///tmp/one in the file manager"
-        ));
-        assert!(!looks_like_file_uri_list(""));
-    }
-
-    #[test]
-    fn filters_text_matching_exclusion_patterns() {
-        let patterns = vec![r"(?i)^password:".to_string(), r"(?s)^.{0,1}$".to_string()];
-        assert!(text_matches_exclusion_pattern(
-            "Password: secret",
-            &patterns
-        ));
-        assert!(text_matches_exclusion_pattern("中", &patterns));
-        assert!(!text_matches_exclusion_pattern("clipboard text", &patterns));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn encodes_linux_file_clipboard_targets() {
-        let path = PathBuf::from("/tmp/file with # and 中文.txt");
-        let uri = "file:///tmp/file%20with%20%23%20and%20%E4%B8%AD%E6%96%87.txt";
-        assert_eq!(file_uri_from_path(Path::new(&path)), uri);
-
-        let payload = linux_file_clipboard_payload(&[path.clone()]);
-        assert_eq!(payload.uri_list, format!("{uri}\r\n"));
-        assert_eq!(payload.gnome_copy, format!("copy\n{uri}"));
-        assert_eq!(payload.kde_copy, "0");
-        assert_eq!(payload.plain_text, path.to_string_lossy());
-    }
-}
-
 fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<(usize, usize, Vec<u8>)> {
     #[cfg(target_os = "windows")]
     {
@@ -1650,5 +1607,48 @@ impl ClipboardMonitor {
                 Err(Box::new(e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    use super::{file_uri_from_path, linux_file_clipboard_payload};
+    use super::{looks_like_file_uri_list, text_matches_exclusion_pattern};
+    #[cfg(target_os = "linux")]
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn recognizes_only_pure_file_uri_text() {
+        assert!(looks_like_file_uri_list("file:///tmp/one\nfile:///tmp/two"));
+        assert!(!looks_like_file_uri_list(
+            "open file:///tmp/one in the file manager"
+        ));
+        assert!(!looks_like_file_uri_list(""));
+    }
+
+    #[test]
+    fn filters_text_matching_exclusion_patterns() {
+        let patterns = vec![r"(?i)^password:".to_string(), r"(?s)^.{0,1}$".to_string()];
+        assert!(text_matches_exclusion_pattern(
+            "Password: secret",
+            &patterns
+        ));
+        assert!(text_matches_exclusion_pattern("中", &patterns));
+        assert!(!text_matches_exclusion_pattern("clipboard text", &patterns));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn encodes_linux_file_clipboard_targets() {
+        let path = PathBuf::from("/tmp/file with # and 中文.txt");
+        let uri = "file:///tmp/file%20with%20%23%20and%20%E4%B8%AD%E6%96%87.txt";
+        assert_eq!(file_uri_from_path(Path::new(&path)), uri);
+
+        let payload = linux_file_clipboard_payload(&[path.clone()]);
+        assert_eq!(payload.uri_list, format!("{uri}\r\n"));
+        assert_eq!(payload.gnome_copy, format!("copy\n{uri}"));
+        assert_eq!(payload.kde_copy, "0");
+        assert_eq!(payload.plain_text, path.to_string_lossy());
     }
 }
