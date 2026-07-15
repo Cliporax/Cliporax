@@ -1,0 +1,179 @@
+name: Nightly
+
+on:
+  # 23:55 Asia/Shanghai (UTC+8). GitHub Actions cron uses UTC.
+  schedule:
+    - cron: "55 15 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build a nightly even when no changes are detected"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: nightly-${{ github.repository }}-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Check nightly eligibility
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.changes.outputs.should_build }}
+      tag: ${{ steps.changes.outputs.tag }}
+    steps:
+      - name: Check changes made today
+        id: changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date();
+            const shanghai = new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(now);
+            const part = (type) => shanghai.find((item) => item.type === type).value;
+            const date = `${part('year')}-${part('month')}-${part('day')}`;
+            // Asia/Shanghai is UTC+8 and does not observe daylight saving time.
+            const startOfDay = new Date(`${date}T00:00:00+08:00`).toISOString();
+
+            const commits = await github.paginate(github.rest.repos.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: 'master',
+              since: startOfDay,
+              per_page: 100,
+            });
+
+            const pullRequests = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: 'master',
+              state: 'all',
+              sort: 'updated',
+              direction: 'desc',
+              per_page: 100,
+            });
+            const hasPullRequestChange = pullRequests.some((pullRequest) =>
+              [pullRequest.created_at, pullRequest.updated_at, pullRequest.merged_at]
+                .filter(Boolean)
+                .some((timestamp) => new Date(timestamp) >= new Date(startOfDay)),
+            );
+
+            const forced = context.eventName === 'workflow_dispatch' && core.getBooleanInput('force');
+            const shouldBuild = forced || commits.length > 0 || hasPullRequestChange;
+
+            core.info(`Checking changes since ${startOfDay}: ${commits.length} master commit(s), PR changed: ${hasPullRequestChange}.`);
+            core.setOutput('should_build', shouldBuild);
+            core.setOutput('tag', `nightly-${date.replaceAll('-', '')}`);
+
+  build:
+    name: ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            platform: macos-15
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macOS Intel
+            platform: macos-15-intel
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+          - name: Linux x64
+            platform: ubuntu-22.04
+            target: ""
+            args: --bundles deb rpm appimage
+          - name: Windows x64
+            platform: windows-latest
+            target: ""
+            args: --bundles nsis
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload nightly bundles
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLIPORAX_BUILD_TARGET: ${{ matrix.target }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tauriScript: npm run tauri
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: Cliporax nightly ${{ needs.prepare.outputs.tag }}
+          releaseBody: Automated nightly build of the current master branch.
+          releaseDraft: false
+          prerelease: true
+          generateReleaseNotes: false
+          releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
+          args: ${{ matrix.args }}
+
+      - name: Package Windows portable app
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $portableDir = "src-tauri/target/release/portable"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item "src-tauri/target/release/cliporax.exe" "$portableDir/Cliporax.exe"
+          Copy-Item "src-tauri/bin/cliporax-cli-x86_64-pc-windows-msvc.exe" "$portableDir/cliporax-cli-x86_64-pc-windows-msvc.exe"
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "src-tauri/target/release/Cliporax_${{ needs.prepare.outputs.tag }}_windows_x64_portable.zip" -Force
+
+      - name: Upload Windows portable app
+        if: matrix.platform == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          files: src-tauri/target/release/Cliporax_${{ needs.prepare.outputs.tag }}_windows_x64_portable.zip
