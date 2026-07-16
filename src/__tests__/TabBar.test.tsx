@@ -2,6 +2,7 @@ import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TabBar } from "../components/TabBar";
+import { BottomNavigation } from "../components/BottomNavigation";
 
 const mockSetSearchQuery = vi.fn();
 const mockSetActiveTab = vi.fn();
@@ -132,8 +133,46 @@ describe("TabBar", () => {
     });
   });
 
-  it("switches to a plugin content tab without changing the clipboard tab", () => {
-    render(<TabBar />);
+  it("can collapse the clipboard collections sidebar", () => {
+    const onCollapse = vi.fn();
+    render(<TabBar onCollapse={onCollapse} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide clipboard collections" }));
+
+    expect(onCollapse).toHaveBeenCalledOnce();
+  });
+
+  it("resizes the clipboard collections sidebar within its limits", () => {
+    const onWidthChange = vi.fn();
+    render(<TabBar width={176} onWidthChange={onWidthChange} />);
+
+    fireEvent.pointerDown(screen.getByTestId("clipboard-sidebar-resize-handle"), {
+      button: 0,
+      clientX: 176,
+    });
+    fireEvent.pointerMove(window, { clientX: 260 });
+    fireEvent.pointerUp(window);
+
+    expect(onWidthChange).toHaveBeenCalledWith(260);
+  });
+
+  it("hides the sidebar when it is resized below the collapsed width", () => {
+    const onCollapse = vi.fn();
+    const onWidthChange = vi.fn();
+    render(<TabBar width={80} onCollapse={onCollapse} onWidthChange={onWidthChange} />);
+
+    fireEvent.pointerDown(screen.getByTestId("clipboard-sidebar-resize-handle"), {
+      button: 0,
+      clientX: 80,
+    });
+    fireEvent.pointerMove(window, { clientX: 50 });
+
+    expect(onCollapse).toHaveBeenCalledOnce();
+    expect(onWidthChange).not.toHaveBeenCalled();
+  });
+
+  it("switches to a plugin content tab from the bottom navigation", () => {
+    render(<BottomNavigation />);
 
     fireEvent.click(screen.getByRole("button", { name: "File Sync" }));
 
@@ -141,6 +180,16 @@ describe("TabBar", () => {
       "plugin:com.cliporax.file-sync:FileSyncView",
     );
     expect(mockSetActiveTab).not.toHaveBeenCalled();
+    expect(mockSetSearchQuery).toHaveBeenCalledWith("");
+  });
+
+  it("returns to the clipboard page from the bottom navigation", () => {
+    mockActivePluginTabId = "plugin:com.cliporax.file-sync:FileSyncView";
+    render(<BottomNavigation />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clipboard" }));
+
+    expect(mockSetActivePluginTab).toHaveBeenCalledWith(null);
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
   });
 
@@ -180,12 +229,12 @@ describe("TabBar", () => {
     fireEvent.pointerMove(workTab, {
       pointerId: 1,
       clientX: 0,
-      clientY: 10,
+      clientY: 0,
     });
     fireEvent.pointerUp(workTab, {
       pointerId: 1,
       clientX: 0,
-      clientY: 10,
+      clientY: 0,
     });
 
     await waitFor(() => {
@@ -193,7 +242,7 @@ describe("TabBar", () => {
     });
   });
 
-  it("renders a plugin tab's own icon when available", () => {
+  it("renders a plugin tab's own icon in the bottom navigation", () => {
     mockPluginTabs = [
       {
         id: "plugin:com.cliporax.file-sync:FileSyncView",
@@ -204,7 +253,7 @@ describe("TabBar", () => {
         priority: 20,
       },
     ];
-    render(<TabBar />);
+    render(<BottomNavigation />);
 
     expect(
       screen
@@ -215,7 +264,7 @@ describe("TabBar", () => {
   });
 
   it("opens File Sync when a file item requests it", () => {
-    render(<TabBar />);
+    render(<BottomNavigation />);
 
     window.dispatchEvent(new CustomEvent("cliporax:open-file-sync"));
 
@@ -230,7 +279,7 @@ describe("TabBar", () => {
       "plugin:com.cliporax.file-sync:FileSyncView";
     mockPluginTabs = [];
 
-    render(<TabBar />);
+    render(<BottomNavigation />);
 
     await waitFor(() => {
       expect(mockSetActivePluginTab).toHaveBeenCalledWith(null);

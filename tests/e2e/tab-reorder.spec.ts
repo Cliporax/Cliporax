@@ -44,10 +44,10 @@ test("shows an insertion cursor and persists dragged tab order", async ({
 
   await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
   await page.mouse.down();
-  await page.mouse.move(source.x + source.width / 2 + 8, source.y + source.height / 2, {
+  await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2 + 8, {
     steps: 3,
   });
-  await page.mouse.move(target.x + 2, target.y + target.height / 2, { steps: 8 });
+  await page.mouse.move(target.x + target.width / 2, target.y + 2, { steps: 8 });
 
   const indicator = page.getByTestId("tab-drop-indicator");
   await expect(indicator).toBeVisible();

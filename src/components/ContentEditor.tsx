@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { X, Check, RotateCcw } from "lucide-react";
+import { X, Check, Redo2, RotateCcw, Undo2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { createLogger } from "../utils/logger";
 import { clipboard } from "../lib/tauri-api";
@@ -8,6 +8,7 @@ import { useTheme } from "../contexts/ThemeContext";
 const logger = createLogger("ContentEditor");
 const EDITOR_LAYOUT_SCAN_LIMIT = 100000;
 const END_SELECTION_LIMIT = 200000;
+const HISTORY_LIMIT = 100;
 
 interface ContentEditorProps {
   id: number;
@@ -30,7 +31,11 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
   const [editedContent, setEditedContent] = useState(content);
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const undoStackRef = useRef<string[]>([]);
+  const redoStackRef = useRef<string[]>([]);
   const contentLines = useMemo(() => {
     let lineCount = 0;
     let currentLineLength = 0;
@@ -70,6 +75,46 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
     }
   }, []);
 
+  const updateHistoryAvailability = () => {
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(redoStackRef.current.length > 0);
+  };
+
+  const updateContent = (nextContent: string) => {
+    if (nextContent === editedContent) return;
+    undoStackRef.current = [
+      ...undoStackRef.current.slice(-(HISTORY_LIMIT - 1)),
+      editedContent,
+    ];
+    redoStackRef.current = [];
+    setEditedContent(nextContent);
+    updateHistoryAvailability();
+  };
+
+  const handleUndo = () => {
+    const previousContent = undoStackRef.current.pop();
+    if (previousContent === undefined) return;
+
+    redoStackRef.current = [
+      ...redoStackRef.current.slice(-(HISTORY_LIMIT - 1)),
+      editedContent,
+    ];
+    setEditedContent(previousContent);
+    updateHistoryAvailability();
+  };
+
+  const handleRedo = () => {
+    const nextContent = redoStackRef.current.pop();
+    if (nextContent === undefined) return;
+
+    undoStackRef.current = [
+      ...undoStackRef.current.slice(-(HISTORY_LIMIT - 1)),
+      editedContent,
+    ];
+    setEditedContent(nextContent);
+    updateHistoryAvailability();
+  };
+
   // Handle keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -88,11 +133,25 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
           handleSave();
         }
       }
+      if (e.ctrlKey || e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === "z") {
+          e.preventDefault();
+          if (e.shiftKey) {
+            handleRedo();
+          } else {
+            handleUndo();
+          }
+        } else if (key === "y") {
+          e.preventDefault();
+          handleRedo();
+        }
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [hasChanges, isSaving, editedContent]);
+  }, [hasChanges, isSaving, editedContent, canUndo, canRedo]);
 
   const handleSave = async () => {
     if (!hasChanges || isSaving) return;
@@ -112,7 +171,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
   };
 
   const handleReset = () => {
-    setEditedContent(content);
+    updateContent(content);
   };
 
   // Don't allow editing for images
@@ -187,11 +246,6 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
       style={{
         backgroundColor: isDark ? "rgba(0,0,0,0.4)" : "rgba(0,0,0,0.2)",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          onClose();
-        }
-      }}
     >
       <div
         className="w-[640px] max-w-[calc(100vw-48px)] max-h-[calc(100vh-48px)] rounded-2xl shadow-2xl flex flex-col overflow-hidden backdrop-blur-xl transition-colors duration-300"
@@ -248,7 +302,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
             data-testid="content-editor-textarea"
             ref={textareaRef}
             value={editedContent}
-            onChange={(e) => setEditedContent(e.target.value)}
+            onChange={(e) => updateContent(e.target.value)}
             className="w-full p-2.5 rounded-xl text-sm resize-none outline-none transition-all font-mono"
             style={{
               backgroundColor: isDark
@@ -273,6 +327,26 @@ const ContentEditor: React.FC<ContentEditorProps> = ({
           }}
         >
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={!canUndo}
+              className="flex size-7 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-400 dark:hover:bg-white/10"
+              aria-label="Undo"
+              title="Undo (Ctrl/Cmd+Z)"
+            >
+              <Undo2 size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={handleRedo}
+              disabled={!canRedo}
+              className="flex size-7 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-400 dark:hover:bg-white/10"
+              aria-label="Redo"
+              title="Redo (Ctrl/Cmd+Shift+Z)"
+            >
+              <Redo2 size={14} aria-hidden="true" />
+            </button>
             {hasChanges && (
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded-lg"

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Search } from "lucide-react";
+import { PanelLeftOpen, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import ClipboardList, { ClipboardListRef } from "./components/ClipboardList";
@@ -25,7 +25,8 @@ import { createLogger } from "./utils/logger";
 import { events, window as windowApi } from "./lib/tauri-api";
 import { useUIStore } from "./stores/uiStore";
 import { useTabStore } from "./stores/tabStore";
-import { TabBar } from "./components/TabBar";
+import { ClipboardTabSidebar } from "./components/TabBar";
+import { BottomNavigation } from "./components/BottomNavigation";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { installLongTaskObserver, perfLog, perfMeasure } from "./utils/perf";
@@ -105,6 +106,8 @@ function App() {
   );
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [listRefreshTrigger, setListRefreshTrigger] = useState(0);
+  const [clipboardSidebarWidth, setClipboardSidebarWidth] = useState(176);
+  const [isClipboardSidebarCollapsed, setClipboardSidebarCollapsed] = useState(false);
   const clipboardListRef = useRef<ClipboardListRef>(null);
 
   const isDark = resolvedTheme === "dark";
@@ -479,42 +482,65 @@ function App() {
           </div>
         )}
 
-        <main className="flex-1 overflow-hidden relative">
-          <PluginSidebarExtensions theme={isDark ? "dark" : "light"} />
+        <main className="relative flex flex-1 overflow-hidden">
           {activePluginTabId ? (
             <PluginContentTab
               tabId={activePluginTabId}
               theme={isDark ? "dark" : "light"}
             />
           ) : (
-            <ClipboardList
-              ref={clipboardListRef}
-              tabId={activeTabId}
-              searchQuery={searchQuery}
-              searchMode={searchMode}
-              searchScope={searchScope}
-              lineHeight={generalSettings.lineHeight}
-              displayOptions={{
-                showItemIndex: generalSettings.showItemIndex,
-                showLineCount: generalSettings.showLineCount,
-                showSourceHost: generalSettings.showSourceHost,
-                showActionButtons: generalSettings.showActionButtons,
-                showEditButton: generalSettings.showEditButton,
-                showPinButton: generalSettings.showPinButton,
-                showPluginActionButtons: generalSettings.showPluginActionButtons,
-                pluginActionVisibility: generalSettings.pluginActionVisibility,
-              }}
-              refreshTrigger={listRefreshTrigger}
-              onEdit={(item) => {
-                logger.info("Opening editor for item:", item.id);
-                openEditor(item);
-              }}
-              onMultiSelectChange={handleMultiSelectChange}
-            />
+            <>
+              {isClipboardSidebarCollapsed ? (
+                <div className="flex w-9 shrink-0 justify-center border-r border-gray-200 bg-white pt-1 dark:border-gray-700 dark:bg-gray-800">
+                  <button
+                    type="button"
+                    onClick={() => setClipboardSidebarCollapsed(false)}
+                    className="flex size-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                    aria-label="Show clipboard collections"
+                    title="Show clipboard collections"
+                  >
+                    <PanelLeftOpen size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              ) : (
+                <ClipboardTabSidebar
+                  width={clipboardSidebarWidth}
+                  onWidthChange={setClipboardSidebarWidth}
+                  onCollapse={() => setClipboardSidebarCollapsed(true)}
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <PluginSidebarExtensions theme={isDark ? "dark" : "light"} />
+                <ClipboardList
+                  ref={clipboardListRef}
+                  tabId={activeTabId}
+                  searchQuery={searchQuery}
+                  searchMode={searchMode}
+                  searchScope={searchScope}
+                  lineHeight={generalSettings.lineHeight}
+                  displayOptions={{
+                    showItemIndex: generalSettings.showItemIndex,
+                    showLineCount: generalSettings.showLineCount,
+                    showSourceHost: generalSettings.showSourceHost,
+                    showActionButtons: generalSettings.showActionButtons,
+                    showEditButton: generalSettings.showEditButton,
+                    showPinButton: generalSettings.showPinButton,
+                    showPluginActionButtons: generalSettings.showPluginActionButtons,
+                    pluginActionVisibility: generalSettings.pluginActionVisibility,
+                  }}
+                  refreshTrigger={listRefreshTrigger}
+                  onEdit={(item) => {
+                    logger.info("Opening editor for item:", item.id);
+                    openEditor(item);
+                  }}
+                  onMultiSelectChange={handleMultiSelectChange}
+                />
+              </div>
+            </>
           )}
         </main>
 
-        <TabBar />
+        <BottomNavigation />
 
         {isSettingsOpen && (
           <PluginProvider>

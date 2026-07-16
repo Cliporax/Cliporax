@@ -5,20 +5,19 @@ import React, {
   useEffect,
   useLayoutEffect,
 } from "react";
-import { Plus, X, Edit2, ListTodo, Puzzle, Trash2 } from "lucide-react";
+import { PanelLeftClose, Plus, X, Edit2, Trash2 } from "lucide-react";
 import { useTabStore } from "../stores/tabStore";
 import { useUIStore } from "../stores/uiStore";
 import { createLogger } from "../utils/logger";
 import { useToast } from "./Toast";
 import { useConfirm } from "./ConfirmDialog";
-import { useContentTabExtensions } from "../plugin/extensions";
 
 const logger = createLogger("TabBar");
 const CONTEXT_MENU_PADDING = 8;
 const CONTEXT_MENU_MIN_WIDTH = 128;
 const CONTEXT_MENU_FALLBACK_HEIGHT = 36;
-const OPEN_FILE_SYNC_EVENT = "cliporax:open-file-sync";
-const FILE_SYNC_TAB_ID = "plugin:com.cliporax.file-sync:FileSyncView";
+const SIDEBAR_HIDE_THRESHOLD = 52;
+const MAX_SIDEBAR_WIDTH = 384;
 
 interface ContextMenuPosition {
   x: number;
@@ -64,31 +63,20 @@ const clampContextMenuPosition = (
   };
 };
 
-function renderPluginTabIcon(icon: string | undefined, iconDataUrl?: string) {
-  if (iconDataUrl) {
-    return (
-      <img
-        src={iconDataUrl}
-        alt=""
-        aria-hidden="true"
-        className="mr-1.5 h-3.5 w-3.5 shrink-0 object-contain"
-      />
-    );
-  }
-  if (icon === "list-todo") {
-    return <ListTodo size={14} className="mr-1.5 shrink-0" />;
-  }
-  if (icon && icon.length <= 2) {
-    return <span className="mr-1.5 shrink-0 text-xs leading-none">{icon}</span>;
-  }
-  return <Puzzle size={14} className="mr-1.5 shrink-0" />;
+interface ClipboardTabSidebarProps {
+  width: number;
+  onWidthChange: (width: number) => void;
+  onCollapse: () => void;
 }
 
-export function TabBar() {
+export function ClipboardTabSidebar({
+  width,
+  onWidthChange,
+  onCollapse,
+}: ClipboardTabSidebarProps) {
   const {
     tabs,
     activeTabId,
-    activePluginTabId,
     isLoading,
     isReordering,
     createTab,
@@ -96,9 +84,7 @@ export function TabBar() {
     deleteTab,
     renameTab,
     setActiveTab,
-    setActivePluginTab,
   } = useTabStore();
-  const pluginTabs = useContentTabExtensions();
   const { setSearchQuery } = useUIStore();
   const toast = useToast();
   const { confirm: askConfirm } = useConfirm();
@@ -121,31 +107,48 @@ export function TabBar() {
   } | null>(null);
   const pointerDragRef = useRef<TabPointerDrag | null>(null);
   const suppressTabClickRef = useRef(false);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    if (
-      activePluginTabId &&
-      !pluginTabs.some((tab) => tab.id === activePluginTabId)
-    ) {
-      setActivePluginTab(null);
-    }
-  }, [activePluginTabId, pluginTabs, setActivePluginTab]);
+  useEffect(() => () => resizeCleanupRef.current?.(), []);
+
+  const handleResizeStart = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      const startWidth = width;
+      const maximumWidth = Math.max(
+        SIDEBAR_HIDE_THRESHOLD,
+        Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 240),
+      );
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const nextWidth = startWidth + moveEvent.clientX - startX;
+        if (nextWidth <= SIDEBAR_HIDE_THRESHOLD) {
+          cleanup();
+          onCollapse();
+          return;
+        }
+        onWidthChange(clamp(nextWidth, SIDEBAR_HIDE_THRESHOLD, maximumWidth));
+      };
+      const cleanup = () => {
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", cleanup);
+        resizeCleanupRef.current = null;
+      };
+
+      resizeCleanupRef.current?.();
+      resizeCleanupRef.current = cleanup;
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", cleanup, { once: true });
+    },
+    [onWidthChange, width],
+  );
 
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
   }, []);
-
-  useEffect(() => {
-    const openFileSync = () => {
-      if (!pluginTabs.some((tab) => tab.id === FILE_SYNC_TAB_ID)) return;
-      closeContextMenu();
-      setActivePluginTab(FILE_SYNC_TAB_ID);
-      setSearchQuery("");
-    };
-
-    window.addEventListener(OPEN_FILE_SYNC_EVENT, openFileSync);
-    return () => window.removeEventListener(OPEN_FILE_SYNC_EVENT, openFileSync);
-  }, [closeContextMenu, pluginTabs, setActivePluginTab, setSearchQuery]);
 
   const isInsideContextMenu = useCallback((target: EventTarget | null) => {
     return Boolean(
@@ -227,17 +230,13 @@ export function TabBar() {
     (tabId: number) => {
       if (suppressTabClickRef.current) return;
       closeContextMenu();
-      // If a plugin tab is active, always allow switching to a native tab.
-      // Without the activePluginTabId check, clicking the same native tab
-      // that was active before the plugin tab was selected would return
-      // early (activeTabId hasn't been cleared), leaving the plugin tab active.
-      if (tabId === activeTabId && !activePluginTabId) return;
+      if (tabId === activeTabId) return;
 
       setActiveTab(tabId);
       setSearchQuery(""); // Clear search on tab switch
       logger.info("Tab switched to:", tabId);
     },
-    [activeTabId, activePluginTabId, closeContextMenu, setActiveTab, setSearchQuery],
+    [activeTabId, closeContextMenu, setActiveTab, setSearchQuery],
   );
 
   const handleCreateTab = useCallback(async () => {
@@ -470,7 +469,7 @@ export function TabBar() {
       const bounds = targetElement.getBoundingClientRect();
       const nextTarget = {
         tabId: targetId,
-        after: event.clientX >= bounds.left + bounds.width / 2,
+        after: event.clientY >= bounds.top + bounds.height / 2,
       };
       drag.target = nextTarget;
       setDropTarget(nextTarget);
@@ -504,7 +503,10 @@ export function TabBar() {
 
   if (isLoading && tabs.length === 0) {
     return (
-      <div className="flex items-center justify-center h-8 px-4 border-t border-gray-200 dark:border-gray-700">
+      <div
+        className="flex h-full shrink-0 items-center justify-center border-r border-gray-200 dark:border-gray-700"
+        style={{ width }}
+      >
         <div className="text-xs text-gray-500 dark:text-gray-400">
           Loading tabs...
         </div>
@@ -514,7 +516,9 @@ export function TabBar() {
 
   return (
     <div
-      className="flex items-center h-8 px-2 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
+      data-testid="clipboard-tab-sidebar"
+      className="relative flex h-full shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
+      style={{ width }}
       onPointerDownCapture={(e) => {
         if (!isInsideContextMenu(e.target)) {
           closeContextMenu();
@@ -526,18 +530,31 @@ export function TabBar() {
         }
       }}
     >
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-gray-200 px-2 dark:border-gray-700">
+        <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">Collections</span>
+        <button
+          type="button"
+          onClick={onCollapse}
+          className="flex size-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+          aria-label="Hide clipboard collections"
+          title="Hide clipboard collections"
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
+      </div>
+
       {/* Tab List */}
       <div
-        className="flex-1 flex items-center space-x-1 overflow-x-auto"
+        className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2"
         role="tablist"
-        aria-label="Clipboard tabs"
+        aria-label="Clipboard collections"
       >
         {tabs.map((tab) => (
           <div
             key={tab.id}
             role="tab"
             data-native-tab-id={tab.id}
-            aria-selected={tab.id === activeTabId && activePluginTabId === null}
+            aria-selected={tab.id === activeTabId}
             onPointerDown={(event) => handleTabPointerDown(event, tab.id!)}
             onPointerMove={handleTabPointerMove}
             onPointerUp={handleTabPointerEnd}
@@ -552,11 +569,11 @@ export function TabBar() {
             }}
             onContextMenu={(e) => handleTabContextMenu(e, tab.id!)}
             className={`
-              group relative flex touch-none items-center px-2.5 py-1 rounded-md cursor-grab active:cursor-grabbing transition-colors
+              group relative flex min-h-8 w-full touch-none items-center px-2.5 py-1 rounded-md cursor-grab active:cursor-grabbing transition-colors
               text-xs font-medium select-none
               ${draggedTabId === tab.id ? "opacity-50" : ""}
               ${
-                tab.id === activeTabId && activePluginTabId === null
+                tab.id === activeTabId
                   ? "bg-indigo-500 dark:bg-indigo-600 text-white"
                   : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
               }
@@ -567,8 +584,8 @@ export function TabBar() {
                 data-testid="tab-drop-indicator"
                 data-position={dropTarget.after ? "after" : "before"}
                 aria-hidden="true"
-                className={`pointer-events-none absolute top-0.5 bottom-0.5 z-10 w-0.5 rounded-full bg-indigo-500 shadow-[0_0_4px_rgba(99,102,241,0.8)] ${
-                  dropTarget.after ? "-right-0.5" : "-left-0.5"
+                className={`pointer-events-none absolute right-0.5 left-0.5 z-10 h-0.5 rounded-full bg-indigo-500 shadow-[0_0_4px_rgba(99,102,241,0.8)] ${
+                  dropTarget.after ? "-bottom-0.5" : "-top-0.5"
                 }`}
               />
             ) : null}
@@ -615,30 +632,6 @@ export function TabBar() {
           </div>
         ))}
 
-        {pluginTabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => {
-              closeContextMenu();
-              setActivePluginTab(tab.id);
-              setSearchQuery("");
-            }}
-            className={`
-              flex items-center px-2.5 py-1 rounded-md cursor-pointer transition-colors
-              text-xs font-medium select-none whitespace-nowrap
-              ${
-                tab.id === activePluginTabId
-                  ? "bg-indigo-500 dark:bg-indigo-600 text-white"
-                  : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-              }
-            `}
-          >
-            {renderPluginTabIcon(tab.icon, tab.iconDataUrl)}
-            <span className="truncate">{tab.title}</span>
-          </button>
-        ))}
-
         {/* Add Tab Button */}
         {isCreating ? (
           <div className="flex items-center">
@@ -656,7 +649,7 @@ export function TabBar() {
         ) : (
           <button
             onClick={() => setIsCreating(true)}
-            className="flex items-center justify-center p-1 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            className="flex min-h-8 w-full items-center justify-center rounded-md p-1 text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
             aria-label="Add new tab"
           >
             <Plus size={14} />
@@ -685,6 +678,37 @@ export function TabBar() {
           </button>
         </div>
       )}
+      <div
+        data-testid="clipboard-sidebar-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize clipboard collections"
+        tabIndex={0}
+        onPointerDown={handleResizeStart}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowRight") {
+            event.preventDefault();
+            onWidthChange(clamp(width + 16, SIDEBAR_HIDE_THRESHOLD, MAX_SIDEBAR_WIDTH));
+          } else if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            if (width - 16 <= SIDEBAR_HIDE_THRESHOLD) {
+              onCollapse();
+            } else {
+              onWidthChange(clamp(width - 16, SIDEBAR_HIDE_THRESHOLD, MAX_SIDEBAR_WIDTH));
+            }
+          }
+        }}
+        className="absolute top-0 right-0 z-20 h-full w-1 cursor-ew-resize touch-none"
+      />
     </div>
   );
 }
+
+// Kept as an alias while callers migrate to the clearer component name.
+export const TabBar = (props: Partial<ClipboardTabSidebarProps>) => (
+  <ClipboardTabSidebar
+    width={props.width ?? 176}
+    onWidthChange={props.onWidthChange ?? (() => {})}
+    onCollapse={props.onCollapse ?? (() => {})}
+  />
+);
