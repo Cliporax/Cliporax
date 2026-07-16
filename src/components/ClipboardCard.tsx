@@ -67,7 +67,6 @@ export const CARD_SIZE_CONFIG = {
 } as const;
 
 const IMAGE_CARD_HEIGHT = 96; // Fixed image card height
-const LINE_COUNT_SCAN_LIMIT = 20000;
 const TEXT_PREVIEW_CHAR_LIMIT = 4000;
 const SEARCH_SCAN_LIMIT = 200000;
 const MAX_HIGHLIGHT_RANGES = 40;
@@ -76,8 +75,7 @@ const TITLE_PREVIEW_LIMIT = 2000;
 type HighlightRange = { start: number; end: number };
 
 function getLineCount(content: string): number {
-  const scan = content.slice(0, LINE_COUNT_SCAN_LIMIT);
-  const lineBreaks = scan.match(/\r\n|\r|\n/g)?.length ?? 0;
+  const lineBreaks = content.match(/\r\n|\r|\n/g)?.length ?? 0;
   return lineBreaks + 1;
 }
 
@@ -253,7 +251,10 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
     const [isHovered, setIsHovered] = React.useState(false);
     const [isDragging, setIsDragging] = React.useState(false);
     const [imageError, setImageError] = React.useState(false);
-    const lineCount = type === "text" ? getLineCount(content) : 1;
+    const lineCount = React.useMemo(
+      () => (type === "text" ? getLineCount(content) : 1),
+      [content, type],
+    );
     const firstMatchRange =
       type === "text"
         ? getFirstMatchRange(content, searchQuery, searchMode)

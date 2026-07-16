@@ -47,7 +47,13 @@ pub async fn window_command(
     log::info!("[Command] window_command: {:?}", action);
 
     match action {
-        WindowAction::Minimize => window.minimize().map_err(|e| e.to_string()),
+        WindowAction::Minimize => {
+            if window.label() == "main" {
+                window_utils::hide_main_window(window.app_handle())
+            } else {
+                window.minimize().map_err(|e| e.to_string())
+            }
+        }
 
         WindowAction::Maximize => if window.is_maximized().unwrap_or(false) {
             window.unmaximize()
@@ -167,9 +173,15 @@ pub async fn window_is_maximized_v2(window: tauri::Window) -> Result<bool, Strin
 #[tauri::command]
 pub async fn window_minimize(window: tauri::Window) -> Result<(), String> {
     log::info!("[Command] window_minimize called");
-    window.minimize().map_err(|e| {
+    let result = if window.label() == "main" {
+        window_utils::hide_main_window(window.app_handle())
+    } else {
+        window.minimize().map_err(|e| e.to_string())
+    };
+
+    result.map_err(|e| {
         log::error!("[Command] window_minimize failed: {}", e);
-        e.to_string()
+        e
     })
 }
 
