@@ -682,6 +682,7 @@ fn main() {
             plugin_read_icon,
             plugin_storage_get,
             plugin_storage_set,
+            plugin_run_process,
             plugin_market_get_sources,
             plugin_market_refresh,
             plugin_market_get_plugins,

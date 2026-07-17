@@ -5,7 +5,7 @@ import React, {
   useEffect,
   useLayoutEffect,
 } from "react";
-import { PanelLeftClose, Plus, X, Edit2, Trash2 } from "lucide-react";
+import { Plus, Edit2, Trash2 } from "lucide-react";
 import { useTabStore } from "../stores/tabStore";
 import { useUIStore } from "../stores/uiStore";
 import { createLogger } from "../utils/logger";
@@ -254,9 +254,7 @@ export function ClipboardTabSidebar({
   }, [newTabName, createTab]);
 
   const handleDeleteTab = useCallback(
-    async (e: React.MouseEvent, tabId: number) => {
-      e.stopPropagation();
-
+    async (tabId: number) => {
       const tab = tabs.find((t) => t.id === tabId);
       if (tab?.is_default || tab?.is_trash) {
         logger.warn("Cannot delete default tab");
@@ -293,6 +291,7 @@ export function ClipboardTabSidebar({
       if (e.key === "Enter") {
         handleCreateTab();
       } else if (e.key === "Escape") {
+        e.preventDefault();
         setNewTabName("");
         setInputKey((k) => k + 1);
         setIsCreating(false);
@@ -332,6 +331,7 @@ export function ClipboardTabSidebar({
       if (e.key === "Enter") {
         handleSaveRename();
       } else if (e.key === "Escape") {
+        e.preventDefault();
         setRenamingTabId(null);
         setRenameValue("");
       }
@@ -377,6 +377,13 @@ export function ClipboardTabSidebar({
     }
     closeContextMenu();
   }, [closeContextMenu, contextMenu, tabs, handleStartRename]);
+
+  const handleContextMenuDelete = useCallback(() => {
+    if (!contextMenu) return;
+    const tabId = contextMenu.tabId;
+    closeContextMenu();
+    void handleDeleteTab(tabId);
+  }, [closeContextMenu, contextMenu, handleDeleteTab]);
 
   const clearTabDrag = useCallback(() => {
     pointerDragRef.current = null;
@@ -530,19 +537,6 @@ export function ClipboardTabSidebar({
         }
       }}
     >
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-gray-200 px-2 dark:border-gray-700">
-        <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">Collections</span>
-        <button
-          type="button"
-          onClick={onCollapse}
-          className="flex size-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
-          aria-label="Hide clipboard collections"
-          title="Hide clipboard collections"
-        >
-          <PanelLeftClose size={15} aria-hidden="true" />
-        </button>
-      </div>
-
       {/* Tab List */}
       <div
         className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2"
@@ -612,23 +606,6 @@ export function ClipboardTabSidebar({
               </span>
             )}
 
-            {/* Delete button (not for default tab) */}
-            {!tab.is_default && !tab.is_trash && renamingTabId !== tab.id && (
-              <button
-                onClick={(e) => handleDeleteTab(e, tab.id!)}
-                className={`
-                  ml-1.5 p-0.5 rounded transition-colors
-                  ${
-                    tab.id === activeTabId
-                      ? "hover:bg-indigo-600 dark:hover:bg-indigo-700"
-                      : "hover:bg-gray-200 dark:hover:bg-gray-600"
-                  }
-                `}
-                aria-label={`Delete tab ${tab.name}`}
-              >
-                <X size={10} />
-              </button>
-            )}
           </div>
         ))}
 
@@ -675,6 +652,14 @@ export function ClipboardTabSidebar({
           >
             <Edit2 size={12} className="mr-2" />
             <span className="truncate">Rename</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleContextMenuDelete}
+            className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+          >
+            <Trash2 size={12} className="mr-2" />
+            <span className="truncate">Delete</span>
           </button>
         </div>
       )}

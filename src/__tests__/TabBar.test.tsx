@@ -133,13 +133,19 @@ describe("TabBar", () => {
     });
   });
 
-  it("can collapse the clipboard collections sidebar", () => {
-    const onCollapse = vi.fn();
-    render(<TabBar onCollapse={onCollapse} />);
+  it("shows tabs directly without a collections header or inline delete button", () => {
+    render(<TabBar />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide clipboard collections" }));
+    expect(screen.queryByText("Collections")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete tab Work" })).toBeNull();
+  });
 
-    expect(onCollapse).toHaveBeenCalledOnce();
+  it("offers deletion from a custom tab context menu", () => {
+    render(<TabBar />);
+
+    fireEvent.contextMenu(screen.getByText("Work"), { clientX: 20, clientY: 20 });
+
+    expect(screen.getByRole("button", { name: /delete/i })).toBeTruthy();
   });
 
   it("resizes the clipboard collections sidebar within its limits", () => {

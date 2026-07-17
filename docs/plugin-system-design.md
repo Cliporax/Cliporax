@@ -291,6 +291,28 @@ The method returns the standard Web `Response`; HTTP error statuses are not
 thrown. A timeout rejects with the standard abort error. The host does not log
 request bodies, response bodies, or credentials.
 
+### Shared UI controls
+
+DOM-based extensions receive `context.ui.createCombobox`, which renders the
+same non-native combobox as the host UI. It supports keyboard selection,
+search, disabled options, and the active application theme. Do not create a
+native `<select>` in a plugin when this control fits the interaction.
+
+```js
+const targetLanguage = props.context.ui.createCombobox({
+  value: "en",
+  options: [
+    { value: "en", label: "English" },
+    { value: "zh-CN", label: "Chinese (Simplified)" },
+  ],
+  searchable: true,
+  onChange: (value) => saveTargetLanguage(value),
+});
+
+container.append(targetLanguage.element);
+// Call targetLanguage.destroy() when the plugin view is removed.
+```
+
 ## 7. IPC Commands
 
 | Command | Description | Parameters | Returns |

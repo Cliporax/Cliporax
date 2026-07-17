@@ -1,8 +1,8 @@
-import { expect, test } from "./fixtures/tauriMock";
+import { expect, makeClipboardItems, test } from "./fixtures/tauriMock";
 
 const createdAt = "2026-01-01T00:00:00.000Z";
 
-test("can resize, hide, and restore the clipboard collections sidebar", async ({
+test("can resize and restore the collapsed clipboard collections sidebar", async ({
   page,
   mockTauri,
 }) => {
@@ -31,9 +31,68 @@ test("can resize, hide, and restore the clipboard collections sidebar", async ({
   await page.mouse.up();
   await expect.poll(async () => (await sidebar.boundingBox())?.width).toBeGreaterThan(initialWidth);
 
-  await page.getByRole("button", { name: "Hide clipboard collections" }).click();
+  await page.mouse.move(handleBounds.x + 1, handleBounds.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(20, handleBounds.y + 40);
+  await page.mouse.up();
   await expect(sidebar).toBeHidden();
 
-  await page.getByRole("button", { name: "Show clipboard collections" }).click();
+  const collapsedHandle = page.getByTestId("collapsed-clipboard-sidebar-resize-handle");
+  const collapsedHandleBounds = await collapsedHandle.boundingBox();
+  if (!collapsedHandleBounds) throw new Error("Collapsed sidebar handle is unavailable");
+  await page.mouse.move(collapsedHandleBounds.x + 1, collapsedHandleBounds.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(collapsedHandleBounds.x + 100, collapsedHandleBounds.y + 40);
+  await page.mouse.up();
   await expect(sidebar).toBeVisible();
+});
+
+test("clears multi-selection when switching clipboard collections", async ({
+  page,
+  mockTauri,
+}) => {
+  const items = makeClipboardItems(2);
+  items.push({
+    ...items[0],
+    id: 3,
+    content: "Work clipboard item",
+    content_hash: "hash-3",
+    tab_id: 2,
+  });
+
+  await mockTauri({
+    items,
+    tabs: [
+      {
+        id: 1,
+        name: "Clipboard",
+        is_default: true,
+        auto_capture: true,
+        created_at: createdAt,
+      },
+      {
+        id: 2,
+        name: "Work",
+        is_default: false,
+        auto_capture: false,
+        created_at: createdAt,
+      },
+    ],
+  });
+  await page.goto("/");
+
+  await page.getByTestId("clipboard-card-1").click({ modifiers: ["Control"] });
+  await page.getByTestId("clipboard-card-2").click({ modifiers: ["Control"] });
+  await expect(page.getByTestId("clipboard-card-1")).toHaveCSS(
+    "background-color",
+    "rgba(34, 197, 94, 0.15)",
+  );
+
+  await page.getByRole("tab", { name: "Work" }).click();
+
+  await expect(page.getByTestId("clipboard-card-3")).toBeVisible();
+  await expect(page.getByTestId("clipboard-card-3")).not.toHaveCSS(
+    "background-color",
+    "rgba(34, 197, 94, 0.15)",
+  );
 });

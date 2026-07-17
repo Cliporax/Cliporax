@@ -91,6 +91,12 @@ test("TODO plugin supports grouped, movable, editable items with tab icon", asyn
   await editor.press("Escape");
   await expect(editor).toHaveCount(0);
   await expect(page.getByRole("button", { name: "TODO", exact: true })).toBeVisible();
+  const escapeCalls = await page.evaluate(() =>
+    (window as any).__cliporaxTauriCalls.filter(
+      (call: { cmd: string }) => call.cmd === "window_hide",
+    ),
+  );
+  expect(escapeCalls).toHaveLength(0);
 
   await page.getByRole("button", { name: "Edit TODO: Prepare release notes" }).click();
   const reopenedEditor = page.getByRole("textbox", { name: "Edit TODO: Prepare release notes" });

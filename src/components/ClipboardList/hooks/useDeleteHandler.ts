@@ -6,13 +6,18 @@ import type { ItemTypeCache, ClipboardCacheManager } from "../cache";
 const logger = createLogger("ClipboardList");
 const MAX_BATCH_DELETE = 1000;
 
-async function deleteIdsInBatches(ids: number[]): Promise<number> {
+async function deleteIdsInBatches(
+  ids: number[],
+  permanently = false,
+): Promise<number> {
   let deletedCount = 0;
 
   for (let i = 0; i < ids.length; i += MAX_BATCH_DELETE) {
     const batch = ids.slice(i, i + MAX_BATCH_DELETE);
     if (batch.length > 0) {
-      deletedCount += await clipboard.deleteByIds(batch);
+      deletedCount += permanently
+        ? await clipboard.deleteByIdsPermanently(batch)
+        : await clipboard.deleteByIds(batch);
     }
   }
 
@@ -33,6 +38,32 @@ async function deleteIndexRangeInBatches(
       chunkStart,
       chunkEnd,
     );
+  }
+
+  return deletedCount;
+}
+
+async function deleteIndexRangePermanentlyInBatches(
+  tabId: number,
+  start: number,
+  end: number,
+): Promise<number> {
+  let remaining = end - start + 1;
+  let deletedCount = 0;
+
+  while (remaining > 0) {
+    const items = await clipboard.getByTab(
+      tabId,
+      Math.min(MAX_BATCH_DELETE, remaining),
+      start,
+    );
+    const ids = items
+      .map((item) => item.id)
+      .filter((id): id is number => id !== null);
+    if (ids.length === 0) break;
+
+    deletedCount += await clipboard.deleteByIdsPermanently(ids);
+    remaining -= ids.length;
   }
 
   return deletedCount;
@@ -78,8 +109,7 @@ export function useDeleteHandler({
   setSearchResults,
 }: UseDeleteHandlerParams): () => Promise<void> {
   const handleDeleteSelected = useCallback(async () => {
-    // Trash is recoverable-only; expiry cleanup performs permanent deletion.
-    if (isTrashTab) return;
+    const permanently = isTrashTab;
     // Range selection mode: use backend range deletion
     if (isMultiSelectMode && selectionRange) {
       const start = Math.min(selectionRange.start, selectionRange.end);
@@ -113,7 +143,7 @@ export function useDeleteHandler({
           typeCacheRef.current.clear();
 
           // Delete asynchronously in the background without blocking the UI
-          deleteIdsInBatches(idsToDelete).catch((error) => {
+          deleteIdsInBatches(idsToDelete, permanently).catch((error) => {
             logger.error("[Delete] Background delete failed:", error);
           });
 
@@ -124,7 +154,15 @@ export function useDeleteHandler({
 
         // Non-search mode: use backend range deletion
         if (defaultTabId !== null) {
-          await deleteIndexRangeInBatches(defaultTabId, start, end);
+          if (permanently) {
+            await deleteIndexRangePermanentlyInBatches(
+              defaultTabId,
+              start,
+              end,
+            );
+          } else {
+            await deleteIndexRangeInBatches(defaultTabId, start, end);
+          }
 
           // Check whether the range is in cache
           const cachedStart = typeCacheRef.current.getType(start);
@@ -207,7 +245,7 @@ export function useDeleteHandler({
         typeCacheRef.current.clear();
 
         // Delete asynchronously in the background without blocking the UI
-        deleteIdsInBatches(idsToDelete).catch((error) => {
+        deleteIdsInBatches(idsToDelete, permanently).catch((error) => {
           logger.error("[Delete] Background delete failed:", error);
         });
 
@@ -262,7 +300,7 @@ export function useDeleteHandler({
       }
 
       // Delete asynchronously in the background without blocking the UI
-      deleteIdsInBatches(idsToDelete).catch((error) => {
+      deleteIdsInBatches(idsToDelete, permanently).catch((error) => {
         logger.error("[Delete] Background delete failed:", error);
       });
 
@@ -281,7 +319,11 @@ export function useDeleteHandler({
         );
 
         if (deletedIndex !== -1) {
-          await clipboard.delete(selectedId);
+          if (permanently) {
+            await clipboard.deleteByIdsPermanently([selectedId]);
+          } else {
+            await clipboard.delete(selectedId);
+          }
 
           // Remove from searchResults
           const newSearchResults = [...searchResults];
@@ -311,7 +353,11 @@ export function useDeleteHandler({
       // First get the deleted item index
       const deletedIndex = cacheManagerRef.current.getIndexById(selectedId);
 
-      await clipboard.delete(selectedId);
+      if (permanently) {
+        await clipboard.deleteByIdsPermanently([selectedId]);
+      } else {
+        await clipboard.delete(selectedId);
+      }
 
       // If the item is in cache, update incrementally
       if (deletedIndex !== undefined) {

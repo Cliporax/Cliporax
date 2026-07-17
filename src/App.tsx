@@ -110,6 +110,35 @@ function App() {
   const [isClipboardSidebarCollapsed, setClipboardSidebarCollapsed] = useState(false);
   const clipboardListRef = useRef<ClipboardListRef>(null);
 
+  const handleCollapsedSidebarResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const startX = event.clientX;
+      const collapsedWidth = 36;
+      const maximumWidth = Math.max(52, Math.min(384, window.innerWidth - 240));
+
+      const cleanup = () => {
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", cleanup);
+      };
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const nextWidth = Math.min(
+          Math.max(collapsedWidth + moveEvent.clientX - startX, 36),
+          maximumWidth,
+        );
+        if (nextWidth > 52) {
+          setClipboardSidebarCollapsed(false);
+          setClipboardSidebarWidth(nextWidth);
+        }
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", cleanup, { once: true });
+    },
+    [],
+  );
+
   const isDark = resolvedTheme === "dark";
 
   useEffect(() => {
@@ -211,6 +240,13 @@ function App() {
         toggleSearch();
       }
       if (e.key === "Escape") {
+        // Nested editors (tab rename, plugin forms, comboboxes, dialogs, etc.)
+        // get first refusal on Escape. Do not let the same key press fall
+        // through to the window-level hide action after they close themselves.
+        if (e.defaultPrevented) {
+          logger.debug("Escape handled by active editor");
+          return;
+        }
         if (showSearch) {
           logger.debug("Closing search bar");
           setShowSearch(false);
@@ -227,6 +263,15 @@ function App() {
           if (clipboardListRef.current) {
             clipboardListRef.current.exitMultiSelectMode();
           }
+        } else if (
+          e.target instanceof HTMLElement &&
+          (e.target.matches("input, textarea, select") ||
+            e.target.isContentEditable)
+        ) {
+          // An editor may synchronously remove itself while handling Escape.
+          // The original event target still identifies the key press as an
+          // editing action, so it must never fall through to hiding the app.
+          logger.debug("Escape originated from an editable control");
         } else {
           // Nothing open - hide window
           logger.debug("Hiding window via Esc");
@@ -323,6 +368,8 @@ function App() {
       const store = useUIStore.getState();
       if (ids.size > 0) {
         store.enterMultiSelectMode();
+      } else {
+        store.exitMultiSelectMode();
       }
     },
     [],
@@ -491,7 +538,7 @@ function App() {
           ) : (
             <>
               {isClipboardSidebarCollapsed ? (
-                <div className="flex w-9 shrink-0 justify-center border-r border-gray-200 bg-white pt-1 dark:border-gray-700 dark:bg-gray-800">
+                <div className="relative flex w-9 shrink-0 justify-center border-r border-gray-200 bg-white pt-1 dark:border-gray-700 dark:bg-gray-800">
                   <button
                     type="button"
                     onClick={() => setClipboardSidebarCollapsed(false)}
@@ -501,6 +548,22 @@ function App() {
                   >
                     <PanelLeftOpen size={15} aria-hidden="true" />
                   </button>
+                  <div
+                    data-testid="collapsed-clipboard-sidebar-resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize clipboard collections"
+                    tabIndex={0}
+                    onPointerDown={handleCollapsedSidebarResize}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowRight") {
+                        event.preventDefault();
+                        setClipboardSidebarCollapsed(false);
+                        setClipboardSidebarWidth(Math.max(80, clipboardSidebarWidth));
+                      }
+                    }}
+                    className="absolute top-0 right-0 z-20 h-full w-1 cursor-ew-resize touch-none"
+                  />
                 </div>
               ) : (
                 <ClipboardTabSidebar

@@ -4,13 +4,127 @@ use crate::db::database::Db;
 use crate::plugin::lifecycle::registry::{LoadResult, PluginDetail, PluginInfo, PluginRegistry};
 use crate::plugin::permission::definition::builtin_permissions_list;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::process::Command;
 use tokio::sync::RwLock;
 
 const MAX_PLUGIN_ICON_BYTES: u64 = 512 * 1024;
 const MAX_PLUGIN_STORAGE_KEY_BYTES: usize = 256;
 const MAX_PLUGIN_STORAGE_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_PROCESS_ARGS: usize = 64;
+const MAX_PROCESS_ARG_BYTES: usize = 4096;
+const MAX_PROCESS_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PROCESS_RUNTIME: Duration = Duration::from_secs(60);
+
+#[derive(Serialize)]
+pub struct PluginProcessOutput {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+async fn ensure_process_permission(
+    registry: &Arc<RwLock<PluginRegistry>>,
+    plugin_id: &str,
+) -> Result<(), String> {
+    let registry = registry.read().await;
+    let detail = registry
+        .get_detail(plugin_id)
+        .ok_or_else(|| "Plugin not found".to_string())?;
+    if detail.state != crate::plugin::lifecycle::state::PluginState::Active {
+        return Err("Plugin is not active".to_string());
+    }
+    if !detail
+        .granted_permissions
+        .iter()
+        .any(|permission| permission == "system:process")
+    {
+        return Err("Plugin lacks system:process permission".to_string());
+    }
+    Ok(())
+}
+
+fn validate_process_request(
+    plugin_id: &str,
+    executable: &str,
+    args: &[String],
+) -> Result<(), String> {
+    if plugin_id.trim().is_empty()
+        || plugin_id.len() > 200
+        || executable.trim().is_empty()
+        || executable.len() > MAX_PROCESS_ARG_BYTES
+        || args.len() > MAX_PROCESS_ARGS
+        || args.iter().any(|arg| arg.len() > MAX_PROCESS_ARG_BYTES)
+    {
+        return Err("Invalid process request".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plugin_run_process(
+    registry: tauri::State<'_, Arc<RwLock<PluginRegistry>>>,
+    plugin_id: String,
+    executable: String,
+    args: Vec<String>,
+) -> Result<PluginProcessOutput, String> {
+    validate_process_request(&plugin_id, &executable, &args)?;
+    ensure_process_permission(registry.inner(), &plugin_id).await?;
+
+    let output = tokio::time::timeout(MAX_PROCESS_RUNTIME, async move {
+        let mut command = Command::new(executable);
+        command.args(args);
+        command.kill_on_drop(true);
+        #[cfg(target_os = "windows")]
+        command.creation_flags(0x08000000);
+        command.output().await
+    })
+    .await
+    .map_err(|_| "Requested process exceeded the 60 second limit".to_string())?
+    .map_err(|_| "Failed to start requested process".to_string())?;
+    if output.stdout.len() > MAX_PROCESS_OUTPUT_BYTES
+        || output.stderr.len() > MAX_PROCESS_OUTPUT_BYTES
+    {
+        return Err("Process output exceeds 8 MiB".to_string());
+    }
+    Ok(PluginProcessOutput {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8(output.stdout)
+            .map_err(|_| "Process stdout is not UTF-8".to_string())?,
+        stderr: String::from_utf8(output.stderr)
+            .map_err(|_| "Process stderr is not UTF-8".to_string())?,
+    })
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::{validate_process_request, MAX_PROCESS_ARGS, MAX_PROCESS_ARG_BYTES};
+
+    #[test]
+    fn process_request_accepts_a_bounded_command() {
+        let args = vec!["history".to_string(), "--raw".to_string()];
+        assert!(validate_process_request("com.cliporax.import", "gpaste-client", &args).is_ok());
+    }
+
+    #[test]
+    fn process_request_rejects_empty_identifiers_and_executable() {
+        assert!(validate_process_request(" ", "copyq", &[]).is_err());
+        assert!(validate_process_request("com.cliporax.import", " ", &[]).is_err());
+    }
+
+    #[test]
+    fn process_request_rejects_oversized_arguments() {
+        let too_many = vec![String::new(); MAX_PROCESS_ARGS + 1];
+        assert!(validate_process_request("com.cliporax.import", "copyq", &too_many).is_err());
+        let too_long = vec!["x".repeat(MAX_PROCESS_ARG_BYTES + 1)];
+        assert!(validate_process_request("com.cliporax.import", "copyq", &too_long).is_err());
+    }
+}
 
 fn validate_plugin_storage_input(
     plugin_id: &str,

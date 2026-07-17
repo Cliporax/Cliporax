@@ -164,8 +164,15 @@ export function useMultiSelect({
     setIsMultiSelectMode(false);
     setCheckedIds(new Set());
     setSelectionRange(null);
+    lastCheckedIndexRef.current = null;
     isMultiDraggingRef.current = false;
-  }, [setIsMultiSelectMode, setCheckedIds, setSelectionRange]);
+    onMultiSelectChange?.(new Set(), []);
+  }, [
+    onMultiSelectChange,
+    setIsMultiSelectMode,
+    setCheckedIds,
+    setSelectionRange,
+  ]);
 
   const getSelectedItems = useCallback(() => {
     if (selectionRange) {

@@ -425,8 +425,16 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       logger.debug(
         `Restoring scroll position for tab ${tabId}: ${savedScroll}`,
       );
+      setSelectedId(null);
+      exitMultiSelectMode();
       loadTabData(tabId, savedScroll, "switch");
-    }, [defaultTabId, loadTabData, scrollTop, tabId]);
+    }, [
+      defaultTabId,
+      exitMultiSelectMode,
+      loadTabData,
+      scrollTop,
+      tabId,
+    ]);
 
     // Initialize
     useEffect(() => {
@@ -1154,9 +1162,28 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
           return;
         }
 
-        if ((e.ctrlKey || e.metaKey) && e.key === "a" && isMultiSelectMode) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
           e.preventDefault();
-          // Select-all logic
+          if (isSearchMode) {
+            const ids = new Set(
+              searchResults
+                .map((item) => item.id)
+                .filter((id): id is number => id !== null),
+            );
+            setIsMultiSelectMode(ids.size > 0);
+            setCheckedIds(ids);
+            setSelectionRange(null);
+            onMultiSelectChange?.(ids, searchResults);
+            return;
+          }
+
+          if (totalCount > 0) {
+            setIsMultiSelectMode(true);
+            setCheckedIds(new Set());
+            setSelectionRange({ start: 0, end: totalCount - 1 });
+            onMultiSelectChange?.(new Set(), []);
+          }
+          return;
         }
 
         if (
@@ -1181,7 +1208,15 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
 
       globalThis.addEventListener("keydown", handleKeyDown);
       return () => globalThis.removeEventListener("keydown", handleKeyDown);
-    }, [getMergedText, handleDeleteSelected, isMultiSelectMode, onMultiSelectChange]);
+    }, [
+      getMergedText,
+      handleDeleteSelected,
+      isMultiSelectMode,
+      isSearchMode,
+      onMultiSelectChange,
+      searchResults,
+      totalCount,
+    ]);
 
     // ========== Exposed methods ==========
 
