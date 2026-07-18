@@ -1,174 +1,92 @@
-# Cliporax
+<div align="center">
+  <img src="public/icon.png" width="96" alt="Cliporax 图标">
+  <h1>Cliporax</h1>
+  <p>适用于 Windows、macOS 和 Linux 的快速、本地优先剪贴板管理器。</p>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+  [![最新版本](https://img.shields.io/github/v/release/Cliporax/Cliporax?style=flat-square)](https://github.com/Cliporax/Cliporax/releases/latest)
+  [![支持平台](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-5b5bf7?style=flat-square)](#安装)
+  [![许可证](https://img.shields.io/github/license/Cliporax/Cliporax?style=flat-square)](LICENSE)
 
-**本地优先、可搜索、可扩展的桌面剪贴板历史工具。**
+  [下载安装](https://github.com/Cliporax/Cliporax/releases/latest) · [快速上手](#快速上手) · [插件扩展](#用插件扩展-cliporax) · [English](README.md)
+</div>
 
-Cliporax 解决一个很具体的问题：复制过的文本、图片、命令、链接和临时信息，不应该因为切换窗口或覆盖剪贴板就消失。它会把剪贴板历史默认保存在本机 SQLite 数据库中，提供快速搜索、标签页整理、置顶、多选和回粘，并支持通过插件、快捷键、CLI 与可选云同步扩展工作流。
+<br>
 
-项目基于 Tauri 2、React、TypeScript、Rust 和 SQLite 构建，目标是做成一个日常高频使用的桌面工具，而不是云端剪贴板服务。
+![Cliporax 剪贴板历史](docs/images/cliporax-clipboard.png)
 
-## 设计取舍
+Cliporax 把复制过的文本、命令、链接和笔记放在随手可取的位置。你可以在任何应用中唤出它，搜索历史记录，再把选中的内容粘贴回刚才的应用。除非你主动配置同步，否则剪贴板历史只保存在本机。
 
-- **本地默认**：历史记录、设置和插件状态优先落在本机；项目默认不包含遥测。
-- **键盘与搜索优先**：面向频繁复制、查找、粘贴的场景，而不是只做一个剪贴板展示列表。
-- **跨平台桌面体验**：Linux、macOS、Windows 都是目标平台，窗口焦点、托盘和回粘逻辑会单独处理。
-- **插件扩展**：二维码、图片预览、同步设置面板等能力通过本地插件接入。
-- **未发布能力**：通用 OCR、语义搜索、摘要和 SQLCipher 全库加密仍在路线图中。
+## 安装
 
-## 当前功能
+前往 [GitHub Releases](https://github.com/Cliporax/Cliporax/releases/latest) 下载最新版。
 
-- 文本和图片剪贴板监听，自动写入本地 SQLite 数据库。
-- 剪贴板历史列表、虚拟滚动、搜索、`regx:` 正则搜索、置顶、删除、批量选择、拖拽排序。
-- 多标签页管理，支持将条目移动或复制到其他标签页。
-- 敏感内容标记与清除，默认检测 `password`、`code`、`otp`、`验证码`、`secret`、`key` 等关键词。
-- 全局快捷键唤出主窗口，默认 `CmdOrControl+Shift+V`，可在设置中修改。
-- 复制历史项并粘贴回上一个窗口，包含 Linux/macOS/Windows 的窗口与焦点处理。
-- 系统托盘、无边框窗口、置顶/取消置顶、自动隐藏、窗口尺寸和位置保存。
-- 设置窗口，支持主题、列表密度、快捷键、插件和同步配置。
-- 插件系统，支持插件发现、加载、启用/停用、权限授权、配置项和 UI 扩展点。
-- 官方插件通过独立 `CliporaxPlugins/` 市场仓库维护和分发。
-- Cloud Sync 后端基础，支持 WebDAV、SFTP、Google Drive、OneDrive 的配置模型、凭据保存、同步状态、日志和冲突处理入口。
-- 命令行工具 `cliporax-cli`，可读取、搜索、复制和保存剪贴板历史。
-- 中英文界面文案。
+| 平台 | 安装包 | 安装方法 |
+| --- | --- | --- |
+| Windows | `.exe`（NSIS） | 运行安装程序并按提示完成安装。 |
+| macOS | Apple 芯片或 Intel 版本 `.dmg` | 打开 DMG，把 Cliporax 拖入“应用程序”。 |
+| Linux | `.AppImage`、`.deb` 或 `.rpm` | 直接使用 AppImage，或安装适合当前发行版的软件包。 |
 
-## 技术栈
+当前 macOS 发布包尚未经过公证。如果首次启动被 Gatekeeper 拦截，请打开 **系统设置 → 隐私与安全性**，找到 Cliporax 并选择 **仍要打开**。
 
-- 桌面框架：Tauri 2
-- 前端：React 19、TypeScript、Vite、Tailwind CSS v4
-- 状态管理：Zustand
-- 后端：Rust、Tokio、SQLx
-- 数据库：SQLite
-- 插件：本地插件包、manifest 权限声明、前端扩展点、后端生命周期管理
-- 测试：Vitest、Rust unit tests
+Linux 建议安装 `xclip` 和 `x11-utils`，以获得更稳定的回粘支持：
 
-## 项目结构
-
-```text
-.
-├── src/                    # React 前端、状态、组件、插件前端运行时
-├── src-tauri/              # Rust/Tauri 后端、数据库、IPC、同步、插件生命周期
-├── scripts/                # 插件构建、CLI 准备、agent 检查脚本
-├── docs/                   # 公开技术文档
-├── agent/skills/           # 项目协作与检查流程说明
-└── package.json            # 前端与 Tauri 开发命令
+```bash
+sudo apt install xclip x11-utils
 ```
 
-## 快速开始
+## 快速上手
 
-### 环境要求
+1. 像平常一样复制文本，Cliporax 会将它保存到本地历史记录。
+2. 在任意应用中按 <kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> 唤出 Cliporax。
+3. 双击一条记录，把它粘贴回刚才使用的应用。
+4. 按 <kbd>Ctrl/Cmd</kbd> + <kbd>F</kbd> 搜索；以 `regx:` 开头可以使用正则表达式搜索。
 
-- Node.js 和 npm
-- Rust stable，项目要求 Rust `1.77.2+`
-- Tauri 2 所需的系统依赖
-- Linux 打包/剪贴板建议安装 `xclip` 和 `x11-utils`
+![在 Cliporax 中搜索剪贴板历史](docs/images/cliporax-search.png)
 
-### 安装依赖
+你还可以置顶常用内容、用标签页整理历史，或按住 <kbd>Ctrl/Cmd</kbd> 点击多条记录进行批量操作。所有快捷键都可以在 **设置 → 快捷键** 中修改。
+
+## 用插件扩展 Cliporax
+
+打开 **设置 → 插件 → 插件市场**，选择插件，检查它申请的权限，然后点击 **安装**。内容标签页插件会出现在底部导航栏；操作类插件只会在适合当前剪贴板内容时显示。
+
+官方市场目前包括：
+
+- **TODO** — 在 Cliporax 中管理轻量、可分组的待办事项。
+- **File Sync** — 通过已配置的云同步资料同步指定文件和文件夹快照。
+- **Clipboard Import** — 从 CopyQ、GPaste、Ditto、Klipper、Maccy、Raycast 或 NDJSON 导出器导入文本历史。
+- **Translate** — 使用可配置的服务翻译选中的剪贴板文本。
+- **QR Code 与 QR Scanner** — 生成二维码，或从屏幕区域扫描二维码。
+- **Image Preview** — 在可缩放、可调整大小的独立窗口中预览图片。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/cliporax-todo.png" alt="Cliporax TODO 插件"></td>
+    <td width="50%"><img src="docs/images/cliporax-file-sync.png" alt="Cliporax File Sync 插件"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>TODO</strong> — 剪贴板旁的分组待办</td>
+    <td align="center"><strong>File Sync</strong> — 同步远端与传输中的文件</td>
+  </tr>
+</table>
+
+插件源码、清单与发布包位于 [Cliporax 插件市场](https://github.com/Cliporax/cliporax-plugin-market)。
+
+## 从源码运行
+
+安装 [Node.js](https://nodejs.org/)、Rust 1.77.2 或更新版本，以及 [Tauri 2 系统依赖](https://v2.tauri.app/zh-cn/start/prerequisites/)，然后运行：
 
 ```bash
 npm install
-```
-
-插件包维护在独立的 `CliporaxPlugins/` 市场仓库中。主应用不再在 `plugins/` 下保留插件源码副本。
-
-### 启动开发版
-
-```bash
 npm run tauri:dev
 ```
 
-该命令会先准备 CLI，执行兼容性的插件准备空操作，然后启动 Vite 与 Tauri 应用。
+使用 `npm run tauri:build` 构建发布包。CLI 使用与插件开发请查看独立文档：
 
-也可以只启动前端：
+- [CLI 使用说明](docs/cli-usage.md)
+- [插件系统](docs/plugin-system-design.md)
 
-```bash
-npm run dev
-```
+## 反馈与贡献
 
-## 常用脚本
+发现问题或有新想法？请 [提交 Issue](https://github.com/Cliporax/Cliporax/issues)。欢迎参与贡献。
 
-```bash
-npm run build              # TypeScript 检查并构建前端
-npm run tauri:build        # 构建桌面应用包
-npm run test:run           # 运行前端测试
-npm run plugins:dev        # 没有主应用本地插件时为空操作
-npm run codegen:types      # 从 Rust 导出 TypeScript 类型
-npm run cli:build          # 构建 cliporax-cli
-npm run cli -- list        # 运行 CLI 示例
-```
-
-Rust 测试：
-
-```bash
-cd src-tauri
-cargo test
-```
-
-项目内快速检查：
-
-```bash
-scripts/agent/targeted-test.sh
-scripts/agent/cross-platform-check.sh
-scripts/agent/git-hygiene-check.sh
-```
-
-## CLI 示例
-
-```bash
-npm run cli -- list --limit 10
-npm run cli -- get latest --raw
-npm run cli -- search "token"
-npm run cli -- copy "hello from Cliporax" --save
-npm run cli -- save --file ./notes.txt
-```
-
-CLI 会尝试连接 Cliporax 创建的本地 SQLite 数据库，因此需要先运行过桌面应用并初始化数据目录。
-
-## 插件系统
-
-插件通过插件市场分发。官方插件源码和包元数据位于 `../CliporaxPlugins/`，安装后的插件会在运行时复制到应用数据目录的插件目录。
-
-兼容保留的插件准备命令在 `plugins/` 不存在时为空操作：
-
-```bash
-npm run plugins:build
-npm run plugins:install
-npm run plugins:dev
-```
-
-## 数据与隐私
-
-- 剪贴板历史默认保存在本机应用数据目录下的 `cliporax.db`。
-- 设置保存在用户配置目录下的 `cliporax/settings.json`。
-- 项目默认不包含遥测逻辑。
-- 后端日志应避免记录完整剪贴板内容、密钥、令牌和解密后的敏感数据。
-- 同步凭据由后端保存；同步模块包含加密与解锁模型，但 SQLite 主数据库当前不是 SQLCipher 全库加密。
-
-## 云同步状态
-
-当前代码包含 Cloud Sync 的配置 UI、Provider 抽象、WebDAV/SFTP/Google Drive/OneDrive provider、同步 profile、后端凭据引用、加密/解锁模型、调度状态、运行报告、日志、冲突处理和插件配置同步入口。
-
-它已经不是单纯的设置壳，但仍建议视为“可用基础已实现，生产级体验继续打磨”的能力。
-
-同步相关代码主要在：
-
-- `src-tauri/src/sync/`
-- `src/components/Settings/CloudSyncTab.tsx`
-
-## 路线图说明
-
-- 插件系统：已实现插件发现、加载、启用/停用、卸载运行态、权限授权、配置项、前端扩展点和插件市场安装流程。官方插件维护源已迁移到 `CliporaxPlugins/`，后续重点是市场发布运营、版本升级体验和更多真实插件集成验证。
-- AI 能力：当前没有实现通用图片 OCR、本地语义搜索或文本摘要。二维码扫描插件能识别二维码，但不等同于 OCR/AI 检索能力。
-- 本地加密：同步模块已有 Argon2id + authenticated encryption 的远端同步加密模型，provider 凭据也通过后端保存；主 SQLite 剪贴板数据库目前不是 SQLCipher 全库加密。
-- 云同步：已实现 Cloud Sync 设置 UI、同步 profile、WebDAV/SFTP/Google Drive/OneDrive provider、凭据引用、连接测试、调度、日志、冲突入口和可选加密模型。下一步重点是更多真实服务集成验证、冲突 UX、凭据存储硬化和跨平台运行测试。
-- 打包发布：已有 Tauri 构建脚本和 Linux `deb`/`rpm` bundle 配置。macOS/Windows 打包配置和发布流水线还需要补齐与验证。
-
-## 文档
-
-- [CLI 使用指南](docs/cli-usage.md)
-- [插件系统设计](docs/plugin-system-design.md)
-- [Cloud Sync 架构](docs/cloud-sync-architecture.md)
-
-## 许可证
-
-Cliporax 使用 [MIT License](LICENSE) 授权。
+Cliporax 使用 [MIT License](LICENSE) 开源。
