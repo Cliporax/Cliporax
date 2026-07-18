@@ -92,6 +92,28 @@ export interface ExtensionContext {
   ui: {
     createCombobox: (options: ComboboxOptions) => ComboboxInstance;
   };
+  /** Storage API permanently bound to the current plugin identity. */
+  storage?: {
+    get: <T>(key: string) => Promise<T | null>;
+    set: (key: string, value: unknown) => Promise<void>;
+  };
+  /** Host events that allow DOM plugins to refresh after backend sync work. */
+  events?: {
+    onSyncCompleted: (
+      callback: (payload: { profileId: string; report: unknown }) => void,
+    ) => Promise<() => void>;
+    onFileSyncChanged: (
+      callback: (payload: { entryIds: string[]; reason: string }) => void,
+    ) => Promise<() => void>;
+    onFileSyncProgress: (
+      callback: (payload: {
+        entryId: string;
+        status: string;
+        completedBytes: number;
+        totalBytes: number;
+      }) => void,
+    ) => Promise<() => void>;
+  };
   plugin: {
     id: string;
     name: string;
@@ -221,6 +243,30 @@ const actionButtonStyle = (theme: "light" | "dark"): React.CSSProperties => ({
 const loadedScriptIds = new Set<string>();
 const registeredPluginShortcuts = new Map<string, string>();
 
+const createPluginStorage = (pluginId: string) => ({
+  get: <T,>(key: string) => pluginApi.storageGet<T>(pluginId, key),
+  set: (key: string, value: unknown) =>
+    pluginApi.storageSet(pluginId, key, value),
+});
+
+const createPluginEvents = (): NonNullable<ExtensionContext["events"]> => ({
+  onSyncCompleted: (callback) =>
+    listen<{ profileId: string; report: unknown }>("sync:completed", (event) =>
+      callback(event.payload),
+    ),
+  onFileSyncChanged: (callback) =>
+    listen<{ entryIds: string[]; reason: string }>("file-sync:changed", (event) =>
+      callback(event.payload),
+    ),
+  onFileSyncProgress: (callback) =>
+    listen<{
+      entryId: string;
+      status: string;
+      completedBytes: number;
+      totalBytes: number;
+    }>("file-sync:progress", (event) => callback(event.payload)),
+});
+
 type PluginShortcutEvent = {
   pluginId: string;
   shortcut: string;
@@ -258,6 +304,8 @@ const PluginDomExtension: React.FC<{
       ...context,
       network: createPluginNetworkApi(ext.pluginId, ext.grantedPermissions),
       ui: { createCombobox },
+      storage: createPluginStorage(ext.pluginId),
+      events: createPluginEvents(),
       plugin: {
         id: ext.pluginId,
         name: ext.pluginName,
@@ -369,9 +417,10 @@ export const ExtensionManagerProvider: React.FC<{
   ) => {
     if (!loadedScriptIds.has(pluginId)) {
       const scriptContent = await pluginApi.readScript(pluginId);
+      const storage = createPluginStorage(pluginId);
       (window as Window & { CliporaxPluginStorage?: Record<string, unknown> }).CliporaxPluginStorage = {
-        get: (key: string) => pluginApi.storageGet(pluginId, key),
-        set: (key: string, value: unknown) => pluginApi.storageSet(pluginId, key, value),
+        get: storage.get,
+        set: storage.set,
       };
       const script = document.createElement("script");
       script.dataset.cliporaxPluginId = pluginId;
@@ -386,6 +435,8 @@ export const ExtensionManagerProvider: React.FC<{
           settings: {},
           network: createPluginNetworkApi(pluginId, grantedPermissions),
           ui: { createCombobox },
+          storage,
+          events: createPluginEvents(),
           plugin: {
             id: pluginId,
             name: pluginId,

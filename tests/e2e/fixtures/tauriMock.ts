@@ -22,6 +22,10 @@ type TauriMockOptions = {
   failCommands?: Record<string, string>;
   settings?: Partial<typeof defaultSettings>;
   plugins?: MockPlugin[];
+  pluginStorage?: Record<string, Record<string, unknown>>;
+  fileSyncEntries?: Array<Record<string, unknown>>;
+  fileSyncProfiles?: Array<Record<string, unknown>>;
+  fileSyncConfig?: Record<string, unknown>;
 };
 
 type MockTab = {
@@ -88,14 +92,36 @@ export function makeClipboardItems(count: number): ClipboardItem[] {
 }
 
 async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
-  await page.addInitScript(({ initialItems, initialTabs, failCommands, settings, plugins }) => {
+  await page.addInitScript(({
+    initialItems,
+    initialTabs,
+    failCommands,
+    settings,
+    plugins,
+    initialPluginStorage,
+    initialFileSyncEntries,
+    initialFileSyncProfiles,
+    initialFileSyncConfig,
+  }) => {
+    const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
     const listeners = new Map<string, Map<number, Function>>();
+    const eventCallbackIds = new Map<string, Map<number, number>>();
     let nextCallbackId = 1;
     let items = [...initialItems];
     let appSettings = { ...settings };
     let tabs = [...initialTabs];
+    const pluginStorage = clone(initialPluginStorage);
+    let fileSyncEntries = clone(initialFileSyncEntries);
 
-    const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+    const emitTauriEvent = (event: string, payload: unknown) => {
+      for (const [eventId, callbackId] of eventCallbackIds.get(event) ?? []) {
+        const callback = (window as any)[`_${callbackId}`];
+        callback?.({ event, id: eventId, payload: clone(payload) });
+      }
+      for (const [eventId, handler] of listeners.get(event) ?? []) {
+        handler({ event, id: eventId, payload: clone(payload) });
+      }
+    };
 
     const invoke = async (cmd: string, args: Record<string, any> = {}) => {
       (window as any).__cliporaxTauriCalls.push({ cmd, args });
@@ -213,6 +239,31 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
         cmd.startsWith("file_sync_") ||
         cmd.startsWith("sync_")
       ) {
+        if (cmd === "plugin:event|listen") {
+          const eventId = nextCallbackId++;
+          if (!eventCallbackIds.has(args.event)) {
+            eventCallbackIds.set(args.event, new Map());
+          }
+          eventCallbackIds.get(args.event)!.set(eventId, args.handler);
+          return eventId;
+        }
+        if (cmd === "plugin:event|unlisten") {
+          eventCallbackIds.get(args.event)?.delete(args.eventId);
+          return null;
+        }
+        if (cmd === "plugin_storage_get") {
+          return clone(pluginStorage[args.pluginId]?.[args.key] ?? null);
+        }
+        if (cmd === "plugin_storage_set") {
+          pluginStorage[args.pluginId] ??= {};
+          pluginStorage[args.pluginId][args.key] = clone(args.value);
+          return null;
+        }
+        if (cmd === "file_sync_profile_options") {
+          return clone(initialFileSyncProfiles);
+        }
+        if (cmd === "file_sync_get_config") return clone(initialFileSyncConfig);
+        if (cmd === "file_sync_list") return clone(fileSyncEntries);
         if (cmd === "plugin_get_all") {
           return plugins.map((plugin: any) => ({
             id: plugin.id,
@@ -292,6 +343,14 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
     };
 
     (window as any).__cliporaxTauriCalls = [];
+    (window as any).__emitTauriEvent = emitTauriEvent;
+    (window as any).__setPluginStorage = (pluginId: string, key: string, value: unknown) => {
+      pluginStorage[pluginId] ??= {};
+      pluginStorage[pluginId][key] = clone(value);
+    };
+    (window as any).__setFileSyncEntries = (entries: Array<Record<string, unknown>>) => {
+      fileSyncEntries = clone(entries);
+    };
     (window as any).__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: "main" } },
       invoke,
@@ -327,6 +386,14 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
     failCommands: options.failCommands ?? {},
     settings: { ...defaultSettings, ...options.settings },
     plugins: options.plugins ?? [],
+    initialPluginStorage: options.pluginStorage ?? {},
+    initialFileSyncEntries: options.fileSyncEntries ?? [],
+    initialFileSyncProfiles: options.fileSyncProfiles ?? [],
+    initialFileSyncConfig: options.fileSyncConfig ?? {
+      default_profile_id: null,
+      confirmation_threshold_bytes: 0,
+      chunk_size: 0,
+    },
   });
 }
 
