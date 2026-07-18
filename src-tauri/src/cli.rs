@@ -20,6 +20,7 @@ use std::process;
 
 const PORTABLE_MARKERS: &[&str] = &["portable", "cliporax.portable"];
 const PORTABLE_DATA_DIR: &str = "data";
+const DATA_DIR_ENV: &str = "CLIPORAX_DATA_DIR";
 
 fn portable_data_dir() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
@@ -166,6 +167,10 @@ struct ClipboardItem {
 
 /// Get the database path from the app data directory
 fn get_db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(data_dir) = data_dir_override(std::env::var_os(DATA_DIR_ENV)) {
+        return Ok(data_dir.join("cliporax.db"));
+    }
+
     if let Some(data_dir) = portable_data_dir() {
         return Ok(data_dir.join("cliporax.db"));
     }
@@ -198,6 +203,28 @@ fn get_db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
     // Return the first path if none exist (will show error later)
     Ok(possible_paths[0].clone())
+}
+
+fn data_dir_override(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_override_accepts_an_explicit_directory() {
+        assert_eq!(
+            data_dir_override(Some(std::ffi::OsString::from("dev-data"))),
+            Some(PathBuf::from("dev-data"))
+        );
+    }
+
+    #[test]
+    fn data_dir_override_ignores_an_empty_value() {
+        assert_eq!(data_dir_override(Some(std::ffi::OsString::new())), None);
+    }
 }
 
 /// Initialize database connection

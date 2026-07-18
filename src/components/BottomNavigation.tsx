@@ -9,10 +9,10 @@ const FILE_SYNC_TAB_ID = "plugin:com.cliporax.file-sync:FileSyncView";
 
 function PluginTabIcon({ icon, iconDataUrl }: { icon?: string; iconDataUrl?: string }) {
   if (iconDataUrl) {
-    return <img src={iconDataUrl} alt="" aria-hidden="true" className="h-4 w-4 object-contain" />;
+    return <img src={iconDataUrl} alt="" aria-hidden="true" className="h-3.5 w-3.5 object-contain" />;
   }
-  if (icon === "list-todo") return <ListTodo size={16} aria-hidden="true" />;
-  return <Puzzle size={16} aria-hidden="true" />;
+  if (icon === "list-todo") return <ListTodo size={14} aria-hidden="true" />;
+  return <Puzzle size={14} aria-hidden="true" />;
 }
 
 export function BottomNavigation() {
@@ -42,14 +42,17 @@ export function BottomNavigation() {
   };
 
   return (
-    <nav className="flex h-12 shrink-0 items-stretch border-t border-gray-200 bg-white px-2 dark:border-gray-700 dark:bg-gray-800" aria-label="Main navigation">
+    <nav className="flex h-11 shrink-0 items-stretch gap-1 border-t border-gray-200 bg-white px-2 dark:border-gray-700 dark:bg-gray-800" aria-label="Main navigation">
       <button
         type="button"
         onClick={openClipboard}
         aria-current={activePluginTabId === null ? "page" : undefined}
-        className={`flex min-w-20 flex-col items-center justify-center gap-0.5 rounded-md px-3 text-[10px] font-medium transition-colors ${activePluginTabId === null ? "text-indigo-600 dark:text-indigo-400" : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"}`}
+        className={`relative flex min-w-16 flex-col items-center justify-center gap-px rounded-md px-2 text-[9px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${activePluginTabId === null ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300" : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"}`}
       >
-        <Clipboard size={16} aria-hidden="true" />
+        {activePluginTabId === null ? (
+          <span aria-hidden="true" className="absolute inset-x-2 top-0 h-0.5 rounded-full bg-indigo-500 dark:bg-indigo-400" />
+        ) : null}
+        <Clipboard size={14} aria-hidden="true" />
         <span>Clipboard</span>
       </button>
       {pluginTabs.map((tab) => {
@@ -63,10 +66,13 @@ export function BottomNavigation() {
               setSearchQuery("");
             }}
             aria-current={active ? "page" : undefined}
-            className={`flex min-w-20 flex-col items-center justify-center gap-0.5 rounded-md px-3 text-[10px] font-medium transition-colors ${active ? "text-indigo-600 dark:text-indigo-400" : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"}`}
+            className={`relative flex min-w-16 flex-col items-center justify-center gap-px rounded-md px-2 text-[9px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${active ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300" : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"}`}
           >
+            {active ? (
+              <span aria-hidden="true" className="absolute inset-x-2 top-0 h-0.5 rounded-full bg-indigo-500 dark:bg-indigo-400" />
+            ) : null}
             <PluginTabIcon icon={tab.icon} iconDataUrl={tab.iconDataUrl} />
-            <span className="max-w-20 truncate">{tab.title}</span>
+            <span className="max-w-16 truncate">{tab.title}</span>
           </button>
         );
       })}

@@ -199,6 +199,18 @@ describe("TabBar", () => {
     expect(mockSetSearchQuery).toHaveBeenCalledWith("");
   });
 
+  it("marks the current bottom navigation item and gives it a visible indicator", () => {
+    mockActivePluginTabId = "plugin:com.cliporax.file-sync:FileSyncView";
+    render(<BottomNavigation />);
+
+    const clipboard = screen.getByRole("button", { name: "Clipboard" });
+    const fileSync = screen.getByRole("button", { name: "File Sync" });
+
+    expect(clipboard.getAttribute("aria-current")).toBeNull();
+    expect(fileSync.getAttribute("aria-current")).toBe("page");
+    expect(fileSync.querySelector('[aria-hidden="true"].absolute')).toBeTruthy();
+  });
+
   it("does not render a numeric false trash flag before a tab name", () => {
     render(<TabBar />);
 
