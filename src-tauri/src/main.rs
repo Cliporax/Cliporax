@@ -203,7 +203,22 @@ fn spawn_linux_auto_hide_fallback(app_handle: tauri::AppHandle) {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn configure_webkit_renderer() {
+    const DISABLE_GBM_ENV: &str = "WEBKIT_DMABUF_RENDERER_DISABLE_GBM";
+
+    // WebKitGTK can abort before Tauri setup when GBM cannot initialize on
+    // multi-GPU/NVIDIA systems. Set the supported fallback before WebKit starts,
+    // while still allowing users to explicitly override the value.
+    if std::env::var_os(DISABLE_GBM_ENV).is_none() {
+        std::env::set_var(DISABLE_GBM_ENV, "1");
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    configure_webkit_renderer();
+
     // Use env_logger in production mode
     #[cfg(not(debug_assertions))]
     env_logger::init();
@@ -378,6 +393,11 @@ fn main() {
                 let window_clone = window.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if let Err(e) = cliporax_lib::window_utils::ensure_main_window_min_size(
+                        &window_clone.as_ref().window(),
+                    ) {
+                        log::warn!("[Main] Failed to enforce startup window size: {}", e);
+                    }
                     if let Err(e) = window_clone.set_focus() {
                         log::warn!("Failed to set focus on startup: {}", e);
                     } else {

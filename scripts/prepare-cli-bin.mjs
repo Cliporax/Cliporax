@@ -83,4 +83,10 @@ if (!existsSync(destination)) {
 run("cargo", cargoArgs);
 copyFileSync(source, destination);
 
+const completionDir = join(tauriDir, "completions");
+mkdirSync(completionDir, { recursive: true });
+writeFileSync(join(completionDir, "cliporax.bash"), output(source, ["completion", "bash"]));
+writeFileSync(join(completionDir, "_cliporax"), output(source, ["completion", "zsh"]));
+
 console.log(`[CLI] Prepared external binary: ${destination}`);
+console.log(`[CLI] Prepared Bash/Zsh completions in: ${completionDir}`);

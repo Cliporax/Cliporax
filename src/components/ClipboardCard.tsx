@@ -572,6 +572,9 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
           ref={ref}
           data-item-id={id}
           data-testid={`clipboard-card-${id}`}
+          data-multi-selected={
+            isMultiSelectMode && isMultiSelected ? "true" : "false"
+          }
           style={cardStyle}
         onMouseEnter={() => setIsHovered(true)}
         onMouseDown={(e) => {

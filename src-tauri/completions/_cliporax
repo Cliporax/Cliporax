@@ -1,0 +1,269 @@
+#compdef cliporax cliporax-cli
+
+autoload -U is-at-least
+
+_cliporax_static() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_cliporax_static_commands" \
+"*::: :->cliporax-cli" \
+&& ret=0
+    case $state in
+    (cliporax-cli)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cliporax-command-$line[1]:"
+        case $line[1] in
+            (completion)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- Shell to generate completions for:(bash zsh)' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'-i+[Get item at specific index (0-based, requires --index flag)]:INDEX:_default' \
+'--index=[Get item at specific index (0-based, requires --index flag)]:INDEX:_default' \
+'-t+[Tab ID (default\: 1)]:TAB:_default' \
+'--tab=[Tab ID (default\: 1)]:TAB:_default' \
+'-c[Copy content to system clipboard]' \
+'--copy[Copy content to system clipboard]' \
+'-r[Output only content (no metadata)]' \
+'--raw[Output only content (no metadata)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::id -- Item ID (or "latest" for the most recent item):_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-l+[Number of items to show (default\: 10)]:LIMIT:_default' \
+'--limit=[Number of items to show (default\: 10)]:LIMIT:_default' \
+'-t+[Tab ID (default\: 1)]:TAB:_default' \
+'--tab=[Tab ID (default\: 1)]:TAB:_default' \
+'-f[Show full content preview]' \
+'--full[Show full content preview]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(search)
+_arguments "${_arguments_options[@]}" : \
+'-t+[Tab ID (default\: 1)]:TAB:_default' \
+'--tab=[Tab ID (default\: 1)]:TAB:_default' \
+'-l+[Limit results (default\: 20)]:LIMIT:_default' \
+'--limit=[Limit results (default\: 20)]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':query -- Search query:_default' \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+'-f+[Read content from file]:FILE:_files' \
+'--file=[Read content from file]:FILE:_files' \
+'-i+[Copy as image (requires image file path)]:IMAGE:_files' \
+'--image=[Copy as image (requires image file path)]:IMAGE:_files' \
+'-t+[Tab ID for saving (default\: 1)]:TAB:_default' \
+'--tab=[Tab ID for saving (default\: 1)]:TAB:_default' \
+'-s[Also save to clipboard history]' \
+'--save[Also save to clipboard history]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::text -- Text content to copy:_default' \
+&& ret=0
+;;
+(save)
+_arguments "${_arguments_options[@]}" : \
+'-f+[Read content from file]:FILE:_files' \
+'--file=[Read content from file]:FILE:_files' \
+'-i+[Save as image (requires image file path)]:IMAGE:_files' \
+'--image=[Save as image (requires image file path)]:IMAGE:_files' \
+'-t+[Tab ID (default\: 1)]:TAB:_default' \
+'--tab=[Tab ID (default\: 1)]:TAB:_default' \
+'-c[Also copy to system clipboard]' \
+'--copy[Also copy to system clipboard]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::text -- Text content to save:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_cliporax_static__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cliporax-help-command-$line[1]:"
+        case $line[1] in
+            (completion)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(search)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_cliporax_static_commands] )) ||
+_cliporax_static_commands() {
+    local commands; commands=(
+'completion:Generate a shell completion script' \
+'get:Get clipboard item content' \
+'list:List recent clipboard items' \
+'search:Search clipboard items' \
+'copy:Copy text/image to system clipboard' \
+'save:Save content to clipboard history' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'cliporax commands' commands "$@"
+}
+(( $+functions[_cliporax_static__completion_commands] )) ||
+_cliporax_static__completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax completion commands' commands "$@"
+}
+(( $+functions[_cliporax_static__copy_commands] )) ||
+_cliporax_static__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax copy commands' commands "$@"
+}
+(( $+functions[_cliporax_static__get_commands] )) ||
+_cliporax_static__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax get commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help_commands] )) ||
+_cliporax_static__help_commands() {
+    local commands; commands=(
+'completion:Generate a shell completion script' \
+'get:Get clipboard item content' \
+'list:List recent clipboard items' \
+'search:Search clipboard items' \
+'copy:Copy text/image to system clipboard' \
+'save:Save content to clipboard history' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'cliporax help commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__completion_commands] )) ||
+_cliporax_static__help__completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help completion commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__copy_commands] )) ||
+_cliporax_static__help__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help copy commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__get_commands] )) ||
+_cliporax_static__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help get commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__help_commands] )) ||
+_cliporax_static__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help help commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__list_commands] )) ||
+_cliporax_static__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help list commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__save_commands] )) ||
+_cliporax_static__help__save_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help save commands' commands "$@"
+}
+(( $+functions[_cliporax_static__help__search_commands] )) ||
+_cliporax_static__help__search_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax help search commands' commands "$@"
+}
+(( $+functions[_cliporax_static__list_commands] )) ||
+_cliporax_static__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax list commands' commands "$@"
+}
+(( $+functions[_cliporax_static__save_commands] )) ||
+_cliporax_static__save_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax save commands' commands "$@"
+}
+(( $+functions[_cliporax_static__search_commands] )) ||
+_cliporax_static__search_commands() {
+    local commands; commands=()
+    _describe -t commands 'cliporax search commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_cliporax_static" ]; then
+    _cliporax_static "$@"
+else
+    compdef _cliporax_static cliporax
+fi
+
+
+_cliporax() {
+    if (( CURRENT == 3 )) && [[ "${words[2]}" == "get" && "${PREFIX}" != -* ]]; then
+        local -a items
+        items=("${(@f)$("${words[1]}" __completion-items zsh 2>/dev/null)}")
+        if (( ${#items[@]} > 0 )); then
+            compstate[list]='list force'
+            _describe -t clipboard-items 'recent clipboard items' items
+            return
+        fi
+    fi
+    _cliporax_static "$@"
+}
+compdef _cliporax cliporax cliporax-cli
+if [[ "${funcstack[1]}" == "_cliporax" ]]; then
+    _cliporax "$@"
+fi

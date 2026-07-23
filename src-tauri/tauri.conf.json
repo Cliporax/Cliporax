@@ -55,7 +55,17 @@
     "externalBin": ["bin/cliporax-cli"],
     "linux": {
       "deb": {
-        "depends": ["xclip", "x11-utils"]
+        "depends": ["xclip", "x11-utils"],
+        "files": {
+          "/usr/share/bash-completion/completions/cliporax-cli": "completions/cliporax.bash",
+          "/usr/share/zsh/vendor-completions/_cliporax": "completions/_cliporax"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/bash-completion/completions/cliporax-cli": "completions/cliporax.bash",
+          "/usr/share/zsh/site-functions/_cliporax": "completions/_cliporax"
+        }
       }
     },
     "macOS": {

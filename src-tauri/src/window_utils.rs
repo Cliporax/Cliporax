@@ -3,9 +3,12 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{LogicalSize, Manager};
 
 use crate::state::WindowState;
+
+const MAIN_WINDOW_MIN_WIDTH: f64 = 400.0;
+const MAIN_WINDOW_MIN_HEIGHT: f64 = 300.0;
 
 lazy_static::lazy_static! {
     /// Stores the previously focused window info before showing Cliporax
@@ -22,6 +25,50 @@ pub struct WindowInfo {
     pub app_name: String,
     #[cfg(target_os = "windows")]
     pub hwnd: isize,
+}
+
+fn clamped_main_window_size(width: f64, height: f64) -> (f64, f64) {
+    (
+        width.max(MAIN_WINDOW_MIN_WIDTH),
+        height.max(MAIN_WINDOW_MIN_HEIGHT),
+    )
+}
+
+pub fn ensure_main_window_min_size(window: &tauri::Window) -> Result<(), String> {
+    if window.label() != "main" {
+        return Ok(());
+    }
+
+    window
+        .set_min_size(Some(LogicalSize::new(
+            MAIN_WINDOW_MIN_WIDTH,
+            MAIN_WINDOW_MIN_HEIGHT,
+        )))
+        .map_err(|error| format!("Failed to set main window minimum size: {}", error))?;
+
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|error| format!("Failed to read main window scale factor: {}", error))?;
+    let current_size = window
+        .inner_size()
+        .map_err(|error| format!("Failed to read main window size: {}", error))?
+        .to_logical::<f64>(scale_factor);
+    let (width, height) = clamped_main_window_size(current_size.width, current_size.height);
+
+    if width != current_size.width || height != current_size.height {
+        log::warn!(
+            "[WindowUtils] Correcting invalid main window size from {:.0}x{:.0} to {:.0}x{:.0}",
+            current_size.width,
+            current_size.height,
+            width,
+            height
+        );
+        window
+            .set_size(LogicalSize::new(width, height))
+            .map_err(|error| format!("Failed to correct main window size: {}", error))?;
+    }
+
+    Ok(())
 }
 
 pub fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -41,6 +88,7 @@ pub fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = window.unminimize() {
         log::warn!("[WindowUtils] Failed to unminimize main window: {}", e);
     }
+    ensure_main_window_min_size(&window.as_ref().window())?;
     if let Err(e) = window.show() {
         return Err(format!("Failed to show main window: {}", e));
     }
@@ -63,6 +111,28 @@ pub fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamped_main_window_size, MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH};
+
+    #[test]
+    fn clamps_invalid_main_window_dimensions() {
+        assert_eq!(
+            clamped_main_window_size(1.0, 24.0),
+            (MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
+        );
+        assert_eq!(
+            clamped_main_window_size(640.0, 24.0),
+            (640.0, MAIN_WINDOW_MIN_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn preserves_valid_main_window_dimensions() {
+        assert_eq!(clamped_main_window_size(800.0, 600.0), (800.0, 600.0));
+    }
 }
 
 pub fn hide_main_window(app: &tauri::AppHandle) -> Result<(), String> {

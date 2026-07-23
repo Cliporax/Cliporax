@@ -140,6 +140,14 @@ describe("TabBar", () => {
     expect(screen.queryByRole("button", { name: "Delete tab Work" })).toBeNull();
   });
 
+  it("keeps the default cursor when hovering sidebar tabs", () => {
+    render(<TabBar />);
+
+    const workTab = screen.getByRole("tab", { name: "Work" });
+    expect(workTab.classList.contains("cursor-default")).toBe(true);
+    expect(workTab.classList.contains("cursor-grab")).toBe(false);
+  });
+
   it("offers deletion from a custom tab context menu", () => {
     render(<TabBar />);
 

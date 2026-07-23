@@ -470,6 +470,15 @@ impl Clone for ClipboardMonitor {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn get_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|hostname| !hostname.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
 fn get_hostname() -> String {
     std::process::Command::new("hostname")
         .output()

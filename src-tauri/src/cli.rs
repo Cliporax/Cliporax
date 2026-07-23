@@ -13,8 +13,10 @@
 //!   cliporax-cli save --file <path>    - Save file content to history
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, Shell};
 use serde::{Deserialize, Serialize};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -51,6 +53,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Generate a shell completion script
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+
     /// Get clipboard item content
     Get {
         /// Item ID (or "latest" for the most recent item)
@@ -147,6 +156,90 @@ enum Commands {
     },
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+}
+
+impl From<CompletionShell> for Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Zsh => Shell::Zsh,
+        }
+    }
+}
+
+fn completion_script(shell: CompletionShell) -> String {
+    let mut command = Cli::command();
+    let mut output = Vec::new();
+    generate(Shell::from(shell), &mut command, "cliporax", &mut output);
+    let mut static_script =
+        String::from_utf8_lossy(&output).replace("_cliporax", "_cliporax_static");
+    if matches!(shell, CompletionShell::Zsh) {
+        static_script =
+            static_script.replacen("#compdef cliporax\n", "#compdef cliporax cliporax-cli\n", 1);
+    }
+
+    let dynamic_wrapper = match shell {
+        CompletionShell::Bash => {
+            r#"
+_cliporax() {
+    if [[ "${COMP_WORDS[1]}" == "get" && "${COMP_CWORD}" -eq 2 && "$2" != -* ]]; then
+        COMPREPLY=()
+        local item_id preview
+        local -a descriptions
+        while IFS=$'\t' read -r item_id preview; do
+            if [[ "${item_id}" == "$2"* ]]; then
+                COMPREPLY+=("${item_id}")
+                descriptions+=("${item_id}  ${preview}")
+            fi
+        done < <("${COMP_WORDS[0]}" __completion-items bash 2>/dev/null)
+        if [[ "${#COMPREPLY[@]}" -gt 0 ]]; then
+            printf '\nRecent clipboard items:\n' >&2
+            printf '  %s\n' "${descriptions[@]}" >&2
+            return 0
+        fi
+    fi
+    _cliporax_static "$@"
+}
+if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERSINFO[0]}" -gt 4 ]]; then
+    complete -F _cliporax -o nosort -o bashdefault -o default cliporax cliporax-cli
+else
+    complete -F _cliporax -o bashdefault -o default cliporax cliporax-cli
+fi
+"#
+        }
+        CompletionShell::Zsh => {
+            r#"
+_cliporax() {
+    if (( CURRENT == 3 )) && [[ "${words[2]}" == "get" && "${PREFIX}" != -* ]]; then
+        local -a items
+        items=("${(@f)$("${words[1]}" __completion-items zsh 2>/dev/null)}")
+        if (( ${#items[@]} > 0 )); then
+            compstate[list]='list force'
+            _describe -t clipboard-items 'recent clipboard items' items
+            return
+        fi
+    fi
+    _cliporax_static "$@"
+}
+compdef _cliporax cliporax cliporax-cli
+if [[ "${funcstack[1]}" == "_cliporax" ]]; then
+    _cliporax "$@"
+fi
+"#
+        }
+    };
+
+    format!("{static_script}\n{dynamic_wrapper}")
+}
+
+fn print_completions(shell: CompletionShell, writer: &mut dyn io::Write) -> io::Result<()> {
+    writer.write_all(completion_script(shell).as_bytes())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 struct ClipboardItem {
     id: Option<i64>,
@@ -212,6 +305,63 @@ fn data_dir_override(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 #[cfg(test)]
 mod path_tests {
     use super::*;
+
+    #[test]
+    fn generates_bash_and_zsh_completions_for_installed_command_name() {
+        for shell in [CompletionShell::Bash, CompletionShell::Zsh] {
+            let script = completion_script(shell);
+
+            assert!(script.contains("cliporax"));
+            assert!(script.contains("cliporax-cli"));
+            assert!(script.contains("completion"));
+            assert!(script.contains("__completion-items"));
+            assert!(script.contains("_cliporax_static"));
+        }
+
+        let zsh_script = completion_script(CompletionShell::Zsh);
+        assert!(zsh_script.starts_with("#compdef cliporax cliporax-cli\n"));
+        assert!(zsh_script.contains("compstate[list]='list force'"));
+        assert!(zsh_script.contains(r#"[[ "${funcstack[1]}" == "_cliporax" ]]"#));
+    }
+
+    #[test]
+    fn completion_item_uses_id_and_single_line_preview() {
+        let item = ClipboardItem {
+            id: Some(42),
+            item_type: "text".to_string(),
+            content: "first line\nsecond: line".to_string(),
+            content_hash: None,
+            metadata: None,
+            tags: None,
+            tab_id: Some(1),
+            is_sensitive: None,
+            is_pinned: None,
+            display_order: None,
+            created_at: None,
+            updated_at: None,
+        };
+
+        assert_eq!(
+            format_completion_item(&item, CompletionShell::Bash),
+            Some("42\tfirst line second: line".to_string())
+        );
+        assert_eq!(
+            format_completion_item(&item, CompletionShell::Zsh),
+            Some("42:first line second\\: line".to_string())
+        );
+    }
+
+    #[test]
+    fn recognizes_internal_completion_item_request() {
+        let args = ["cliporax", "__completion-items", "zsh"]
+            .into_iter()
+            .map(std::ffi::OsString::from);
+
+        assert!(matches!(
+            internal_completion_shell(args),
+            Some(CompletionShell::Zsh)
+        ));
+    }
 
     #[test]
     fn data_dir_override_accepts_an_explicit_directory() {
@@ -299,6 +449,74 @@ async fn list_items(
     .await?;
 
     Ok(items)
+}
+
+fn completion_preview(content: &str) -> String {
+    const MAX_CHARS: usize = 80;
+
+    let single_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = single_line.chars();
+    let preview = chars.by_ref().take(MAX_CHARS).collect::<String>();
+
+    if preview.is_empty() {
+        "(empty)".to_string()
+    } else if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn format_completion_item(item: &ClipboardItem, shell: CompletionShell) -> Option<String> {
+    let id = item.id?;
+    let preview = completion_preview(&item.content);
+
+    Some(match shell {
+        CompletionShell::Bash => format!("{id}\t{preview}"),
+        CompletionShell::Zsh => {
+            let description = preview.replace('\\', "\\\\").replace(':', "\\:");
+            format!("{id}:{description}")
+        }
+    })
+}
+
+fn internal_completion_shell(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Option<CompletionShell> {
+    let mut args = args.into_iter();
+    args.next()?;
+
+    if args.next()?.to_str()? != "__completion-items" {
+        return None;
+    }
+
+    match args.next()?.to_str()? {
+        "bash" => Some(CompletionShell::Bash),
+        "zsh" => Some(CompletionShell::Zsh),
+        _ => None,
+    }
+}
+
+async fn print_recent_completion_items(shell: CompletionShell) {
+    let Ok(db_path) = get_db_path() else {
+        return;
+    };
+    let Ok(pool) = init_db(&db_path).await else {
+        return;
+    };
+    let Ok(items) = list_items(&pool, 1, 10).await else {
+        return;
+    };
+
+    let output = items
+        .iter()
+        .filter_map(|item| format_completion_item(item, shell))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if !output.is_empty() {
+        println!("{output}");
+    }
 }
 
 /// Search items
@@ -473,7 +691,20 @@ fn format_item(item: &ClipboardItem, full: bool) -> String {
 
 #[tokio::main]
 async fn main() {
+    if let Some(shell) = internal_completion_shell(std::env::args_os()) {
+        print_recent_completion_items(shell).await;
+        return;
+    }
+
     let cli = Cli::parse();
+
+    if let Commands::Completion { shell } = &cli.command {
+        if let Err(error) = print_completions(*shell, &mut io::stdout()) {
+            eprintln!("Error: Failed to generate completions: {error}");
+            process::exit(1);
+        }
+        return;
+    }
 
     // Get database path
     let db_path = match get_db_path() {
@@ -494,6 +725,7 @@ async fn main() {
     };
 
     match cli.command {
+        Commands::Completion { .. } => unreachable!("completion exits before database setup"),
         Commands::Get {
             id,
             index,

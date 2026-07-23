@@ -74,6 +74,7 @@ pub async fn window_command(
         }
 
         WindowAction::Show => {
+            window_utils::ensure_main_window_min_size(&window)?;
             window.show().map_err(|e| e.to_string())?;
             window.set_focus().map_err(|e| e.to_string())
         }
@@ -100,6 +101,7 @@ pub async fn window_command(
                 crate::window_utils::record_focused_window();
                 state.set_shortcut_in_progress(true);
                 window.unminimize().map_err(|e| e.to_string())?;
+                window_utils::ensure_main_window_min_size(&window)?;
                 window.show().map_err(|e| e.to_string())?;
                 window.set_always_on_top(true).map_err(|e| e.to_string())?;
                 window.set_focus().map_err(|e| e.to_string())?;
@@ -211,6 +213,7 @@ pub async fn window_close(window: tauri::Window) -> Result<(), String> {
 #[tauri::command]
 pub async fn window_show(window: tauri::Window) -> Result<(), String> {
     log::info!("[Command] window_show called");
+    window_utils::ensure_main_window_min_size(&window)?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())
 }
@@ -227,6 +230,7 @@ pub async fn window_toggle(window: tauri::Window) -> Result<(), String> {
     if window.is_visible().map_err(|e| e.to_string())? {
         window.hide().map_err(|e| e.to_string())
     } else {
+        window_utils::ensure_main_window_min_size(&window)?;
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())
     }

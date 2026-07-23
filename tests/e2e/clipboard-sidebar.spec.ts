@@ -31,9 +31,11 @@ test("can resize and restore the collapsed clipboard collections sidebar", async
   await page.mouse.up();
   await expect.poll(async () => (await sidebar.boundingBox())?.width).toBeGreaterThan(initialWidth);
 
-  await page.mouse.move(handleBounds.x + 1, handleBounds.y + 40);
+  const expandedHandleBounds = await handle.boundingBox();
+  if (!expandedHandleBounds) throw new Error("Expanded sidebar handle is unavailable");
+  await page.mouse.move(expandedHandleBounds.x + 1, expandedHandleBounds.y + 40);
   await page.mouse.down();
-  await page.mouse.move(20, handleBounds.y + 40);
+  await page.mouse.move(20, expandedHandleBounds.y + 40);
   await page.mouse.up();
   await expect(sidebar).toBeHidden();
 
@@ -83,16 +85,16 @@ test("clears multi-selection when switching clipboard collections", async ({
 
   await page.getByTestId("clipboard-card-1").click({ modifiers: ["Control"] });
   await page.getByTestId("clipboard-card-2").click({ modifiers: ["Control"] });
-  await expect(page.getByTestId("clipboard-card-1")).toHaveCSS(
-    "background-color",
-    "rgba(34, 197, 94, 0.15)",
+  await expect(page.getByTestId("clipboard-card-1")).toHaveAttribute(
+    "data-multi-selected",
+    "true",
   );
 
   await page.getByRole("tab", { name: "Work" }).click();
 
   await expect(page.getByTestId("clipboard-card-3")).toBeVisible();
-  await expect(page.getByTestId("clipboard-card-3")).not.toHaveCSS(
-    "background-color",
-    "rgba(34, 197, 94, 0.15)",
+  await expect(page.getByTestId("clipboard-card-3")).toHaveAttribute(
+    "data-multi-selected",
+    "false",
   );
 });

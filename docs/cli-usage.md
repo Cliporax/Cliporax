@@ -18,20 +18,54 @@ npm run cli:build:release
 
 ```bash
 # Copy to /usr/local/bin, recommended
-sudo cp src-tauri/target/release/cliporax-cli /usr/local/bin/cliporax
+sudo cp src-tauri/target/release/cliporax-cli /usr/local/bin/cliporax-cli
 
 # Or copy to /usr/bin
-sudo cp src-tauri/target/release/cliporax-cli /usr/bin/cliporax
+sudo cp src-tauri/target/release/cliporax-cli /usr/bin/cliporax-cli
 ```
 
-After installation, use the `cliporax` command directly:
+The desktop DEB/RPM package installs the CLI as `cliporax-cli`. The standalone
+installer uses the same name to avoid colliding with the `cliporax` desktop
+executable:
 
 ```bash
-cliporax get latest
-cliporax list
-cliporax search "keyword"
-cliporax copy "text"
-cliporax save "text"
+cliporax-cli get latest
+cliporax-cli list
+cliporax-cli search "keyword"
+cliporax-cli copy "text"
+cliporax-cli save "text"
+```
+
+The installer also enables command and option completion for Bash and Zsh. Restart
+your shell after installation, then press Tab after `cliporax-cli` or any
+subcommand. Pressing Tab after `cliporax-cli get ` queries the local database and
+shows the 10 most recent items with content previews. Selecting an item completes
+its ID. If the database is unavailable, completion falls back without printing an
+error.
+
+### Enable Shell Completion Manually
+
+Generate and load a completion script without running the installer:
+
+```bash
+# Bash (current session)
+source <(cliporax-cli completion bash)
+
+# Zsh (current session)
+source <(cliporax-cli completion zsh)
+```
+
+To enable completion permanently, install the generated script in your shell's
+completion directory:
+
+```bash
+# Bash
+cliporax-cli completion bash | sudo tee \
+  /usr/local/share/bash-completion/completions/cliporax-cli >/dev/null
+
+# Zsh
+cliporax-cli completion zsh | sudo tee \
+  /usr/local/share/zsh/site-functions/_cliporax >/dev/null
 ```
 
 ## Command Reference
