@@ -167,7 +167,12 @@ export function createCombobox(initialOptions: ComboboxOptions): ComboboxInstanc
         `opacity:${option.disabled ? "0.5" : "1"}`,
       ].join(";");
       if (index === activeIndex) optionButton.style.outline = `2px solid ${palette.accent}`;
-      optionButton.addEventListener("mouseenter", () => { activeIndex = index; renderList(); });
+      optionButton.addEventListener("mouseenter", () => {
+        activeIndex = index;
+        list.querySelectorAll<HTMLButtonElement>('[role="option"]').forEach((button, optionIndex) => {
+          button.style.outline = optionIndex === activeIndex ? `2px solid ${palette.accent}` : "none";
+        });
+      });
       optionButton.addEventListener("click", () => select(option.value));
       list.append(optionButton);
     });

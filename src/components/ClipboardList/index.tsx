@@ -619,6 +619,16 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
         const ids = new Set<number>();
         const start = Math.min(selectionRange.start, selectionRange.end);
         const end = Math.max(selectionRange.start, selectionRange.end);
+
+        if (isSearchMode) {
+          for (const item of searchResults.slice(start, end + 1)) {
+            if (typeof item?.id === "number") {
+              ids.add(item.id);
+            }
+          }
+          return ids;
+        }
+
         for (let i = start; i <= end; i++) {
           const item = cacheManagerRef.current.getItem(i);
           if (typeof item?.id === "number") {
@@ -629,7 +639,13 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       }
 
       return checkedIds;
-    }, [checkedIds, selectionRange, cacheVersion]);
+    }, [
+      checkedIds,
+      selectionRange,
+      cacheVersion,
+      isSearchMode,
+      searchResults,
+    ]);
 
     const handleBatchActionComplete = useCallback(() => {
       exitMultiSelectMode();
@@ -1369,6 +1385,11 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
                       checkedIds.has(item.id) || isIndexInRange(index)
                     }
                     batchItemIds={selectedIdsForBatch}
+                    batchSelectionRange={
+                      selectionRange && !isSearchMode
+                        ? selectionRange
+                        : undefined
+                    }
                     isDraggingItem={activeDraggedId === item.id}
                     tabId={item.tab_id ?? tabId}
                     metadata={item.metadata}

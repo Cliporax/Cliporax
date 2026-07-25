@@ -152,6 +152,12 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
             .slice(offset, offset + limit),
         );
       }
+      if (cmd === "clipboard_get_ids_by_index_range") {
+        return items
+          .filter((item) => item.tab_id === args.tabId)
+          .slice(args.startIndex, args.endIndex + 1)
+          .map((item) => item.id);
+      }
       if (cmd === "clipboard_get_all_types") {
         return items
           .filter((item) => item.tab_id === args.tabId)
@@ -182,6 +188,23 @@ async function installTauriMock(page: Page, options: TauriMockOptions = {}) {
           updated_at: now,
         });
         return nextId;
+      }
+      if (cmd === "clipboard_create_batch") {
+        const createdIds = [];
+        for (const item of args.items ?? []) {
+          const nextId = Math.max(0, ...items.map((existing) => existing.id)) + 1;
+          const now = new Date().toISOString();
+          items.unshift({
+            ...item,
+            id: nextId,
+            tab_id: item.tab_id ?? 1,
+            display_order: 0,
+            created_at: now,
+            updated_at: now,
+          });
+          createdIds.push(nextId);
+        }
+        return createdIds;
       }
       if (cmd === "clipboard_delete") {
         items = items.filter((item) => item.id !== args.id);

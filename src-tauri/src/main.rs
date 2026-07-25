@@ -624,8 +624,10 @@ fn main() {
             // Clipboard commands
             clipboard_get_by_tab,
             clipboard_get_by_id,
+            clipboard_get_ids_by_index_range,
             clipboard_get_latest,
             clipboard_create,
+            clipboard_create_batch,
             clipboard_delete,
             clipboard_restore_from_trash,
             clipboard_delete_by_ids_permanently,

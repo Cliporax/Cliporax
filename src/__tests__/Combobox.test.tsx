@@ -37,4 +37,22 @@ describe("Combobox", () => {
     instance.destroy();
     instance.element.remove();
   });
+
+  it("keeps the hovered option mounted so a pointer click can select it", () => {
+    const onChange = vi.fn();
+    const instance = createCombobox({ options, onChange });
+    document.body.append(instance.element);
+
+    fireEvent.click(instance.element.querySelector('[role="combobox"]')!);
+    const imageOption = screen.getByRole("option", { name: "Image" });
+    fireEvent.mouseEnter(imageOption);
+
+    expect(imageOption.isConnected).toBe(true);
+    fireEvent.click(imageOption);
+    expect(onChange).toHaveBeenCalledWith("image");
+    expect(instance.element.querySelector('[role="combobox"]')?.textContent).toContain("Image");
+
+    instance.destroy();
+    instance.element.remove();
+  });
 });

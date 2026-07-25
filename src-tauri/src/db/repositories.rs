@@ -411,16 +411,10 @@ impl ClipboardRepository {
         }
     }
 
-    pub async fn create(pool: &Db, item: ClipboardItemInput) -> Result<i64, Error> {
-        log::info!(
-            "[ClipboardRepository] create called - type: {}, content_len: {}",
-            item.item_type,
-            item.content.len()
-        );
-
-        // Use a transaction to ensure both clipboard insert and sync outbox are atomic
-        let mut tx = pool.begin().await?;
-
+    async fn create_in_transaction(
+        tx: &mut SqliteConnection,
+        item: ClipboardItemInput,
+    ) -> Result<i64, Error> {
         // Deduplication logic for text items
         if item.item_type == "text" {
             let len = item.content.len();
@@ -455,15 +449,15 @@ impl ClipboardRepository {
             }
         }
 
-        // Get default tab id by querying directly in the transaction
-        let default_tab =
-            sqlx::query_as::<_, Tab>("SELECT * FROM tabs WHERE is_default = 1 LIMIT 1")
+        let tab_id = match item.tab_id {
+            Some(tab_id) => tab_id,
+            None => sqlx::query_as::<_, Tab>("SELECT * FROM tabs WHERE is_default = 1 LIMIT 1")
                 .fetch_optional(&mut *tx)
                 .await?
-                .ok_or(sqlx::Error::RowNotFound)?;
-        let tab_id = item
-            .tab_id
-            .unwrap_or(default_tab.id.ok_or(sqlx::Error::RowNotFound)?);
+                .ok_or(sqlx::Error::RowNotFound)?
+                .id
+                .ok_or(sqlx::Error::RowNotFound)?,
+        };
         let is_pinned = item.is_pinned.unwrap_or(0);
         let display_order =
             Self::next_display_order_for_new_item(&mut *tx, tab_id, is_pinned).await?;
@@ -492,7 +486,7 @@ impl ClipboardRepository {
 
         // Record sync change in the same transaction - this ensures the outbox contract is never violated
         record_sync_change_tx(
-            &mut tx,
+            tx,
             SYNC_ENTITY_CLIPBOARD_ITEM,
             &id.to_string(),
             SYNC_OP_CREATE,
@@ -502,10 +496,44 @@ impl ClipboardRepository {
         )
         .await?;
 
+        Ok(id)
+    }
+
+    pub async fn create(pool: &Db, item: ClipboardItemInput) -> Result<i64, Error> {
+        log::info!(
+            "[ClipboardRepository] create called - type: {}, content_len: {}",
+            item.item_type,
+            item.content.len()
+        );
+
+        // Use a transaction to ensure both clipboard insert and sync outbox are atomic
+        let mut tx = pool.begin().await?;
+        let id = Self::create_in_transaction(&mut tx, item).await?;
         tx.commit().await?;
 
         log::info!("[ClipboardRepository] create success, id: {}", id);
         Ok(id)
+    }
+
+    pub async fn create_batch(
+        pool: &Db,
+        items: Vec<ClipboardItemInput>,
+    ) -> Result<Vec<i64>, Error> {
+        log::info!(
+            "[ClipboardRepository] create_batch called - count: {}",
+            items.len()
+        );
+        let mut tx = pool.begin().await?;
+        let mut ids = Vec::with_capacity(items.len());
+        for item in items {
+            ids.push(Self::create_in_transaction(&mut tx, item).await?);
+        }
+        tx.commit().await?;
+        log::info!(
+            "[ClipboardRepository] create_batch success - count: {}",
+            ids.len()
+        );
+        Ok(ids)
     }
 
     pub async fn get_by_tab(
@@ -556,6 +584,31 @@ impl ClipboardRepository {
             Err(e) => log::error!("[ClipboardRepository] get_by_tab failed: {}", e),
         }
         result
+    }
+
+    /// Get item IDs for an index range using the same ordering as get_by_tab.
+    /// Range actions use this instead of relying on the virtual-scroll cache.
+    pub async fn get_ids_by_index_range(
+        pool: &Db,
+        tab_id: i64,
+        start_index: i64,
+        end_index: i64,
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query_as::<_, (i64,)>(
+            r#"
+            SELECT id FROM clipboard_items
+            WHERE tab_id = ?
+            ORDER BY is_pinned DESC, display_order ASC, updated_at DESC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(tab_id)
+        .bind(end_index - start_index + 1)
+        .bind(start_index)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     pub async fn get_by_id(pool: &Db, id: i64) -> Result<Option<ClipboardItem>, Error> {

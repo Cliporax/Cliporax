@@ -22,7 +22,7 @@ import {
   PluginSidebarExtensions,
 } from "./plugin";
 import { createLogger } from "./utils/logger";
-import { events, window as windowApi } from "./lib/tauri-api";
+import { events, TAB_LIST_CHANGED_EVENT, window as windowApi } from "./lib/tauri-api";
 import { useUIStore } from "./stores/uiStore";
 import { useTabStore } from "./stores/tabStore";
 import { ClipboardTabSidebar } from "./components/TabBar";
@@ -74,6 +74,16 @@ function App() {
       loadTabs();
     }
   }, [backendReady, isPreviewWindow, isSettingsWindow, loadTabs]);
+
+  useEffect(() => {
+    const handleTabListChanged = () => {
+      void loadTabs();
+    };
+    globalThis.addEventListener(TAB_LIST_CHANGED_EVENT, handleTabListChanged);
+    return () => {
+      globalThis.removeEventListener(TAB_LIST_CHANGED_EVENT, handleTabListChanged);
+    };
+  }, [loadTabs]);
 
   // Get state from the store
   const {

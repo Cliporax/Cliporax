@@ -29,6 +29,7 @@ interface ClipboardCardProps {
   isMultiSelectMode?: boolean;
   isMultiSelected?: boolean; // Whether selected in multi-select mode, shown highlighted
   batchItemIds?: Set<number>;
+  batchSelectionRange?: { start: number; end: number };
   isDraggingItem?: boolean; // Whether the current card is being dragged
   tabId?: number | null; // Current tab ID for context menu
   metadata?: string | null; // JSON metadata including source_host
@@ -219,6 +220,7 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
       isMultiSelectMode = false,
       isMultiSelected = false,
       batchItemIds,
+      batchSelectionRange,
       isDraggingItem = false,
       tabId,
       metadata,
@@ -563,6 +565,11 @@ const ClipboardCard = forwardRef<HTMLDivElement, ClipboardCardProps>(
         currentTabId={tabId ?? null}
         batchItemIds={
           isMultiSelectMode && isMultiSelected ? batchItemIds : undefined
+        }
+        batchSelectionRange={
+          isMultiSelectMode && isMultiSelected
+            ? batchSelectionRange
+            : undefined
         }
         onBatchActionComplete={onBatchActionComplete}
         onEdit={onEdit}

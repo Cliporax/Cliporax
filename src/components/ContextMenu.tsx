@@ -34,12 +34,14 @@ const MAIN_MENU_FALLBACK_HEIGHT = 64;
 const SUBMENU_GAP = 4;
 const SUBMENU_ITEM_HEIGHT = 28;
 const SUBMENU_VERTICAL_PADDING = 4;
+const MAX_BATCH_IDS = 1000;
 
 interface ContextMenuProps {
   item: ClipboardItem;
   itemId: number;
   currentTabId?: number | null;
   batchItemIds?: Set<number>;
+  batchSelectionRange?: { start: number; end: number };
   onBatchActionComplete?: () => void;
   onEdit?: () => void;
   onTogglePin?: () => void;
@@ -215,6 +217,7 @@ export function ContextMenu({
   itemId,
   currentTabId,
   batchItemIds,
+  batchSelectionRange,
   onBatchActionComplete,
   onEdit,
   onTogglePin,
@@ -259,6 +262,53 @@ export function ContextMenu({
         ? Array.from(batchItemIds)
         : [],
     [batchItemIds, itemId],
+  );
+  const hasRangeSelection =
+    batchSelectionRange !== undefined &&
+    currentTabId !== null &&
+    currentTabId !== undefined;
+
+  const resolveActionIds = useCallback(async (): Promise<number[]> => {
+    if (hasRangeSelection) {
+      const start = Math.min(
+        batchSelectionRange.start,
+        batchSelectionRange.end,
+      );
+      const end = Math.max(
+        batchSelectionRange.start,
+        batchSelectionRange.end,
+      );
+      return clipboard.getIdsByIndexRange(currentTabId, start, end);
+    }
+
+    return batchIds.length > 1 ? batchIds : [itemId];
+  }, [
+    batchIds,
+    batchSelectionRange,
+    currentTabId,
+    hasRangeSelection,
+    itemId,
+  ]);
+
+  const runIdBatches = useCallback(
+    async (
+      ids: number[],
+      operation: (batch: number[]) => Promise<number>,
+      reverse = false,
+    ): Promise<number> => {
+      const batches: number[][] = [];
+      for (let index = 0; index < ids.length; index += MAX_BATCH_IDS) {
+        batches.push(ids.slice(index, index + MAX_BATCH_IDS));
+      }
+      if (reverse) batches.reverse();
+
+      let affected = 0;
+      for (const batch of batches) {
+        affected += await operation(batch);
+      }
+      return affected;
+    },
+    [],
   );
 
   const selectedItems = useMemo(() => {
@@ -523,8 +573,13 @@ export function ContextMenu({
   const handleMoveToTab = useCallback(
     async (targetTabId: number) => {
       try {
-        if (batchIds.length > 1) {
-          const moved = await clipboard.moveToTabBatch(batchIds, targetTabId);
+        if (hasRangeSelection || batchIds.length > 1) {
+          const ids = await resolveActionIds();
+          const moved = await runIdBatches(
+            ids,
+            (batch) => clipboard.moveToTabBatch(batch, targetTabId),
+            true,
+          );
           logger.info(`Moved ${moved} items to tab ${targetTabId}`);
           onBatchActionComplete?.();
           closeMenu();
@@ -549,14 +604,28 @@ export function ContextMenu({
         logger.error("Failed to move item:", error);
       }
     },
-    [batchIds, closeMenu, itemId, onBatchActionComplete, removeItem],
+    [
+      batchIds,
+      closeMenu,
+      hasRangeSelection,
+      itemId,
+      onBatchActionComplete,
+      removeItem,
+      resolveActionIds,
+      runIdBatches,
+    ],
   );
 
   const handleCopyToTab = useCallback(
     async (targetTabId: number) => {
       try {
-        if (batchIds.length > 1) {
-          const copied = await clipboard.copyToTabBatch(batchIds, targetTabId);
+        if (hasRangeSelection || batchIds.length > 1) {
+          const ids = await resolveActionIds();
+          const copied = await runIdBatches(
+            ids,
+            (batch) => clipboard.copyToTabBatch(batch, targetTabId),
+            true,
+          );
           logger.info(`Copied ${copied} items to tab ${targetTabId}`);
           onBatchActionComplete?.();
           closeMenu();
@@ -582,32 +651,55 @@ export function ContextMenu({
         logger.error("Failed to copy item:", error);
       }
     },
-    [batchIds, closeMenu, itemId, currentTabId, onBatchActionComplete],
+    [
+      batchIds,
+      closeMenu,
+      currentTabId,
+      hasRangeSelection,
+      itemId,
+      onBatchActionComplete,
+      resolveActionIds,
+      runIdBatches,
+    ],
   );
 
   const handleRestore = useCallback(async () => {
     try {
-      const ids = batchIds.length > 1 ? batchIds : [itemId];
-      await clipboard.restoreFromTrash(ids);
-      if (ids.length > 1) onBatchActionComplete?.();
+      const ids = await resolveActionIds();
+      await runIdBatches(ids, clipboard.restoreFromTrash);
+      if (hasRangeSelection || ids.length > 1) onBatchActionComplete?.();
       else window.dispatchEvent(new CustomEvent("clipboard:action", { detail: { action: "delete", itemId } }));
       closeMenu();
     } catch (error) {
       logger.error("Failed to restore item:", error);
     }
-  }, [batchIds, closeMenu, itemId, onBatchActionComplete]);
+  }, [
+    closeMenu,
+    hasRangeSelection,
+    itemId,
+    onBatchActionComplete,
+    resolveActionIds,
+    runIdBatches,
+  ]);
 
   const handleDelete = useCallback(async () => {
     try {
-      const ids = batchIds.length > 1 ? batchIds : [itemId];
-      await clipboard.deleteByIds(ids);
-      if (ids.length > 1) onBatchActionComplete?.();
+      const ids = await resolveActionIds();
+      await runIdBatches(ids, clipboard.deleteByIds);
+      if (hasRangeSelection || ids.length > 1) onBatchActionComplete?.();
       else window.dispatchEvent(new CustomEvent("clipboard:action", { detail: { action: "delete", itemId } }));
       closeMenu();
     } catch (error) {
       logger.error("Failed to move item to Trash:", error);
     }
-  }, [batchIds, closeMenu, itemId, onBatchActionComplete]);
+  }, [
+    closeMenu,
+    hasRangeSelection,
+    itemId,
+    onBatchActionComplete,
+    resolveActionIds,
+    runIdBatches,
+  ]);
 
   const handleDeletePermanently = useCallback(async () => {
     try {
@@ -619,9 +711,9 @@ export function ContextMenu({
       });
       if (!confirmed) return;
 
-      const ids = batchIds.length > 1 ? batchIds : [itemId];
-      await clipboard.deleteByIdsPermanently(ids);
-      if (ids.length > 1) onBatchActionComplete?.();
+      const ids = await resolveActionIds();
+      await runIdBatches(ids, clipboard.deleteByIdsPermanently);
+      if (hasRangeSelection || ids.length > 1) onBatchActionComplete?.();
       else {
         window.dispatchEvent(
           new CustomEvent("clipboard:action", {
@@ -633,7 +725,15 @@ export function ContextMenu({
     } catch (error) {
       logger.error("Failed to permanently delete item:", error);
     }
-  }, [askConfirm, batchIds, closeMenu, itemId, onBatchActionComplete]);
+  }, [
+    askConfirm,
+    closeMenu,
+    hasRangeSelection,
+    itemId,
+    onBatchActionComplete,
+    resolveActionIds,
+    runIdBatches,
+  ]);
 
   const createPluginItemApi = useCallback(
     (extension: RegisteredExtension): PluginItemApi => {

@@ -13,6 +13,7 @@ vi.mock("../lib/tauri-api", () => ({
     copyToTab: vi.fn(),
     moveToTabBatch: vi.fn(),
     copyToTabBatch: vi.fn(),
+    getIdsByIndexRange: vi.fn(),
     restoreFromTrash: vi.fn(),
     deleteByIds: vi.fn(),
     deleteByIdsPermanently: vi.fn(),
@@ -315,5 +316,77 @@ describe("ContextMenu", () => {
     });
     expect(clipboard.copyToTab).not.toHaveBeenCalled();
     expect(onBatchActionComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves a range selection using database IDs instead of cached IDs", async () => {
+    const onBatchActionComplete = vi.fn();
+    const rangeIds = Array.from({ length: 1001 }, (_, index) => index + 1);
+    vi.mocked(clipboard.getIdsByIndexRange).mockResolvedValue(rangeIds);
+    vi.mocked(clipboard.moveToTabBatch).mockImplementation(async (ids) => ids.length);
+
+    render(
+      <ContextMenu
+        item={item(1)}
+        itemId={1}
+        currentTabId={1}
+        batchItemIds={new Set([1])}
+        batchSelectionRange={{ start: 0, end: 1000 }}
+        onBatchActionComplete={onBatchActionComplete}
+      >
+        <button type="button">Item 1</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 1" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /move to/i }).parentElement!,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    await waitFor(() => {
+      expect(clipboard.getIdsByIndexRange).toHaveBeenCalledWith(1, 0, 1000);
+      expect(clipboard.moveToTabBatch).toHaveBeenCalledTimes(2);
+    });
+    expect(clipboard.moveToTabBatch).toHaveBeenNthCalledWith(1, [1001], 2);
+    expect(clipboard.moveToTabBatch).toHaveBeenNthCalledWith(
+      2,
+      rangeIds.slice(0, 1000),
+      2,
+    );
+    expect(onBatchActionComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes a reverse Shift selection before resolving its IDs", async () => {
+    vi.mocked(clipboard.getIdsByIndexRange).mockResolvedValue([4, 5, 6]);
+    vi.mocked(clipboard.moveToTabBatch).mockResolvedValue(3);
+
+    render(
+      <ContextMenu
+        item={item(5)}
+        itemId={5}
+        currentTabId={1}
+        batchItemIds={new Set([5])}
+        batchSelectionRange={{ start: 5, end: 3 }}
+      >
+        <button type="button">Item 5</button>
+      </ContextMenu>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Item 5" }), {
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: /move to/i }).parentElement!,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    await waitFor(() => {
+      expect(clipboard.getIdsByIndexRange).toHaveBeenCalledWith(1, 3, 5);
+      expect(clipboard.moveToTabBatch).toHaveBeenCalledWith([4, 5, 6], 2);
+    });
   });
 });

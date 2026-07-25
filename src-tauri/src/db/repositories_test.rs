@@ -143,6 +143,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_clipboard_repository_create_batch_preserves_order_and_sync_outbox(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let default_tab = TabRepository::get_default_tab(&pool).await?;
+        let tab_id = default_tab.id.ok_or("default tab has no ID")?;
+        let items = ["Oldest", "Middle", "Newest"]
+            .into_iter()
+            .map(|content| ClipboardItemInput {
+                item_type: "text".to_string(),
+                content: content.to_string(),
+                content_hash: None,
+                metadata: Some(r#"{"source":"batch-test"}"#.to_string()),
+                tags: Some("[]".to_string()),
+                tab_id: Some(tab_id),
+                is_sensitive: Some(0),
+                is_pinned: Some(0),
+            })
+            .collect();
+
+        let ids = ClipboardRepository::create_batch(&pool, items).await?;
+        let stored = ClipboardRepository::get_by_tab(&pool, tab_id, 10, 0).await?;
+        let sync_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sync_changes WHERE entity_type = 'clipboard_item' AND operation = 'create'",
+        )
+        .fetch_one(&pool)
+        .await?;
+
+        assert_eq!(ids.len(), 3);
+        assert_eq!(
+            stored
+                .iter()
+                .map(|item| item.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Newest", "Middle", "Oldest"]
+        );
+        assert_eq!(sync_count, 3);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_clipboard_repository_create_assigns_sparse_top_order() {
         let pool = setup_test_db().await;
 
@@ -328,6 +368,42 @@ mod tests {
         assert!(target_items
             .windows(2)
             .all(|pair| pair[0].display_order <= pair[1].display_order));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_ids_by_index_range_uses_visible_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let source_tab_id = TabRepository::create(&pool, "Range Source").await?;
+        let mut created_ids = Vec::new();
+
+        for content in ["One", "Two", "Three", "Four"] {
+            created_ids.push(
+                ClipboardRepository::create(
+                    &pool,
+                    ClipboardItemInput {
+                        item_type: "text".to_string(),
+                        content: content.to_string(),
+                        content_hash: None,
+                        metadata: None,
+                        tags: None,
+                        tab_id: Some(source_tab_id),
+                        is_sensitive: Some(0),
+                        is_pinned: Some(0),
+                    },
+                )
+                .await?,
+            );
+        }
+
+        let all_ids =
+            ClipboardRepository::get_ids_by_index_range(&pool, source_tab_id, 0, 3).await?;
+        let middle_ids =
+            ClipboardRepository::get_ids_by_index_range(&pool, source_tab_id, 1, 2).await?;
+
+        assert_eq!(all_ids, created_ids.into_iter().rev().collect::<Vec<_>>());
+        assert_eq!(middle_ids, all_ids[1..=2]);
         Ok(())
     }
 

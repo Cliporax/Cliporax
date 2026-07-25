@@ -65,6 +65,10 @@ fn validate_process_request(
     Ok(())
 }
 
+fn process_start_error(error: std::io::Error) -> String {
+    format!("Failed to start requested process: {error}")
+}
+
 #[tauri::command]
 pub async fn plugin_run_process(
     registry: tauri::State<'_, Arc<RwLock<PluginRegistry>>>,
@@ -85,7 +89,7 @@ pub async fn plugin_run_process(
     })
     .await
     .map_err(|_| "Requested process exceeded the 60 second limit".to_string())?
-    .map_err(|_| "Failed to start requested process".to_string())?;
+    .map_err(process_start_error)?;
     if output.stdout.len() > MAX_PROCESS_OUTPUT_BYTES
         || output.stderr.len() > MAX_PROCESS_OUTPUT_BYTES
     {
@@ -103,7 +107,9 @@ pub async fn plugin_run_process(
 
 #[cfg(test)]
 mod process_tests {
-    use super::{validate_process_request, MAX_PROCESS_ARGS, MAX_PROCESS_ARG_BYTES};
+    use super::{
+        process_start_error, validate_process_request, MAX_PROCESS_ARGS, MAX_PROCESS_ARG_BYTES,
+    };
 
     #[test]
     fn process_request_accepts_a_bounded_command() {
@@ -123,6 +129,13 @@ mod process_tests {
         assert!(validate_process_request("com.cliporax.import", "copyq", &too_many).is_err());
         let too_long = vec!["x".repeat(MAX_PROCESS_ARG_BYTES + 1)];
         assert!(validate_process_request("com.cliporax.import", "copyq", &too_long).is_err());
+    }
+
+    #[test]
+    fn process_start_error_preserves_the_operating_system_reason() {
+        let message = process_start_error(std::io::Error::from_raw_os_error(2));
+        assert!(message.starts_with("Failed to start requested process: "));
+        assert!(message.len() > "Failed to start requested process: ".len());
     }
 }
 

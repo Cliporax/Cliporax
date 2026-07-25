@@ -165,6 +165,37 @@ describe("Tauri API Tests", () => {
       expect(result).toBe(mockId);
     });
 
+    it("should create clipboard items in one batch", async () => {
+      const items = [
+        {
+          type: tauriApi.ItemType.Text,
+          content: "Oldest",
+          content_hash: null,
+          metadata: "{}",
+          tags: "[]",
+          tab_id: 1,
+          is_sensitive: false,
+          is_pinned: false,
+        },
+        {
+          type: tauriApi.ItemType.Text,
+          content: "Newest",
+          content_hash: null,
+          metadata: "{}",
+          tags: "[]",
+          tab_id: 1,
+          is_sensitive: false,
+          is_pinned: false,
+        },
+      ];
+      mockInvoke.mockResolvedValue([5, 6]);
+
+      const result = await tauriApi.clipboard.createBatch(items);
+
+      expectInvokeCalledWith("clipboard_create_batch", { items });
+      expect(result).toEqual([5, 6]);
+    });
+
     it("should delete clipboard item successfully", async () => {
       const itemId = 1;
 
@@ -201,6 +232,19 @@ describe("Tauri API Tests", () => {
       expectInvokeCalledWith("clipboard_move_to_top", {
         id: itemId,
       });
+    });
+
+    it("should get every ID in an index range", async () => {
+      mockInvoke.mockResolvedValue([11, 12, 13]);
+
+      const result = await tauriApi.clipboard.getIdsByIndexRange(2, 5, 7);
+
+      expectInvokeCalledWith("clipboard_get_ids_by_index_range", {
+        tabId: 2,
+        startIndex: 5,
+        endIndex: 7,
+      });
+      expect(result).toEqual([11, 12, 13]);
     });
 
     it("should search clipboard items successfully", async () => {

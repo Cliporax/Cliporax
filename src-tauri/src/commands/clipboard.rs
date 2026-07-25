@@ -7,6 +7,9 @@ use tauri::Emitter;
 
 const MAX_PAGE_LIMIT: i64 = 500;
 const MAX_BATCH_IDS: usize = 1000;
+const MAX_RANGE_SELECTION_ITEMS: i64 = 100_000;
+const MAX_BATCH_CREATE_ITEMS: usize = 250;
+const MAX_BATCH_CREATE_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SEARCH_QUERY_LEN: usize = 512;
 const MAX_TAG_COUNT: usize = 32;
 const MAX_TAG_LEN: usize = 64;
@@ -70,6 +73,41 @@ fn validate_content(item_type: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_create_item(item: &ClipboardItemInput) -> Result<(), String> {
+    validate_item_type(&item.item_type)?;
+    validate_content(&item.item_type, &item.content)?;
+    if let Some(tab_id) = item.tab_id {
+        validate_positive_id("tab_id", tab_id)?;
+    }
+    Ok(())
+}
+
+fn validate_create_batch(items: &[ClipboardItemInput]) -> Result<(), String> {
+    if items.is_empty() {
+        return Err("items cannot be empty".to_string());
+    }
+    if items.len() > MAX_BATCH_CREATE_ITEMS {
+        return Err(format!(
+            "items cannot exceed {} entries",
+            MAX_BATCH_CREATE_ITEMS
+        ));
+    }
+    let mut content_bytes = 0usize;
+    for item in items {
+        validate_create_item(item)?;
+        content_bytes = content_bytes
+            .checked_add(item.content.len())
+            .ok_or_else(|| "batch content size overflow".to_string())?;
+    }
+    if content_bytes > MAX_BATCH_CREATE_CONTENT_BYTES {
+        return Err(format!(
+            "batch content cannot exceed {} bytes",
+            MAX_BATCH_CREATE_CONTENT_BYTES
+        ));
+    }
+    Ok(())
+}
+
 fn validate_tags(tags: &[String]) -> Result<(), String> {
     if tags.len() > MAX_TAG_COUNT {
         return Err(format!("tags cannot exceed {} items", MAX_TAG_COUNT));
@@ -84,6 +122,50 @@ fn validate_tags(tags: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod create_batch_tests {
+    use super::{
+        validate_create_batch, ClipboardItemInput, MAX_BATCH_CREATE_CONTENT_BYTES,
+        MAX_BATCH_CREATE_ITEMS,
+    };
+
+    fn text_item(content: String) -> ClipboardItemInput {
+        ClipboardItemInput {
+            item_type: "text".to_string(),
+            content,
+            content_hash: None,
+            metadata: None,
+            tags: Some("[]".to_string()),
+            tab_id: Some(1),
+            is_sensitive: Some(0),
+            is_pinned: Some(0),
+        }
+    }
+
+    #[test]
+    fn create_batch_accepts_the_bounded_page_size() {
+        let items = (0..MAX_BATCH_CREATE_ITEMS)
+            .map(|index| text_item(format!("item-{index}")))
+            .collect::<Vec<_>>();
+        assert!(validate_create_batch(&items).is_ok());
+    }
+
+    #[test]
+    fn create_batch_rejects_empty_and_oversized_requests() {
+        assert!(validate_create_batch(&[]).is_err());
+        let too_many = (0..=MAX_BATCH_CREATE_ITEMS)
+            .map(|index| text_item(format!("item-{index}")))
+            .collect::<Vec<_>>();
+        assert!(validate_create_batch(&too_many).is_err());
+        let too_large = vec![ClipboardItemInput {
+            item_type: "image".to_string(),
+            content: "x".repeat(MAX_BATCH_CREATE_CONTENT_BYTES + 1),
+            ..text_item("placeholder".to_string())
+        }];
+        assert!(validate_create_batch(&too_large).is_err());
+    }
 }
 
 /// Get clipboard items by tab
@@ -139,6 +221,37 @@ pub async fn clipboard_get_by_id(
     })
 }
 
+/// Get every item ID in a displayed index range without loading item contents.
+#[tauri::command]
+pub async fn clipboard_get_ids_by_index_range(
+    db: tauri::State<'_, Db>,
+    tab_id: i64,
+    start_index: i64,
+    end_index: i64,
+) -> Result<Vec<i64>, String> {
+    validate_positive_id("tab_id", tab_id)?;
+    if start_index < 0 || end_index < 0 {
+        return Err("index range cannot be negative".to_string());
+    }
+    if start_index > end_index {
+        return Err("start_index cannot be greater than end_index".to_string());
+    }
+    let selection_count = end_index
+        .checked_sub(start_index)
+        .and_then(|difference| difference.checked_add(1))
+        .ok_or_else(|| "index range is too large".to_string())?;
+    if selection_count > MAX_RANGE_SELECTION_ITEMS {
+        return Err(format!(
+            "index range cannot exceed {} items",
+            MAX_RANGE_SELECTION_ITEMS
+        ));
+    }
+
+    ClipboardRepository::get_ids_by_index_range(&db, tab_id, start_index, end_index)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Get the latest clipboard item for incremental updates
 #[tauri::command]
 pub async fn clipboard_get_latest(
@@ -175,11 +288,7 @@ pub async fn clipboard_create(
     app_handle: tauri::AppHandle,
     item: ClipboardItemInput,
 ) -> Result<i64, String> {
-    validate_item_type(&item.item_type)?;
-    validate_content(&item.item_type, &item.content)?;
-    if let Some(tab_id) = item.tab_id {
-        validate_positive_id("tab_id", tab_id)?;
-    }
+    validate_create_item(&item)?;
     log::info!(
         "[Command] clipboard_create called - type: {}, content_len: {}",
         item.item_type,
@@ -196,6 +305,29 @@ pub async fn clipboard_create(
             Err(e.to_string())
         }
     }
+}
+
+/// Create multiple clipboard items in one transaction.
+#[tauri::command]
+pub async fn clipboard_create_batch(
+    db: tauri::State<'_, Db>,
+    app_handle: tauri::AppHandle,
+    items: Vec<ClipboardItemInput>,
+) -> Result<Vec<i64>, String> {
+    validate_create_batch(&items)?;
+
+    log::info!(
+        "[Command] clipboard_create_batch called - count: {}",
+        items.len()
+    );
+    let ids = ClipboardRepository::create_batch(&db, items)
+        .await
+        .map_err(|error| {
+            log::error!("[Command] clipboard_create_batch failed: {}", error);
+            error.to_string()
+        })?;
+    let _ = app_handle.emit("clipboard:changed", ());
+    Ok(ids)
 }
 
 /// Delete a clipboard item

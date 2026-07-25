@@ -18,10 +18,11 @@ export type { Tab, ClipboardItem, ClipboardItemInput, ApiResult, ApiError };
 export { ItemType };
 
 export const CLIPBOARD_COUNT_CHANGED_EVENT = "clipboard:count-changed";
+export const TAB_LIST_CHANGED_EVENT = "tabs:list-changed";
 
 type ClipboardCountChangedDetail = {
   tabId?: number | null;
-  reason: "create" | "delete" | "delete-range" | "delete-batch" | "clear-sensitive";
+  reason: "create" | "create-batch" | "delete" | "delete-range" | "delete-batch" | "clear-sensitive";
 };
 
 // Simple logger for API module
@@ -111,6 +112,7 @@ export const tabs = {
     try {
       const result = await invoke<number>("tabs_create", { name });
       log("info", "API", "tabs.create() returned id:", result);
+      globalThis.dispatchEvent(new CustomEvent(TAB_LIST_CHANGED_EVENT));
       return result;
     } catch (error) {
       log("error", "API", "tabs.create() failed", error);
@@ -210,6 +212,16 @@ export const clipboard = {
     );
     return result ? transformItem(result) : null;
   },
+  getIdsByIndexRange: async (
+    tabId: number,
+    startIndex: number,
+    endIndex: number,
+  ): Promise<number[]> =>
+    tracedInvoke<number[]>("clipboard_get_ids_by_index_range", {
+      tabId,
+      startIndex,
+      endIndex,
+    }),
   /// Get the latest clipboard item for incremental updates
   getLatest: async (tabId: number): Promise<ClipboardItem | null> => {
     log("info", "API", "clipboard.getLatest() called - tabId:", tabId);
@@ -256,6 +268,18 @@ export const clipboard = {
       return result;
     } catch (error) {
       log("error", "API", "clipboard.create() failed", error);
+      throw error;
+    }
+  },
+  createBatch: async (items: ClipboardItemInput[]): Promise<number[]> => {
+    log("info", "API", "clipboard.createBatch() called - count:", items.length);
+    try {
+      const result = await tracedInvoke<number[]>("clipboard_create_batch", { items });
+      log("info", "API", "clipboard.createBatch() returned ids:", result.length);
+      emitClipboardCountChanged({ reason: "create-batch" });
+      return result;
+    } catch (error) {
+      log("error", "API", "clipboard.createBatch() failed", error);
       throw error;
     }
   },
