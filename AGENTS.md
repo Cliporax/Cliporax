@@ -89,6 +89,18 @@ sqlx::query("PRAGMA foreign_keys = ON").execute(&pool).await?;
 
 When deleting parent rows, defensively delete child rows first instead of relying only on cascade behavior.
 
+### Production and Development Data Isolation
+
+- Treat the production and development builds as separate applications with separate data:
+  - Production: `src-tauri/tauri.conf.json`, identifier `com.cliporax.app`, Linux data directory `~/.local/share/com.cliporax.app/`.
+  - Development: `src-tauri/tauri.dev.conf.json`, identifier `com.cliporax.app.dev`, Linux data directory `~/.local/share/com.cliporax.app.dev/`.
+- Never install or launch a development build as a replacement for the production app. In particular, do not place a dev binary at `~/.local/bin/cliporax` or another path that shadows the production `cliporax` command.
+- A request to "install locally" means install the production-identifier build unless the user explicitly requests a development build. If production installation needs privileges that are unavailable, report the blocker; do not silently substitute a dev build.
+- Before installing or restarting Cliporax, verify the build identifier, package name, target executable, `command -v cliporax`, and the executable of any running Cliporax process. After launch, verify the process has opened the intended data directory.
+- Never copy, move, merge, rename, or point one build at the other build's database directory unless the user explicitly authorizes a data migration after seeing the exact source and destination.
+- Before an authorized database migration or recovery, stop every Cliporax process and preserve `cliporax.db`, `cliporax.db-wal`, and `cliporax.db-shm` together. Validate the snapshot with a read-only SQLite integrity check before modifying data.
+- Plugin installation into `com.cliporax.app.dev` is a development verification step only. It does not authorize launching the dev app as the user's production app or modifying `com.cliporax.app`.
+
 ## Development Commands
 
 ```bash
