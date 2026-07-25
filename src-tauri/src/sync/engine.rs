@@ -577,8 +577,16 @@ impl SyncEngine {
                 .remote_order_matches_local(provider, &prepared.profile)
                 .await?
             {
-                log::info!("[Sync::Engine] No unsynced changes");
-                return Ok(SyncPhaseReport::default());
+                log::info!(
+                    "[Sync::Engine] No unsynced changes; checking for unreferenced remote objects"
+                );
+                return self
+                    .cleanup_snapshot_objects_for_local_state(
+                        provider,
+                        &prepared.profile,
+                        &prepared.device_id,
+                    )
+                    .await;
             }
             log::info!(
                 "[Sync::Engine] Snapshot order differs from remote; uploading repaired snapshot"
@@ -845,11 +853,48 @@ impl SyncEngine {
             }),
         };
         write_manifest(provider, "", &manifest).await?;
-        self.cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
+        let cleanup_errors = self
+            .cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
             .await;
 
         Ok(SyncPhaseReport {
             items_uploaded,
+            errors: cleanup_errors,
+            ..SyncPhaseReport::default()
+        })
+    }
+
+    async fn cleanup_snapshot_objects_for_local_state(
+        &self,
+        provider: &dyn SyncProvider,
+        profile: &SyncProfile,
+        device_id: &str,
+    ) -> Result<SyncPhaseReport, SyncError> {
+        let Some(manifest) = read_manifest(provider, "").await? else {
+            return Ok(SyncPhaseReport::default());
+        };
+        let snapshot_items = self
+            .repository
+            .list_snapshot_items(profile, device_id)
+            .await?;
+        let current_blob_paths = snapshot_items
+            .into_iter()
+            .filter_map(|item| {
+                let content = item.content?;
+                if content.len() <= SNAPSHOT_INLINE_CONTENT_LIMIT {
+                    return None;
+                }
+                let content_hash = item
+                    .content_hash
+                    .unwrap_or_else(|| sha256_hex(content.as_bytes()));
+                Some(format!("blobs/{}.bin", content_hash))
+            })
+            .collect();
+        let errors = self
+            .cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
+            .await;
+        Ok(SyncPhaseReport {
+            errors,
             ..SyncPhaseReport::default()
         })
     }
@@ -859,7 +904,8 @@ impl SyncEngine {
         provider: &dyn SyncProvider,
         manifest: &SnapshotManifest,
         current_blob_paths: &HashSet<String>,
-    ) {
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
         let current_shards: HashSet<&str> = manifest
             .item_shards
             .iter()
@@ -875,18 +921,20 @@ impl SyncEngine {
                         continue;
                     }
                     if let Err(error) = provider.delete(&object.path).await {
-                        log::warn!(
-                            "[Sync::Engine] Failed to delete unreferenced shard {}: {}",
-                            object.path,
-                            error
+                        let message = format!(
+                            "Failed to delete unreferenced shard {}: {}",
+                            object.path, error
                         );
+                        log::warn!("[Sync::Engine] {}", message);
+                        errors.push(message);
                     }
                 }
             }
-            Err(error) => log::warn!(
-                "[Sync::Engine] Failed to list snapshot shards for cleanup: {}",
-                error
-            ),
+            Err(error) => {
+                let message = format!("Failed to list snapshot shards for cleanup: {}", error);
+                log::warn!("[Sync::Engine] {}", message);
+                errors.push(message);
+            }
         }
 
         match provider.list("blobs/").await {
@@ -896,19 +944,22 @@ impl SyncEngine {
                         continue;
                     }
                     if let Err(error) = provider.delete(&object.path).await {
-                        log::warn!(
-                            "[Sync::Engine] Failed to delete unreferenced blob {}: {}",
-                            object.path,
-                            error
+                        let message = format!(
+                            "Failed to delete unreferenced blob {}: {}",
+                            object.path, error
                         );
+                        log::warn!("[Sync::Engine] {}", message);
+                        errors.push(message);
                     }
                 }
             }
-            Err(error) => log::warn!(
-                "[Sync::Engine] Failed to list snapshot blobs for cleanup: {}",
-                error
-            ),
+            Err(error) => {
+                let message = format!("Failed to list snapshot blobs for cleanup: {}", error);
+                log::warn!("[Sync::Engine] {}", message);
+                errors.push(message);
+            }
         }
+        errors
     }
 
     /// Cleanup stale .tmp runs from previous failed sync attempts
@@ -977,6 +1028,29 @@ impl SyncEngine {
             .await
             .ok()
             .flatten()
+    }
+
+    pub async fn append_post_sync_error(
+        &self,
+        mut report: SyncRunReport,
+        error: String,
+    ) -> Result<SyncRunReport, SyncError> {
+        report.status = SyncRunStatus::PartialSuccess;
+        report.errors.push(error.clone());
+        self.repository.save_run_report(&report).await?;
+        self.last_reports
+            .write()
+            .await
+            .insert(report.profile_id.clone(), report.clone());
+        self.set_status(
+            &report.profile_id,
+            SyncRunStatus::PartialSuccess,
+            "file_sync_refresh_failed",
+            1.0,
+            Some(error),
+        )
+        .await;
+        Ok(report)
     }
 
     /// Get sync status
@@ -1090,6 +1164,7 @@ mod tests {
     #[derive(Default)]
     struct MemoryProvider {
         objects: RwLock<HashMap<String, Vec<u8>>>,
+        delete_failures: RwLock<HashSet<String>>,
     }
 
     #[async_trait]
@@ -1098,8 +1173,20 @@ mod tests {
             Ok(())
         }
 
-        async fn list(&self, _prefix: &str) -> Result<Vec<RemoteObject>, SyncError> {
-            Ok(Vec::new())
+        async fn list(&self, prefix: &str) -> Result<Vec<RemoteObject>, SyncError> {
+            Ok(self
+                .objects
+                .read()
+                .await
+                .iter()
+                .filter(|(path, _)| path.starts_with(prefix))
+                .map(|(path, data)| RemoteObject {
+                    path: path.clone(),
+                    size: data.len() as u64,
+                    modified_at: None,
+                    etag: None,
+                })
+                .collect())
         }
 
         async fn stat(&self, path: &str) -> Result<Option<RemoteObject>, SyncError> {
@@ -1140,6 +1227,9 @@ mod tests {
         }
 
         async fn delete(&self, path: &str) -> Result<(), SyncError> {
+            if self.delete_failures.read().await.contains(path) {
+                return Err(SyncError::provider("Injected delete failure"));
+            }
             self.objects.write().await.remove(path);
             Ok(())
         }
@@ -1284,6 +1374,102 @@ mod tests {
                 .remote_order_matches_local(&provider, &test_profile())
                 .await?
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_change_cleanup_removes_orphaned_snapshot_blobs() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let live_content = "x".repeat(SNAPSHOT_INLINE_CONTENT_LIMIT + 1);
+        sqlx::query(
+            "INSERT INTO clipboard_items (id, type, content, content_hash, tab_id) VALUES (1, 'text', ?, 'live-content', 1)",
+        )
+        .bind(live_content)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO sync_item_map (local_id, item_key, stable_seq) VALUES (1, 'live-item', 1)",
+        )
+        .execute(&pool)
+        .await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool)));
+        let provider = MemoryProvider::default();
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "remote-device".to_string(),
+                    updated_at: "2026-07-24T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: Vec::new(),
+                    order: None,
+                    plugin_data: None,
+                })?,
+            )
+            .await?;
+        provider
+            .put("blobs/orphaned-content.bin", vec![1, 2, 3])
+            .await?;
+        provider
+            .put("blobs/live-content.bin", vec![4, 5, 6])
+            .await?;
+
+        let report = engine
+            .cleanup_snapshot_objects_for_local_state(&provider, &test_profile(), "local-device")
+            .await?;
+
+        assert!(report.errors.is_empty());
+        assert!(provider.stat("blobs/orphaned-content.bin").await?.is_none());
+        assert!(provider.stat("blobs/live-content.bin").await?.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_blob_cleanup_is_reported_and_can_be_retried() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool)));
+        let provider = MemoryProvider::default();
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "remote-device".to_string(),
+                    updated_at: "2026-07-24T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: Vec::new(),
+                    order: None,
+                    plugin_data: None,
+                })?,
+            )
+            .await?;
+        let blob_path = "blobs/retry-content.bin";
+        provider.put(blob_path, vec![1, 2, 3]).await?;
+        provider
+            .delete_failures
+            .write()
+            .await
+            .insert(blob_path.to_string());
+
+        let first = engine
+            .cleanup_snapshot_objects_for_local_state(&provider, &test_profile(), "local-device")
+            .await?;
+        assert_eq!(first.errors.len(), 1);
+        assert!(provider.stat(blob_path).await?.is_some());
+
+        provider.delete_failures.write().await.remove(blob_path);
+        let retry = engine
+            .cleanup_snapshot_objects_for_local_state(&provider, &test_profile(), "local-device")
+            .await?;
+        assert!(retry.errors.is_empty());
+        assert!(provider.stat(blob_path).await?.is_none());
         Ok(())
     }
 

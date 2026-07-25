@@ -171,13 +171,17 @@ impl SyncService {
             ));
         }
         let provider = self.provider_factory.build(&profile).await?;
-        let report = self.engine.run_now(profile_id, provider).await?;
+        let mut report = self.engine.run_now(profile_id, provider).await?;
         if let Err(error) = self.file_sync_service.refresh(profile_id).await {
             log::warn!(
                 "[Sync::Service] File Sync refresh failed after sync for profile {}: {}",
                 profile_id,
                 error
             );
+            report = self
+                .engine
+                .append_post_sync_error(report, format!("File Sync refresh failed: {}", error))
+                .await?;
         }
         self.emit_sync_completed(profile_id, &report);
         Ok(report)

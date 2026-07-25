@@ -598,10 +598,22 @@ impl FileSyncService {
                 .await
                 .map_err(safe_sync_error)?;
             let key = self.crypto_key(&profile).await?;
+            let remote_root = remote_entry_root(&entry.id);
             provider
-                .delete(&remote_entry_root(&entry.id))
+                .delete(&remote_root)
                 .await
                 .map_err(safe_sync_error)?;
+            if provider
+                .stat(&remote_root)
+                .await
+                .map_err(safe_sync_error)?
+                .is_some()
+            {
+                return Err(
+                    "Remote file sync data still exists after deletion; retry the delete"
+                        .to_string(),
+                );
+            }
             let local_device_id = self
                 .sync_repository
                 .get_or_create_device_id()
