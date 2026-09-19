@@ -258,6 +258,15 @@ fn main() {
                 log::error!("[Main] ERROR: Failed to initialize settings: {}", e);
                 Box::<dyn std::error::Error>::from(e.to_string())
             })?;
+            // Use the application identifier to keep production and development entries separate.
+            app.handle().plugin(
+                tauri_plugin_autostart::Builder::new()
+                    .app_name(app.config().identifier.clone())
+                    .build(),
+            )?;
+            if let Err(error) = apply_auto_start(app.handle(), settings_manager.get().auto_start) {
+                log::error!("[Autostart] Failed to reconcile login startup: {}", error);
+            }
             let shortcut_toggle_window = settings_manager.get().shortcut_toggle_window.clone();
             app.manage(std::sync::Mutex::new(settings_manager));
             log::info!("Settings initialized, shortcut: {}", shortcut_toggle_window);

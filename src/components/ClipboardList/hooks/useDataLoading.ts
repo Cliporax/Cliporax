@@ -4,7 +4,6 @@ import { perfMeasure } from "../../../utils/perf";
 import {
   tabs,
   clipboard,
-  events,
   type ClipboardChangedPayload,
 } from "../../../lib/tauri-api";
 import { PAGE_SIZE, OVERSCAN, TYPE_PRELOAD_LIMIT } from "../constants";
@@ -53,6 +52,8 @@ export function useDataLoading({
   setCacheVersion,
 }: UseDataLoadingParams): UseDataLoadingReturn {
   const loadingCountRef = useRef(0);
+  const visibleStartRef = useRef(visibleStartIndex);
+  visibleStartRef.current = visibleStartIndex;
   const activeTabIdRef = useRef<number | null>(defaultTabId);
   activeTabIdRef.current = defaultTabId;
 
@@ -66,6 +67,7 @@ export function useDataLoading({
     async (startIndex: number, count: number): Promise<boolean> => {
       if (defaultTabId === null) return false;
       const requestTabId = defaultTabId;
+      const requestRevision = cacheManagerRef.current.getRevision();
 
       const endIndex = startIndex + count - 1;
 
@@ -106,7 +108,7 @@ export function useDataLoading({
           `[Perf] Data returned - duration: ${requestDuration.toFixed(0)}ms, items: ${items.length}`,
         );
 
-        if (activeTabIdRef.current !== requestTabId) {
+        if (activeTabIdRef.current !== requestTabId || cacheManagerRef.current.getRevision() !== requestRevision) {
           logger.debug(
             `[LoadRange] Ignoring stale response for tab ${requestTabId}`,
           );
@@ -140,7 +142,9 @@ export function useDataLoading({
         logger.error("[LoadRange] Failed to load:", error);
         return false;
       } finally {
-        cacheManagerRef.current.finishLoading(startIndex, endIndex);
+        if (cacheManagerRef.current.getRevision() === requestRevision) {
+          cacheManagerRef.current.finishLoading(startIndex, endIndex);
+        }
         // Decrement loading count and clear loading state
         loadingCountRef.current--;
         if (loadingCountRef.current === 0) {
@@ -203,43 +207,38 @@ export function useDataLoading({
     checkAndLoadMissing();
   }, [checkAndLoadMissing]);
 
-  // Refresh the list
+  // Structural events invalidate positional caches. Never infer insertion offsets
+  // from a partial cache: deduplication, pruning and pinned items can all reorder it.
   const refreshList = useCallback(async () => {
     cacheManagerRef.current.clear();
     typeCacheRef.current.clear();
+    const revision = cacheManagerRef.current.getRevision();
+    const isCurrent = () => activeTabIdRef.current === defaultTabId &&
+      cacheManagerRef.current.getRevision() === revision;
     setCacheVersion((prev) => prev + 1);
-
-    if (defaultTabId !== null) {
-      try {
-        const count = await clipboard.getTotalCount(defaultTabId);
-        setTotalCount(count);
-
-        // Preload type information again
-        if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
-          const types = await clipboard.getAllTypes(defaultTabId);
-          typeCacheRef.current.setTypes(
-            types.map(([id, type]) => ({
-              id,
-              type: type as "text" | "image" | "file",
-            })),
-            0,
-          );
-        } else if (count > TYPE_PRELOAD_LIMIT) {
-          logger.info(
-            `[Refresh] Skipping full type preload for ${count} items`,
-          );
-        }
-      } catch (error) {
-        logger.error("Failed to refresh total count:", error);
+    if (defaultTabId === null) return;
+    try {
+      const count = await clipboard.getTotalCount(defaultTabId);
+      if (!isCurrent()) return;
+      setTotalCount(count);
+      if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
+        const types = await clipboard.getAllTypes(defaultTabId);
+        if (!isCurrent()) return;
+        typeCacheRef.current.setTypes(types.map(([id, type]) => ({
+          id, type: type as "text" | "image" | "file",
+        })), 0);
       }
+      if (!isCurrent()) return;
+      setCacheVersion((prev) => prev + 1);
+      if (count > 0) {
+        const start = Math.min(Math.max(0, visibleStartRef.current - OVERSCAN), count - 1);
+        await loadRange(start, Math.min(PAGE_SIZE, count - start));
+      }
+    } catch (error) {
+      logger.error("Failed to refresh clipboard list:", error);
     }
-  }, [
-    defaultTabId,
-    setTotalCount,
-    setCacheVersion,
-    cacheManagerRef,
-    typeCacheRef,
-  ]);
+  }, [defaultTabId, loadRange, setTotalCount,
+      setCacheVersion, cacheManagerRef, typeCacheRef]);
 
   // Initialize
   const initializeData = useCallback(async () => {
@@ -281,135 +280,13 @@ export function useDataLoading({
     }
   }, [setTotalCount, setCacheVersion, typeCacheRef]);
 
-  // Incremental update
+  // Reconcile all affected positions, including batch events and moved duplicates.
   const incrementalUpdate = useCallback(async (payload?: ClipboardChangedPayload | null) => {
     if (defaultTabId === null || isMultiDraggingRef.current) return;
-
-    try {
-      if (!isAutoCaptureTab) {
-        const realCount = await clipboard.getTotalCount(defaultTabId);
-        setTotalCount(realCount);
-        if (realCount === 0) {
-          cacheManagerRef.current.clear();
-          typeCacheRef.current.clear();
-          setCacheVersion((prev) => prev + 1);
-        }
-        logger.debug(
-          `[ClipboardList] Ignoring system clipboard update for non-auto-capture tab ${defaultTabId}`,
-        );
-        return;
-      }
-
-      const eventItemIds = payload?.itemIds?.filter((id) => id > 0) ?? [];
-      const eventItems = eventItemIds.length
-        ? await Promise.all(eventItemIds.map((id) => clipboard.getById(id)))
-        : [];
-      const latestItem = eventItems.length
-        ? eventItems.find((item) => item?.tab_id === defaultTabId) ?? null
-        : await clipboard.getLatest(defaultTabId);
-
-      if (eventItems.length && !latestItem) {
-        logger.debug(
-          `[ClipboardList] Clipboard event had no item for tab ${defaultTabId}`,
-        );
-        return;
-      }
-      if (latestItem && latestItem.id !== null && latestItem.id !== undefined) {
-        const getInsertionIndex = () => {
-          if (latestItem.is_pinned) return 0;
-
-          let index = 0;
-          while (cacheManagerRef.current.getItem(index)?.is_pinned) {
-            index++;
-          }
-          return index;
-        };
-
-        // Check whether this item is already in cache; it may be a duplicate moved to the top
-        const existingIndex = cacheManagerRef.current.getIndexById(
-          latestItem.id,
-        );
-
-        if (existingIndex !== undefined && existingIndex === 0) {
-          // The backend may update an existing item without changing its ID.
-          // Replace the cached record so content and metadata do not stay stale.
-          cacheManagerRef.current.addItems([latestItem], 0);
-          typeCacheRef.current.setType(0, latestItem.type);
-          const realCount = await clipboard.getTotalCount(defaultTabId);
-          setTotalCount(realCount);
-          setCacheVersion((prev) => prev + 1);
-          logger.debug("[ClipboardList] Refreshed cached item at top");
-          return;
-        }
-
-        if (existingIndex !== undefined) {
-          cacheManagerRef.current.removeAtIndex(existingIndex);
-          typeCacheRef.current.removeAtIndex(existingIndex);
-          const insertionIndex = getInsertionIndex();
-          cacheManagerRef.current.insertAt(insertionIndex, latestItem);
-          typeCacheRef.current.insertAt(insertionIndex, latestItem.type);
-          setCacheVersion((prev) => prev + 1);
-          logger.info(
-            `[ClipboardList] Moved cached item to index ${insertionIndex}`,
-          );
-          return;
-        }
-
-        // Check whether this is truly a new item by comparing the first cached item ID
-        const firstCachedItem = cacheManagerRef.current.getItem(0);
-        if (firstCachedItem && firstCachedItem.id === latestItem.id) {
-          // Latest item is already at the top of cache; skip
-          logger.debug("[ClipboardList] Latest item already cached at top");
-          return;
-        }
-
-        if (firstCachedItem?.is_pinned && !latestItem.is_pinned) {
-          const insertionIndex = getInsertionIndex();
-          const cachedItem = cacheManagerRef.current.getItem(insertionIndex);
-
-          // Only insert when the end of the pinned section is loaded. If it is
-          // outside the viewport, updating the count is sufficient.
-          if (cachedItem || insertionIndex >= totalCount) {
-            cacheManagerRef.current.insertAt(insertionIndex, latestItem);
-            typeCacheRef.current.insertAt(insertionIndex, latestItem.type);
-          }
-
-          const realCount = await clipboard.getTotalCount(defaultTabId);
-          setTotalCount(realCount);
-          setCacheVersion((prev) => prev + 1);
-          logger.info(
-            `[ClipboardList] Inserted new item after ${insertionIndex} pinned items`,
-          );
-          return;
-        }
-
-        // Truly new item
-        logger.info("[ClipboardList] New item detected, inserting at top");
-        // Update data cache: insert new item at the top, index 0, and shift all existing indexes by +1
-        cacheManagerRef.current.insertAtTop(latestItem);
-
-        // Update type cache: insert new item at the top, index 0, and shift all existing indexes by +1
-        typeCacheRef.current.insertAtTop(latestItem.type);
-
-        // Get the real total count from the backend to avoid frontend count drift
-        const realCount = await clipboard.getTotalCount(defaultTabId);
-        setTotalCount(realCount);
-        // Trigger rerender
-        setCacheVersion((prev) => prev + 1);
-      }
-    } catch (error) {
-      logger.error("[ClipboardList] Incremental update failed:", error);
-    }
-  }, [
-    defaultTabId,
-    totalCount,
-    isAutoCaptureTab,
-    isMultiDraggingRef,
-    cacheManagerRef,
-    typeCacheRef,
-    setTotalCount,
-    setCacheVersion,
-  ]);
+    if (payload?.tabIds?.length && !payload.tabIds.includes(defaultTabId)) return;
+    if (!isAutoCaptureTab && !payload?.tabIds?.includes(defaultTabId)) return;
+    await refreshList();
+  }, [defaultTabId, isAutoCaptureTab, isMultiDraggingRef, refreshList]);
 
   return {
     loadRange,

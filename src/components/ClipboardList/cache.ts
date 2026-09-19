@@ -319,6 +319,14 @@ export class ClipboardCacheManager {
   private loadedRanges: Array<{ start: number; end: number }> = [];
   private pendingRanges: Set<string> = new Set(); // Ranges currently loading, used as range locks
   private maxSize: number;
+  private revision = 0;
+
+  getRevision(): number { return this.revision; }
+
+  private invalidateRequests(): void {
+    this.revision++;
+    this.pendingRanges.clear();
+  }
 
   constructor(maxSize: number = 3000) {
     this.maxSize = maxSize;
@@ -351,6 +359,14 @@ export class ClipboardCacheManager {
   }
 
   addItems(items: any[], startIndex: number): void {
+    // Clear old mappings before writing: a batch can swap two existing IDs.
+    items.forEach((_, i) => {
+      const index = startIndex + i;
+      const previous = this.cache.get(index);
+      if (previous?.id !== undefined && this.idToIndex.get(previous.id) === index) {
+        this.idToIndex.delete(previous.id);
+      }
+    });
     items.forEach((item, i) => {
       const index = startIndex + i;
       this.cache.set(index, item);
@@ -370,6 +386,7 @@ export class ClipboardCacheManager {
 
   // Insert a new item at an index and shift all following indexes by +1
   insertAt(index: number, item: any): void {
+    this.invalidateRequests();
     const newCache = new Map<number, any>();
     const newIdToIndex = new Map<number, number>();
 
@@ -503,6 +520,7 @@ export class ClipboardCacheManager {
   }
 
   clear(): void {
+    this.invalidateRequests();
     this.cache.clear();
     this.idToIndex.clear();
     this.loadedRanges = [];
@@ -524,6 +542,7 @@ export class ClipboardCacheManager {
 
   // Incremental deletion: remove the item at the specified index and shift all following indexes by -1
   removeAtIndex(index: number): void {
+    this.invalidateRequests();
     const item = this.cache.get(index);
     if (item?.id !== undefined) {
       this.idToIndex.delete(item.id);
@@ -571,6 +590,7 @@ export class ClipboardCacheManager {
 
   // Batch-delete a specified index range in range selection mode
   removeAtIndexRange(start: number, end: number): void {
+    this.invalidateRequests();
     const count = end - start + 1;
 
     // Delete all items in the range
@@ -634,6 +654,7 @@ export class ClipboardCacheManager {
 
   // Move item to a new position for drag reordering
   moveItem(fromIndex: number, toIndex: number): void {
+    this.invalidateRequests();
     const item = this.cache.get(fromIndex);
     if (!item) return;
 

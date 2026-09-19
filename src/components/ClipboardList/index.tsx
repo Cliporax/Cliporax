@@ -209,6 +209,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
         setSearchResults([]);
         cacheManagerRef.current.clear();
         typeCacheRef.current.clear();
+        const cacheRevision = cacheManagerRef.current.getRevision();
         setCacheVersion((prev) => prev + 1);
 
         pendingScrollRestoreRef.current = { tabId: nextTabId, scrollTop: savedScroll };
@@ -234,7 +235,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
             warnAtMs: 100,
           });
           logger.info(`Total count for tab ${nextTabId}:`, count);
-          setTotalCount(count);
+          if (cacheManagerRef.current.getRevision() === cacheRevision) setTotalCount(count);
 
           if (count > 0 && count <= TYPE_PRELOAD_LIMIT) {
             const typeStart = performance.now();
@@ -245,7 +246,7 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
               return;
             }
 
-            typeCacheRef.current.setTypes(
+            if (cacheManagerRef.current.getRevision() === cacheRevision) typeCacheRef.current.setTypes(
               types.map(([id, type]) => ({
                 id,
                 type: type as "text" | "image" | "file",
@@ -829,8 +830,9 @@ const ClipboardList = forwardRef<ClipboardListRef, ClipboardListProps>(
       ) {
         if (typeCacheRef.current.size() === 0) {
           logger.info("[ExitSearch] Reloading type cache...");
+          const cacheRevision = cacheManagerRef.current.getRevision();
           clipboard.getAllTypes(defaultTabId).then((types) => {
-            typeCacheRef.current.setTypes(
+            if (cacheManagerRef.current.getRevision() === cacheRevision) typeCacheRef.current.setTypes(
               types.map(([id, type]) => ({
                 id,
                 type: type as "text" | "image" | "file",

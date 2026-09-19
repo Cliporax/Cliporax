@@ -216,9 +216,10 @@ pub async fn plugin_storage_set(
 ) -> Result<(), String> {
     validate_plugin_storage_input(&plugin_id, &key, Some(&value))?;
     ensure_storage_permission(registry.inner(), &plugin_id).await?;
-    let json =
-        serde_json::to_string(&value).map_err(|_| "Invalid plugin storage value".to_string())?;
-    sqlx::query("INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')").bind(&plugin_id).bind(&key).bind(json).execute(db.inner()).await.map_err(|e| e.to_string())?;
+    crate::sync::repository::SyncRepository::new(db.inner().clone())
+        .save_local_plugin_data(&plugin_id, &key, &value)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

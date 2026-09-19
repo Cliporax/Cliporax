@@ -614,8 +614,13 @@ impl ClipboardMonitor {
 
             // Try to get text first (fast check)
             let mut current_text = {
-                let mut clip = clipboard.lock().await;
-                read_clipboard_text(&mut clip)
+                let clipboard = clipboard.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut clip = clipboard.blocking_lock();
+                    read_clipboard_text(&mut clip)
+                })
+                .await
+                .unwrap_or_default()
             };
 
             #[cfg(target_os = "linux")]
@@ -799,8 +804,13 @@ impl ClipboardMonitor {
             {
                 // Get raw image data from clipboard
                 let image_info = {
-                    let mut clip = clipboard.lock().await;
-                    read_clipboard_image(&mut clip)
+                    let clipboard = clipboard.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut clip = clipboard.blocking_lock();
+                        read_clipboard_image(&mut clip)
+                    })
+                    .await
+                    .unwrap_or_default()
                 };
 
                 if let Some((width, height, bytes)) = image_info {
@@ -881,7 +891,7 @@ impl ClipboardMonitor {
                     }
 
                     // Convert RGBA to PNG in blocking thread (CPU intensive)
-                    let bytes_clone = bytes.clone();
+                    let bytes_clone = bytes;
                     let encode_start = Instant::now();
                     let png_result = tokio::task::spawn_blocking(move || {
                         rgba_to_png(&bytes_clone, width as u32, height as u32)
@@ -1274,6 +1284,21 @@ impl ClipboardMonitor {
     }
 
     async fn get_metadata(&self) -> Metadata {
+        tokio::task::spawn_blocking(Self::get_metadata_blocking)
+            .await
+            .unwrap_or_else(|error| {
+                log::warn!("[Clipboard] Metadata worker failed: {}", error);
+                Metadata {
+                    source: std::env::consts::OS.to_string(),
+                    source_app: "Unknown".into(),
+                    window_title: "Unknown".into(),
+                    source_host: "unknown".into(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                }
+            })
+    }
+
+    fn get_metadata_blocking() -> Metadata {
         let mut window_title = "Unknown".to_string();
         let mut source_app = "Unknown".to_string();
 
@@ -1432,11 +1457,14 @@ impl ClipboardMonitor {
         }
 
         // Try arboard as backup (or primary on non-Linux)
-        let mut clip = self.clipboard.lock().await;
-        match clip.set_text(text.to_string()) {
+        let clipboard = self.clipboard.clone();
+        let owned_text = text.to_string();
+        let result =
+            tokio::task::spawn_blocking(move || clipboard.blocking_lock().set_text(owned_text))
+                .await?;
+        match result {
             Ok(_) => {
                 log::info!("[Clipboard] Text written to clipboard using arboard");
-                drop(clip);
                 self.finish_internal_text_write(text, &text_hash).await;
                 // Give monitoring loop time to see the internal_change flag
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -1472,37 +1500,30 @@ impl ClipboardMonitor {
         // Mark as internal change BEFORE writing to prevent monitoring loop from catching it
         self.mark_internal_change().await;
 
-        // Parse data URL
-        let parts: Vec<&str> = data_url.split(',').collect();
-        if parts.len() != 2 {
-            return Err("Invalid data URL format".into());
-        }
-
-        let base64_data = parts[1];
-        let png_bytes = general_purpose::STANDARD
-            .decode(base64_data)
-            .map_err(|e| format!("Failed to decode base64: {}", e))?;
-
-        log::debug!("[Clipboard] Decoded {} bytes from base64", png_bytes.len());
-
-        // Decode PNG to RGBA
-        let img = image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("Failed to decode PNG: {}", e))?;
-        let rgba = img.to_rgba8();
-        let (width, height) = rgba.dimensions();
-
-        log::debug!("[Clipboard] Image decoded: {}x{}", width, height);
-
-        let mut clip = self.clipboard.lock().await;
-
-        match clip.set_image(arboard::ImageData {
-            width: width as usize,
-            height: height as usize,
-            bytes: rgba.into_raw().into(),
-        }) {
+        let data_url = data_url.to_owned();
+        let clipboard = self.clipboard.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let (_, encoded) = data_url.split_once(',').ok_or("Invalid data URL format")?;
+            let png_bytes = general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|e| format!("Failed to decode base64: {}", e))?;
+            let rgba = image::load_from_memory(&png_bytes)
+                .map_err(|e| format!("Failed to decode PNG: {}", e))?
+                .to_rgba8();
+            let (width, height) = rgba.dimensions();
+            clipboard
+                .blocking_lock()
+                .set_image(arboard::ImageData {
+                    width: width as usize,
+                    height: height as usize,
+                    bytes: rgba.into_raw().into(),
+                })
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        match result {
             Ok(_) => {
                 log::info!("[Clipboard] Image written to clipboard successfully");
-                drop(clip);
                 // Give monitoring loop time to see the internal_change flag
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 Ok(())

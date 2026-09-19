@@ -352,7 +352,7 @@ impl SyncService {
                     continue;
                 }
 
-                let mut should_run = false;
+                let mut should_run = next_retry_at.contains_key(&profile.id);
 
                 if profile.schedule.sync_on_startup && !startup_completed.contains(&profile.id) {
                     let elapsed = now
@@ -361,7 +361,6 @@ impl SyncService {
                         .max(0) as u64;
                     if elapsed >= profile.schedule.startup_delay_seconds {
                         should_run = true;
-                        startup_completed.insert(profile.id.clone());
                     }
                 }
 
@@ -405,8 +404,16 @@ impl SyncService {
                 }
 
                 if should_run {
-                    match self.run_now(&profile.id).await {
+                    let result = self.run_now(&profile.id).await.and_then(|report| {
+                        if report.errors.is_empty() {
+                            Ok(report)
+                        } else {
+                            Err(SyncError::provider(report.errors.join("; ")))
+                        }
+                    });
+                    match result {
                         Ok(report) => {
+                            startup_completed.insert(profile.id.clone());
                             last_interval_run.insert(profile.id.clone(), now);
                             if report.errors.is_empty() {
                                 pending_since.remove(&profile.id);

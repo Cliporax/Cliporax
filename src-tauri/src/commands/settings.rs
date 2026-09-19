@@ -5,6 +5,20 @@ use crate::settings::{
 };
 use regex::Regex;
 use tauri::Emitter;
+use tauri_plugin_autostart::ManagerExt;
+
+pub fn apply_auto_start(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    if manager.is_enabled().map_err(|e| e.to_string())? == enabled {
+        return Ok(());
+    }
+    (if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    })
+    .map_err(|e| format!("Failed to update login startup: {}", e))
+}
 
 fn validate_excluded_text_patterns(patterns: &[String]) -> Result<(), String> {
     if patterns.len() > MAX_EXCLUDED_TEXT_PATTERNS {
@@ -58,6 +72,20 @@ pub async fn settings_update(
         "[Command] settings_update called, line_height: {}",
         new_settings.line_height
     );
+
+    let auto_start_changed = settings
+        .lock()
+        .map_err(|_| "Failed to lock settings")?
+        .get()
+        .auto_start
+        != new_settings.auto_start;
+    if auto_start_changed {
+        let startup_app = app_handle.clone();
+        let auto_start = new_settings.auto_start;
+        tauri::async_runtime::spawn_blocking(move || apply_auto_start(&startup_app, auto_start))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
 
     // Update settings and trigger the file write while holding the lock for as little time as possible
     let (theme_changed, updated_settings) = {

@@ -630,7 +630,13 @@ impl SyncEngine {
         let decoded = decode_snapshot_file(&remote_bytes, profile, crypto_key.as_ref())?;
         let remote_order: SnapshotOrder = serde_json::from_slice(&decoded)?;
         let local_order = self.repository.build_snapshot_order(profile).await?;
-        Ok(remote_order.tabs == local_order.tabs)
+        if remote_order.tabs != local_order.tabs {
+            return Ok(false);
+        }
+        let plugin_data = self.repository.list_snapshot_plugin_data().await?;
+        let plugin_hash = sha256_hex(&serde_json::to_vec(&plugin_data)?);
+        Ok(manifest.plugin_data.as_ref().map(|data| data.hash.as_str())
+            == Some(plugin_hash.as_str()))
     }
 
     async fn finalize_run(
@@ -868,28 +874,26 @@ impl SyncEngine {
         &self,
         provider: &dyn SyncProvider,
         profile: &SyncProfile,
-        device_id: &str,
+        _device_id: &str,
     ) -> Result<SyncPhaseReport, SyncError> {
         let Some(manifest) = read_manifest(provider, "").await? else {
             return Ok(SyncPhaseReport::default());
         };
-        let snapshot_items = self
-            .repository
-            .list_snapshot_items(profile, device_id)
-            .await?;
-        let current_blob_paths = snapshot_items
-            .into_iter()
-            .filter_map(|item| {
-                let content = item.content?;
-                if content.len() <= SNAPSHOT_INLINE_CONTENT_LIMIT {
-                    return None;
-                }
-                let content_hash = item
-                    .content_hash
-                    .unwrap_or_else(|| sha256_hex(content.as_bytes()));
-                Some(format!("blobs/{}.bin", content_hash))
-            })
-            .collect();
+        // GC follows the committed remote manifest, never a mutable local view.
+        // A local edit arriving during sync must not delete a still-referenced blob.
+        let crypto_key = self.get_crypto_key(&profile.id).await?;
+        let mut current_blob_paths = HashSet::new();
+        for reference in &manifest.item_shards {
+            let bytes = provider.get(&reference.path).await?;
+            let decoded = decode_snapshot_file(&bytes, profile, crypto_key.as_ref())?;
+            if sha256_hex(&decoded) != reference.hash {
+                return Err(SyncError::validation(
+                    "Snapshot hash mismatch; skipping cleanup",
+                ));
+            }
+            let shard: SnapshotItemShard = serde_json::from_slice(&decoded)?;
+            current_blob_paths.extend(shard.items.into_iter().filter_map(|item| item.blob_path));
+        }
         let errors = self
             .cleanup_unreferenced_snapshot_objects(provider, &manifest, &current_blob_paths)
             .await;
@@ -1326,7 +1330,77 @@ mod tests {
         )
         .execute(&pool)
         .await?;
+        sqlx::query("CREATE TABLE plugin_sync_data (plugin_id TEXT NOT NULL, storage_key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(plugin_id, storage_key))")
+            .execute(&pool).await?;
         Ok(pool)
+    }
+
+    #[tokio::test]
+    async fn plugin_only_edit_requires_snapshot_upload() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository.clone(), Arc::new(SecretStore::new(pool.clone())));
+        let provider = MemoryProvider::default();
+        engine
+            .upload_snapshot(&provider, &test_profile(), "local-device")
+            .await?;
+        assert!(
+            engine
+                .remote_order_matches_local(&provider, &test_profile())
+                .await?
+        );
+        repository
+            .save_local_plugin_data("todo", "state", &serde_json::json!({"tasks": []}))
+            .await?;
+        assert!(repository.has_unsynced_changes(&test_profile()).await?);
+        assert!(
+            !engine
+                .remote_order_matches_local(&provider, &test_profile())
+                .await?
+        );
+        engine
+            .upload_snapshot(&provider, &test_profile(), "local-device")
+            .await?;
+        assert!(
+            engine
+                .remote_order_matches_local(&provider, &test_profile())
+                .await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn plugin_pull_preserves_subsecond_order_and_pending_local_edits() -> Result<(), SyncError>
+    {
+        let pool = setup_order_test_pool().await?;
+        let repository = SyncRepository::new(pool.clone());
+        let record = |value: &str, timestamp: &str| RemotePluginData {
+            plugin_id: "todo".into(),
+            storage_key: "state".into(),
+            value: serde_json::json!(value),
+            updated_at: timestamp.into(),
+        };
+        repository
+            .apply_snapshot_plugin_data(vec![record("new", "2026-09-19T12:00:00.900Z")])
+            .await?;
+        repository
+            .apply_snapshot_plugin_data(vec![record("old", "2026-09-19T12:00:00.100Z")])
+            .await?;
+        assert_eq!(
+            repository.list_snapshot_plugin_data().await?[0].value,
+            "new"
+        );
+        sqlx::query("INSERT INTO sync_changes (entity_type, entity_id, operation, plugin_id) VALUES ('plugin_data', 'state', 'upsert', 'todo')")
+            .execute(&pool).await?;
+        assert!(repository.has_unsynced_changes(&test_profile()).await?);
+        repository
+            .apply_snapshot_plugin_data(vec![record("remote", "2026-09-19T12:00:01.000Z")])
+            .await?;
+        assert_eq!(
+            repository.list_snapshot_plugin_data().await?[0].value,
+            "new"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1395,6 +1469,20 @@ mod tests {
         let repository = Arc::new(SyncRepository::new(pool.clone()));
         let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool)));
         let provider = MemoryProvider::default();
+        let shard_json = serde_json::to_vec(&SnapshotItemShard {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            start: 1,
+            end: 1,
+            items: vec![RemoteClipboardItem {
+                blob_path: Some("blobs/live-content.bin".to_string()),
+                ..engine
+                    .repository
+                    .list_snapshot_items(&test_profile(), "local-device")
+                    .await?
+                    .remove(0)
+            }],
+        })?;
+        provider.put("items/live.json", shard_json.clone()).await?;
         provider
             .put(
                 "manifest.json",
@@ -1405,7 +1493,13 @@ mod tests {
                     device_id: "remote-device".to_string(),
                     updated_at: "2026-07-24T00:00:00Z".to_string(),
                     item_shard_size: SNAPSHOT_SHARD_SIZE,
-                    item_shards: Vec::new(),
+                    item_shards: vec![SnapshotShardRef {
+                        path: "items/live.json".to_string(),
+                        start: 1,
+                        end: 1,
+                        count: 1,
+                        hash: sha256_hex(&shard_json),
+                    }],
                     order: None,
                     plugin_data: None,
                 })?,
@@ -1425,6 +1519,46 @@ mod tests {
         assert!(report.errors.is_empty());
         assert!(provider.stat("blobs/orphaned-content.bin").await?.is_none());
         assert!(provider.stat("blobs/live-content.bin").await?.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn screenshot_blob_survives_trash_but_is_removed_after_permanent_delete(
+    ) -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        sqlx::query("INSERT INTO tabs (id, name, is_trash) VALUES (3, 'Trash', 1)")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO clipboard_items (id, type, content, content_hash, tab_id) VALUES (1, 'image', ?, 'screenshot', 1)")
+            .bind("x".repeat(SNAPSHOT_INLINE_CONTENT_LIMIT + 1)).execute(&pool).await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool.clone())));
+        let provider = MemoryProvider::default();
+        engine
+            .upload_snapshot(&provider, &test_profile(), "device")
+            .await?;
+        assert!(provider.stat("blobs/screenshot.bin").await?.is_some());
+        sqlx::query("UPDATE clipboard_items SET tab_id = 3, deleted_at = datetime('now'), deleted_from_tab_id = 1 WHERE id = 1")
+            .execute(&pool).await?;
+        engine
+            .upload_snapshot(&provider, &test_profile(), "device")
+            .await?;
+        assert!(provider.stat("blobs/screenshot.bin").await?.is_some());
+        sqlx::query("DELETE FROM sync_item_map WHERE local_id = 1")
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM clipboard_items WHERE id = 1")
+            .execute(&pool)
+            .await?;
+        // Until a new manifest is published, the remote blob is still live.
+        engine
+            .cleanup_snapshot_objects_for_local_state(&provider, &test_profile(), "device")
+            .await?;
+        assert!(provider.stat("blobs/screenshot.bin").await?.is_some());
+        engine
+            .upload_snapshot(&provider, &test_profile(), "device")
+            .await?;
+        assert!(provider.stat("blobs/screenshot.bin").await?.is_none());
         Ok(())
     }
 

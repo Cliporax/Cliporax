@@ -420,8 +420,11 @@ pub fn restore_focused_window() -> Result<(), Box<dyn std::error::Error + Send +
                         "[WindowUtils] Restoring focus to window (Windows): {:?}",
                         info.hwnd
                     );
-                    SetForegroundWindow(hwnd);
-                    log::info!("[WindowUtils] Focus restored successfully");
+                    if SetForegroundWindow(hwnd).as_bool() {
+                        log::info!("[WindowUtils] Focus restored successfully");
+                    } else {
+                        log::warn!("[WindowUtils] Windows declined foreground activation");
+                    }
                 }
             }
 

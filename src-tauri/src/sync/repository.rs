@@ -40,6 +40,23 @@ impl SyncRepository {
         Self { pool }
     }
 
+    pub async fn save_local_plugin_data(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), SyncError> {
+        let json = serde_json::to_string(value)?;
+        // Commit a dirty marker with the value so plugin-only edits wake the scheduler.
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now')) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+            .bind(plugin_id).bind(key).bind(json).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO sync_changes (entity_type, entity_id, operation, plugin_id, source, changed_at) VALUES ('plugin_data', ?, 'upsert', ?, 'local', datetime('now'))")
+            .bind(key).bind(plugin_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn list_snapshot_plugin_data(&self) -> Result<Vec<RemotePluginData>, SyncError> {
         let rows: Vec<(String, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
             "SELECT plugin_id, storage_key, value_json, updated_at FROM plugin_sync_data ORDER BY plugin_id, storage_key",
@@ -64,9 +81,13 @@ impl SyncRepository {
         records: Vec<RemotePluginData>,
     ) -> Result<(), SyncError> {
         for record in records {
+            // Unsynced local edits win until publication; otherwise use millisecond
+            // LWW, with canonical JSON as a deterministic tie-break for old records.
+            chrono::DateTime::parse_from_rfc3339(&record.updated_at)
+                .map_err(|_| SyncError::validation("Invalid plugin data timestamp"))?;
             let value_json = serde_json::to_string(&record.value)?;
             sqlx::query(
-                "INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, datetime(?)) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE datetime(excluded.updated_at) >= datetime(plugin_sync_data.updated_at)",
+                "INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE (julianday(excluded.updated_at) > julianday(plugin_sync_data.updated_at) OR (julianday(excluded.updated_at) = julianday(plugin_sync_data.updated_at) AND excluded.value_json > plugin_sync_data.value_json)) AND NOT EXISTS (SELECT 1 FROM sync_changes WHERE entity_type = 'plugin_data' AND plugin_id = excluded.plugin_id AND entity_id = excluded.storage_key AND synced_at IS NULL AND source = 'local')",
             ).bind(record.plugin_id).bind(record.storage_key).bind(value_json).bind(record.updated_at).execute(&self.pool).await?;
         }
         Ok(())

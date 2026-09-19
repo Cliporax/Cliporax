@@ -592,6 +592,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Copy image to system clipboard
 fn copy_image_to_clipboard(image_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::process::Command;
 
     #[cfg(target_os = "linux")]
