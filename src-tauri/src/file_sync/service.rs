@@ -1,9 +1,7 @@
 use crate::clipboard::{parse_file_list, ClipboardMonitor};
 use crate::db::Db;
 use crate::file_sync::models::*;
-use crate::file_sync::rows::{
-    may_have_remote_artifacts, public_entry, source_path, ChunkRow, EntryRow,
-};
+use crate::file_sync::rows::{public_entry, source_path, ChunkRow, EntryRow};
 use crate::file_sync::snapshot::{
     ensure_staging_space, prepare_snapshot, scan_source, validate_top_level_source,
 };
@@ -37,6 +35,8 @@ pub struct FileSyncService {
     data_root: PathBuf,
     active_entries: Mutex<HashSet<String>>,
     cancelled_entries: Mutex<HashSet<String>>,
+    active_refreshes: Mutex<HashSet<String>>,
+    refresh_finished: tokio::sync::Notify,
 }
 
 impl FileSyncService {
@@ -63,6 +63,8 @@ impl FileSyncService {
             data_root,
             active_entries: Mutex::new(HashSet::new()),
             cancelled_entries: Mutex::new(HashSet::new()),
+            active_refreshes: Mutex::new(HashSet::new()),
+            refresh_finished: tokio::sync::Notify::new(),
         })
     }
 
@@ -448,83 +450,82 @@ impl FileSyncService {
 
     pub async fn refresh(&self, profile_id: &str) -> Result<(), String> {
         validate_identifier(profile_id, "profile ID")?;
+        loop {
+            let notified = self.refresh_finished.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self
+                .active_refreshes
+                .lock()
+                .await
+                .insert(profile_id.to_string())
+            {
+                break;
+            }
+            notified.await;
+        }
+        let result = self.refresh_inner(profile_id).await;
+        self.active_refreshes.lock().await.remove(profile_id);
+        self.refresh_finished.notify_waiters();
+        result
+    }
+
+    async fn refresh_inner(&self, profile_id: &str) -> Result<(), String> {
         let profile = self
             .sync_repository
             .get_profile(profile_id)
             .await
             .map_err(safe_sync_error)?;
+        if profile.schedule.paused {
+            return Err("The selected sync profile is paused".to_string());
+        }
         let provider = self
             .provider_factory
             .build(&profile)
             .await
             .map_err(safe_sync_error)?;
         let key = self.crypto_key(&profile).await?;
-        provider
-            .mkdir_all(&format!("{}/changes", REMOTE_ROOT))
-            .await
-            .map_err(safe_sync_error)?;
-        let objects = provider
-            .list(&format!("{}/changes", REMOTE_ROOT))
-            .await
-            .map_err(safe_sync_error)?;
-
-        let mut changes: Vec<(String, i64, String)> = objects
-            .into_iter()
-            .filter_map(|object| parse_change_object(&object.path))
-            .collect();
-        changes.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-        let mut changed = Vec::new();
-        let mut blocked_devices = HashSet::new();
-
-        for (device_id, seq, path) in changes {
-            if blocked_devices.contains(&device_id) {
-                continue;
-            }
-            let cursor = sqlx::query_scalar::<_, i64>(
-                "SELECT last_seq FROM file_sync_remote_cursors WHERE profile_id = ? AND remote_device_id = ?",
-            )
-            .bind(profile_id)
-            .bind(&device_id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(db_error)?
-            .unwrap_or(0);
-            if seq <= cursor {
-                continue;
-            }
-            if !is_next_remote_sequence(cursor, seq) {
-                blocked_devices.insert(device_id);
-                continue;
-            }
-
-            let encoded = provider.get(&path).await.map_err(safe_sync_error)?;
-            let bytes = decode_remote_bytes(encoded, key.as_ref(), &path)?;
-            let event: FileSyncRemoteEvent = serde_json::from_slice(&bytes)
-                .map_err(|_| "Remote file sync event is invalid".to_string())?;
-            validate_remote_event(&event, &device_id, seq)?;
-            self.apply_remote_event(profile_id, &event).await?;
-            sqlx::query(
-                r#"
-                INSERT INTO file_sync_remote_cursors
-                    (profile_id, remote_device_id, last_seq, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(profile_id, remote_device_id) DO UPDATE SET
-                    last_seq = excluded.last_seq,
-                    updated_at = datetime('now')
-                "#,
-            )
-            .bind(profile_id)
-            .bind(&device_id)
-            .bind(seq)
-            .execute(&self.db)
-            .await
-            .map_err(db_error)?;
-            changed.push(event.entry_id);
+        // Delete work survives app restarts and remains queued until remote cleanup succeeds.
+        let delete_result =
+            flush_pending_deletes(&self.db, profile_id, provider.as_ref(), key.as_ref()).await;
+        let pull_result =
+            pull_file_events(&self.db, profile_id, provider.as_ref(), key.as_ref()).await;
+        // A partial pull may already have applied some events. Always refresh the view.
+        self.emit_changed(Vec::new(), "remote-refresh");
+        match (delete_result, pull_result) {
+            (Err(a), Err(b)) => Err(format!("{}; {}", a, b)),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            _ => Ok(()),
         }
-        if !changed.is_empty() {
-            self.emit_changed(changed, "remote-refresh");
+    }
+
+    pub async fn run_background_loop(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let profiles = sqlx::query_scalar::<_, String>(
+                "SELECT default_profile_id FROM file_sync_settings WHERE default_profile_id IS NOT NULL UNION SELECT profile_id FROM file_sync_entries WHERE deleted_at IS NULL UNION SELECT profile_id FROM file_sync_pending_deletes"
+            ).fetch_all(&self.db).await;
+            match profiles {
+                Ok(profiles) => {
+                    for id in profiles {
+                        if let Ok(profile) = self.sync_repository.get_profile(&id).await {
+                            if profile.schedule.paused
+                                || (profile.encryption.enabled
+                                    && !self.sync_engine.is_profile_unlocked(&id).await)
+                            {
+                                continue;
+                            }
+                        }
+                        if let Err(error) = self.refresh(&id).await {
+                            log::warn!("[FileSync] Background refresh failed: {}", error);
+                        }
+                    }
+                }
+                Err(error) => log::warn!("[FileSync] Failed to load refresh profiles: {}", error),
+            }
         }
-        Ok(())
     }
 
     pub async fn copy_entries(&self, entry_ids: Vec<String>) -> Result<(), String> {
@@ -577,114 +578,50 @@ impl FileSyncService {
 
     pub async fn delete_entry(&self, entry_id: &str) -> Result<(), String> {
         validate_identifier(entry_id, "entry ID")?;
-        let entry = self.load_entry(entry_id).await?;
-        if matches!(
-            entry.status.as_str(),
-            "scanning" | "preparing" | "uploading" | "downloading"
-        ) {
+        // Claim the entry without holding a mutex during I/O. An upload finishing
+        // after deletion could otherwise recreate chunks that were just removed.
+        if !self
+            .active_entries
+            .lock()
+            .await
+            .insert(entry_id.to_string())
+        {
             return Err("Cancel or finish the active transfer before deleting it".to_string());
         }
-
-        let uploaded_chunks = self.uploaded_chunk_count(&entry.id, entry.revision).await?;
-        if may_have_remote_artifacts(&entry, uploaded_chunks) {
-            let profile = self
-                .sync_repository
-                .get_profile(&entry.profile_id)
-                .await
-                .map_err(safe_sync_error)?;
-            let provider = self
-                .provider_factory
-                .build(&profile)
-                .await
-                .map_err(safe_sync_error)?;
-            let key = self.crypto_key(&profile).await?;
-            let remote_root = remote_entry_root(&entry.id);
-            provider
-                .delete(&remote_root)
-                .await
-                .map_err(safe_sync_error)?;
-            if provider
-                .stat(&remote_root)
-                .await
-                .map_err(safe_sync_error)?
-                .is_some()
-            {
-                return Err(
-                    "Remote file sync data still exists after deletion; retry the delete"
-                        .to_string(),
-                );
-            }
-            let local_device_id = self
+        let result = async {
+            let entry = self.load_entry(entry_id).await?;
+            let device_id = self
                 .sync_repository
                 .get_or_create_device_id()
                 .await
                 .map_err(safe_sync_error)?;
-            let seq = self
-                .next_sequence(&entry.profile_id, &local_device_id)
-                .await?;
+            let seq = self.next_sequence(&entry.profile_id, &device_id).await?;
             let event = FileSyncRemoteEvent {
                 schema_version: FILE_SYNC_SCHEMA_VERSION,
-                device_id: local_device_id.clone(),
+                device_id,
                 seq,
-                operation: "delete".to_string(),
+                operation: "delete".into(),
                 entry_id: entry.id.clone(),
                 revision: entry.revision,
                 changed_at: chrono::Utc::now().to_rfc3339(),
                 entry: None,
             };
-            self.publish_event(provider.as_ref(), &event, key.as_ref())
-                .await?;
-            self.store_cursor(&entry.profile_id, &local_device_id, seq)
-                .await?;
+            queue_entry_deletion(&self.db, &entry.profile_id, &event).await?;
+            self.cleanup_local_entry_files(entry_id).await;
+            self.emit_changed(vec![entry_id.to_string()], "deleted");
+            if let Err(error) = self.refresh(&entry.profile_id).await {
+                log::warn!("[FileSync] Refresh after deletion failed: {}", error);
+                let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM file_sync_pending_deletes WHERE profile_id = ? AND entry_id = ?)")
+                    .bind(&entry.profile_id).bind(entry_id).fetch_one(&self.db).await.map_err(db_error)?;
+                if pending {
+                    return Err("Item removed locally; remote deletion is queued and will retry automatically when the profile is online and unlocked".to_string());
+                }
+            }
+            Ok(())
         }
-
-        self.mark_entry_deleted(&entry).await?;
-        self.cleanup_local_entry_files(&entry.id).await;
-        self.emit_changed(vec![entry_id.to_string()], "deleted");
-        Ok(())
-    }
-
-    async fn uploaded_chunk_count(&self, entry_id: &str, revision: i64) -> Result<i64, String> {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM file_sync_chunks WHERE entry_id = ? AND revision = ? AND uploaded = 1",
-        )
-        .bind(entry_id)
-        .bind(revision)
-        .fetch_one(&self.db)
-        .await
-        .map_err(db_error)
-    }
-
-    async fn mark_entry_deleted(&self, entry: &EntryRow) -> Result<(), String> {
-        sqlx::query(
-            r#"
-            INSERT INTO file_sync_tombstones (profile_id, entry_id, revision, deleted_at)
-            VALUES (?, ?, ?, datetime('now'))
-            ON CONFLICT(profile_id, entry_id) DO UPDATE SET
-                revision = MAX(file_sync_tombstones.revision, excluded.revision),
-                deleted_at = datetime('now')
-            "#,
-        )
-        .bind(&entry.profile_id)
-        .bind(&entry.id)
-        .bind(entry.revision)
-        .execute(&self.db)
-        .await
-        .map_err(db_error)?;
-        sqlx::query(
-            r#"
-            UPDATE file_sync_entries
-            SET status = 'deleted',
-                deleted_at = datetime('now'),
-                updated_at = datetime('now')
-            WHERE id = ?
-            "#,
-        )
-        .bind(&entry.id)
-        .execute(&self.db)
-        .await
-        .map_err(db_error)?;
-        Ok(())
+        .await;
+        self.active_entries.lock().await.remove(entry_id);
+        result
     }
 
     async fn cleanup_local_entry_files(&self, entry_id: &str) {
@@ -1342,39 +1279,13 @@ impl FileSyncService {
         Ok(final_path)
     }
 
-    async fn apply_remote_event(
-        &self,
-        profile_id: &str,
-        event: &FileSyncRemoteEvent,
-    ) -> Result<(), String> {
-        apply_remote_event_to_db(&self.db, profile_id, event).await
-    }
-
     async fn publish_event(
         &self,
         provider: &dyn SyncProvider,
         event: &FileSyncRemoteEvent,
         key: Option<&SecretVec<u8>>,
     ) -> Result<String, String> {
-        let directory = format!("{}/changes", REMOTE_ROOT);
-        provider
-            .mkdir_all(&directory)
-            .await
-            .map_err(safe_sync_error)?;
-        let path = format!(
-            "{}/{}_{:020}.json{}",
-            directory,
-            event.device_id,
-            event.seq,
-            if key.is_some() { ".enc" } else { "" }
-        );
-        let bytes = serde_json::to_vec(event)
-            .map_err(|_| "Failed to encode file sync event".to_string())?;
-        provider
-            .put(&path, encode_remote_bytes(bytes, key, &path)?)
-            .await
-            .map_err(safe_sync_error)?;
-        Ok(path)
+        publish_file_event(provider, event, key).await
     }
 
     async fn next_sequence(&self, profile_id: &str, device_id: &str) -> Result<i64, String> {
@@ -1554,6 +1465,11 @@ impl FileSyncService {
 
     async fn ensure_not_cancelled(&self, entry_id: &str) -> Result<(), String> {
         if self.cancelled_entries.lock().await.contains(entry_id) {
+            return Err(CANCELLED_ERROR.to_string());
+        }
+        let deleted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM file_sync_entries WHERE id = ? AND deleted_at IS NOT NULL)")
+            .bind(entry_id).fetch_one(&self.db).await.map_err(db_error)?;
+        if deleted {
             Err(CANCELLED_ERROR.to_string())
         } else {
             Ok(())
@@ -1655,7 +1571,11 @@ async fn apply_remote_event_to_db(
             (id, profile_id, origin_device_id, kind, display_name, total_size,
              file_count, revision, status, confirmed, manifest_hash, manifest_path,
              synced_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'remote', 1, ?, ?, ?, datetime('now'))
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'remote', 1, ?, ?, ?, datetime('now')
+        WHERE NOT EXISTS (
+            SELECT 1 FROM file_sync_tombstones
+            WHERE profile_id = ? AND entry_id = ? AND revision >= ?
+        )
         ON CONFLICT(id) DO UPDATE SET
             profile_id = excluded.profile_id,
             origin_device_id = excluded.origin_device_id,
@@ -1676,7 +1596,9 @@ async fn apply_remote_event_to_db(
             deleted_at = NULL,
             error = NULL,
             updated_at = datetime('now')
-        WHERE excluded.revision >= file_sync_entries.revision
+        WHERE excluded.revision > file_sync_entries.revision
+           OR (excluded.revision = file_sync_entries.revision
+               AND file_sync_entries.status NOT IN ('queued', 'scanning', 'preparing', 'uploading', 'downloading'))
         "#,
     )
     .bind(&summary.id)
@@ -1690,10 +1612,172 @@ async fn apply_remote_event_to_db(
     .bind(&summary.manifest_hash)
     .bind(&summary.manifest_path)
     .bind(&summary.synced_at)
+    .bind(profile_id)
+    .bind(&summary.id)
+    .bind(summary.revision)
     .execute(db)
     .await
     .map_err(db_error)?;
     Ok(())
+}
+
+// Receipts replace the old contiguous cursor: publication can fail after a
+// sequence is reserved, and remote listings can reveal a smaller sequence later.
+async fn pull_file_events(
+    db: &Db,
+    profile_id: &str,
+    provider: &dyn SyncProvider,
+    key: Option<&SecretVec<u8>>,
+) -> Result<(), String> {
+    let directory = format!("{}/changes", REMOTE_ROOT);
+    provider
+        .mkdir_all(&directory)
+        .await
+        .map_err(safe_sync_error)?;
+    let mut changes: Vec<_> = provider
+        .list(&directory)
+        .await
+        .map_err(safe_sync_error)?
+        .into_iter()
+        .filter_map(|object| parse_change_object(&object.path))
+        .collect();
+    changes.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    let mut blocked = HashSet::new();
+    let mut errors = Vec::new();
+    for (device, seq, path) in changes {
+        if blocked.contains(&device) {
+            continue;
+        }
+        let received: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM file_sync_received_events WHERE profile_id = ? AND device_id = ? AND seq = ?)")
+            .bind(profile_id).bind(&device).bind(seq).fetch_one(db).await.map_err(db_error)?;
+        if received {
+            continue;
+        }
+        let result = async {
+            let bytes = provider.get(&path).await.map_err(safe_sync_error)?;
+            let decoded = decode_remote_bytes(bytes, key, &path)?;
+            let event: FileSyncRemoteEvent = serde_json::from_slice(&decoded)
+                .map_err(|_| "Remote file sync event is invalid".to_string())?;
+            validate_remote_event(&event, &device, seq)?;
+            apply_remote_event_to_db(db, profile_id, &event).await?;
+            // If the process stops between apply and receipt, replay is idempotent.
+            sqlx::query("INSERT OR IGNORE INTO file_sync_received_events (profile_id, device_id, seq) VALUES (?, ?, ?)")
+                .bind(profile_id).bind(&device).bind(seq).execute(db).await.map_err(db_error)?;
+            Ok::<(), String>(())
+        }.await;
+        if let Err(error) = result {
+            errors.push(format!(
+                "File Sync event {} from {} failed: {}",
+                seq, device, error
+            ));
+            blocked.insert(device);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+async fn queue_entry_deletion(
+    db: &Db,
+    profile_id: &str,
+    event: &FileSyncRemoteEvent,
+) -> Result<(), String> {
+    let json = serde_json::to_string(event).map_err(|_| "Failed to encode deletion")?;
+    let mut tx = db.begin().await.map_err(db_error)?;
+    sqlx::query("INSERT INTO file_sync_pending_deletes (profile_id, entry_id, event_json) VALUES (?, ?, ?) ON CONFLICT(profile_id, entry_id) DO NOTHING")
+        .bind(profile_id).bind(&event.entry_id).bind(json).execute(&mut *tx).await.map_err(db_error)?;
+    sqlx::query("INSERT INTO file_sync_tombstones (profile_id, entry_id, revision) VALUES (?, ?, ?) ON CONFLICT(profile_id, entry_id) DO UPDATE SET revision = MAX(file_sync_tombstones.revision, excluded.revision)")
+        .bind(profile_id).bind(&event.entry_id).bind(event.revision).execute(&mut *tx).await.map_err(db_error)?;
+    sqlx::query("UPDATE file_sync_entries SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE profile_id = ? AND id = ?")
+        .bind(profile_id).bind(&event.entry_id).execute(&mut *tx).await.map_err(db_error)?;
+    tx.commit().await.map_err(db_error)
+}
+
+async fn publish_file_event(
+    provider: &dyn SyncProvider,
+    event: &FileSyncRemoteEvent,
+    key: Option<&SecretVec<u8>>,
+) -> Result<String, String> {
+    let directory = format!("{}/changes", REMOTE_ROOT);
+    provider
+        .mkdir_all(&directory)
+        .await
+        .map_err(safe_sync_error)?;
+    let path = format!(
+        "{}/{}_{:020}.json{}",
+        directory,
+        event.device_id,
+        event.seq,
+        if key.is_some() { ".enc" } else { "" }
+    );
+    let bytes = serde_json::to_vec(event).map_err(|_| "Failed to encode file sync event")?;
+    provider
+        .put(&path, encode_remote_bytes(bytes, key, &path)?)
+        .await
+        .map_err(safe_sync_error)?;
+    Ok(path)
+}
+
+async fn flush_pending_deletes(
+    db: &Db,
+    profile_id: &str,
+    provider: &dyn SyncProvider,
+    key: Option<&SecretVec<u8>>,
+) -> Result<(), String> {
+    let pending: Vec<(String, String)> = sqlx::query_as(
+        "SELECT entry_id, event_json FROM file_sync_pending_deletes WHERE profile_id = ?",
+    )
+    .bind(profile_id)
+    .fetch_all(db)
+    .await
+    .map_err(db_error)?;
+    let mut errors = Vec::new();
+    for (id, json) in pending {
+        let result = async {
+            let event: FileSyncRemoteEvent =
+                serde_json::from_str(&json).map_err(|_| "Invalid pending deletion")?;
+            validate_identifier(&id, "entry ID")?;
+            validate_remote_event(&event, &event.device_id, event.seq)?;
+            if event.entry_id != id || event.operation != "delete" {
+                return Err("Invalid pending deletion identity".to_string());
+            }
+            // Publish the tombstone first. Retrying uses the same event and sequence.
+            publish_file_event(provider, &event, key).await?;
+            let root = remote_entry_root(&id);
+            provider.delete(&root).await.map_err(safe_sync_error)?;
+            if provider
+                .stat(&root)
+                .await
+                .map_err(safe_sync_error)?
+                .is_some()
+            {
+                return Err("Remote file data still exists after deletion".to_string());
+            }
+            sqlx::query(
+                "DELETE FROM file_sync_pending_deletes WHERE profile_id = ? AND entry_id = ?",
+            )
+            .bind(profile_id)
+            .bind(&id)
+            .execute(db)
+            .await
+            .map_err(db_error)?;
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(error) = result {
+            sqlx::query("UPDATE file_sync_pending_deletes SET error = ? WHERE profile_id = ? AND entry_id = ?")
+                .bind(&error).bind(profile_id).bind(&id).execute(db).await.map_err(db_error)?;
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Remote deletion pending: {}", errors.join("; ")))
+    }
 }
 
 fn parse_change_object(path: &str) -> Option<(String, i64, String)> {
@@ -1707,10 +1791,6 @@ fn parse_change_object(path: &str) -> Option<(String, i64, String)> {
     }
     let seq = seq.parse::<i64>().ok()?;
     Some((device_id.to_string(), seq, path.to_string()))
-}
-
-fn is_next_remote_sequence(cursor: i64, sequence: i64) -> bool {
-    cursor.checked_add(1) == Some(sequence)
 }
 
 fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -1800,6 +1880,243 @@ fn safe_sync_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct TestProvider {
+        objects: Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        fail_get: Mutex<HashSet<String>>,
+        fail_put: std::sync::atomic::AtomicBool,
+        fail_delete: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl SyncProvider for TestProvider {
+        async fn test_connection(&self) -> Result<(), crate::sync::error::SyncError> {
+            Ok(())
+        }
+        async fn list(
+            &self,
+            prefix: &str,
+        ) -> Result<Vec<crate::sync::models::RemoteObject>, crate::sync::error::SyncError> {
+            Ok(self
+                .objects
+                .lock()
+                .await
+                .iter()
+                .filter(|(path, _)| path.starts_with(prefix))
+                .map(|(path, bytes)| crate::sync::models::RemoteObject {
+                    path: path.clone(),
+                    size: bytes.len() as u64,
+                    modified_at: None,
+                    etag: None,
+                })
+                .collect())
+        }
+        async fn stat(
+            &self,
+            path: &str,
+        ) -> Result<Option<crate::sync::models::RemoteObject>, crate::sync::error::SyncError>
+        {
+            Ok(self.list(path).await?.into_iter().next())
+        }
+        async fn get(&self, path: &str) -> Result<Vec<u8>, crate::sync::error::SyncError> {
+            if self.fail_get.lock().await.contains(path) {
+                return Err(crate::sync::error::SyncError::provider(
+                    "Injected read failure",
+                ));
+            }
+            self.objects
+                .lock()
+                .await
+                .get(path)
+                .cloned()
+                .ok_or_else(|| crate::sync::error::SyncError::provider("Not found"))
+        }
+        async fn put(
+            &self,
+            path: &str,
+            bytes: Vec<u8>,
+        ) -> Result<(), crate::sync::error::SyncError> {
+            if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::sync::error::SyncError::provider(
+                    "Injected publish failure",
+                ));
+            }
+            self.objects.lock().await.insert(path.into(), bytes);
+            Ok(())
+        }
+        async fn mkdir_all(&self, _: &str) -> Result<(), crate::sync::error::SyncError> {
+            Ok(())
+        }
+        async fn move_object(&self, _: &str, _: &str) -> Result<(), crate::sync::error::SyncError> {
+            Err(crate::sync::error::SyncError::provider("Unused"))
+        }
+        async fn delete(&self, path: &str) -> Result<(), crate::sync::error::SyncError> {
+            if self.fail_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::sync::error::SyncError::provider(
+                    "Injected delete failure",
+                ));
+            }
+            self.objects
+                .lock()
+                .await
+                .retain(|key, _| key != path && !key.starts_with(&format!("{}/", path)));
+            Ok(())
+        }
+    }
+
+    async fn replication_db() -> Result<Db, sqlx::Error> {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await?;
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&db).await?;
+        sqlx::query("CREATE TABLE sync_profiles (id TEXT PRIMARY KEY)")
+            .execute(&db)
+            .await?;
+        sqlx::query("INSERT INTO sync_profiles VALUES ('profile123')")
+            .execute(&db)
+            .await?;
+        crate::db::database::create_file_sync_tables(&db).await?;
+        Ok(db)
+    }
+
+    fn upsert_event(seq: i64, id: &str) -> FileSyncRemoteEvent {
+        FileSyncRemoteEvent {
+            schema_version: FILE_SYNC_SCHEMA_VERSION,
+            device_id: "device123".into(),
+            seq,
+            operation: "upsert".into(),
+            entry_id: id.into(),
+            revision: 1,
+            changed_at: "2026-09-19T00:00:00Z".into(),
+            entry: Some(RemoteEntrySummary {
+                id: id.into(),
+                origin_device_id: "device123".into(),
+                kind: "file".into(),
+                display_name: "file.txt".into(),
+                total_size: 4,
+                file_count: 1,
+                revision: 1,
+                manifest_path: format!("file-sync/v1/entries/{}/1/manifest.json", id),
+                manifest_hash: "a".repeat(64),
+                synced_at: "2026-09-19T00:00:00Z".into(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn gaps_and_late_events_do_not_stall_or_lose_entries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = replication_db().await?;
+        let provider = TestProvider::default();
+        // Old high-water cursors may have skipped events. Receipts safely replay them.
+        sqlx::query("INSERT INTO file_sync_remote_cursors (profile_id, remote_device_id, last_seq) VALUES ('profile123', 'device123', 99)").execute(&db).await?;
+        publish_file_event(&provider, &upsert_event(2, "second"), None).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM file_sync_entries ORDER BY id")
+            .fetch_all(&db)
+            .await?;
+        assert_eq!(ids, vec!["first", "second"]);
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(receipts, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_download_is_not_acknowledged_and_retries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = replication_db().await?;
+        let provider = TestProvider::default();
+        let first = publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
+        publish_file_event(&provider, &upsert_event(2, "second"), None).await?;
+        provider.fail_get.lock().await.insert(first.clone());
+        assert!(pull_file_events(&db, "profile123", &provider, None)
+            .await
+            .is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(count, 0);
+        provider.fail_get.lock().await.remove(&first);
+        provider.put(&first, b"invalid event".to_vec()).await?;
+        assert!(pull_file_events(&db, "profile123", &provider, None)
+            .await
+            .is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(count, 0);
+        publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(count, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deletion_retries_publication_and_remote_cleanup_without_resurrection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        let db = replication_db().await?;
+        let other = replication_db().await?;
+        let provider = TestProvider::default();
+        let upsert = upsert_event(1, "entry123");
+        publish_file_event(&provider, &upsert, None).await?;
+        let object = "file-sync/v1/entries/entry123/1/objects/0/0.bin";
+        provider.put(object, vec![1, 2, 3, 4]).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        pull_file_events(&other, "profile123", &provider, None).await?;
+        let mut deletion = upsert.clone();
+        deletion.device_id = "otherdevice".into();
+        deletion.operation = "delete".into();
+        deletion.entry = None;
+        queue_entry_deletion(&db, "profile123", &deletion).await?;
+        let visible: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_entries WHERE deleted_at IS NULL")
+                .fetch_one(&db)
+                .await?;
+        assert_eq!(visible, 0);
+        provider.fail_put.store(true, Ordering::SeqCst);
+        assert!(flush_pending_deletes(&db, "profile123", &provider, None)
+            .await
+            .is_err());
+        assert!(provider.stat(object).await?.is_some());
+        provider.fail_put.store(false, Ordering::SeqCst);
+        provider.fail_delete.store(true, Ordering::SeqCst);
+        assert!(flush_pending_deletes(&db, "profile123", &provider, None)
+            .await
+            .is_err());
+        pull_file_events(&other, "profile123", &provider, None).await?;
+        let visible: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_entries WHERE deleted_at IS NULL")
+                .fetch_one(&other)
+                .await?;
+        assert_eq!(visible, 0);
+        provider.fail_delete.store(false, Ordering::SeqCst);
+        flush_pending_deletes(&db, "profile123", &provider, None).await?;
+        assert!(provider.stat(object).await?.is_none());
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_pending_deletes")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(pending, 0);
+        // A previously unseen, delayed upsert cannot undo a tombstone.
+        publish_file_event(&provider, &upsert_event(3, "entry123"), None).await?;
+        pull_file_events(&other, "profile123", &provider, None).await?;
+        let visible: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_entries WHERE deleted_at IS NULL")
+                .fetch_one(&other)
+                .await?;
+        assert_eq!(visible, 0);
+        Ok(())
+    }
 
     fn test_entry() -> EntryRow {
         EntryRow {
@@ -1942,40 +2259,6 @@ mod tests {
             "file-sync/v1/entries/a/1/objects/0/1.bin",
         )
         .is_err());
-    }
-
-    #[test]
-    fn remote_sequence_must_be_contiguous() {
-        assert!(is_next_remote_sequence(0, 1));
-        assert!(is_next_remote_sequence(41, 42));
-        assert!(!is_next_remote_sequence(0, 2));
-        assert!(!is_next_remote_sequence(i64::MAX, i64::MIN));
-    }
-
-    #[test]
-    fn delete_remote_artifact_detection_covers_unsynced_and_failed_entries() {
-        let mut entry = test_entry();
-        entry.status = "queued".to_string();
-        assert!(!may_have_remote_artifacts(&entry, 0));
-
-        entry.status = "failed".to_string();
-        assert!(!may_have_remote_artifacts(&entry, 0));
-        assert!(may_have_remote_artifacts(&entry, 1));
-
-        entry.manifest_hash = Some("0".repeat(64));
-        assert!(may_have_remote_artifacts(&entry, 0));
-    }
-
-    #[test]
-    fn synced_remote_entries_are_deleted_from_their_entry_root() {
-        let mut entry = test_entry();
-        entry.status = "synced".to_string();
-
-        assert!(may_have_remote_artifacts(&entry, 0));
-        assert_eq!(
-            remote_entry_root(&entry.id),
-            "file-sync/v1/entries/entry123"
-        );
     }
 
     #[tokio::test]

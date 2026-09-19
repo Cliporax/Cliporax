@@ -53,8 +53,8 @@ pub async fn refresh_market(
 
     let index_bytes = fetch_market_index(&source.release_api_url).await?;
 
-    write_cached_index(&app_handle, &index_bytes).await?;
     let mut index = parse_market_index(&index_bytes)?;
+    write_cached_index(&app_handle, &index_bytes).await?;
     apply_install_status(&mut index.plugins, &registry).await;
 
     Ok(MarketRefreshResult {
@@ -315,17 +315,19 @@ async fn load_index_or_refresh(
     app_handle: tauri::AppHandle,
     registry: Arc<RwLock<PluginRegistry>>,
 ) -> Result<MarketIndex, String> {
-    match read_cached_index(&app_handle).await {
-        Ok(bytes) => parse_market_index(&bytes),
-        Err(_) => {
-            let refreshed = refresh_market(app_handle, registry).await?;
-            Ok(MarketIndex {
-                schema_version: 1,
-                generated_at: Utc::now().to_rfc3339(),
-                market_version: "refreshed".to_string(),
-                plugins: refreshed.plugins,
-            })
-        }
+    // Resolve the current version, filename and checksum together before installing.
+    // An existing cache may reference a release that has since been replaced.
+    match refresh_market(app_handle.clone(), registry).await {
+        Ok(refreshed) => Ok(MarketIndex {
+            schema_version: 1,
+            generated_at: Utc::now().to_rfc3339(),
+            market_version: "refreshed".to_string(),
+            plugins: refreshed.plugins,
+        }),
+        Err(refresh_error) => read_cached_index(&app_handle)
+            .await
+            .and_then(|bytes| parse_market_index(&bytes))
+            .map_err(|cache_error| format!("{}; {}", refresh_error, cache_error)),
     }
 }
 
@@ -498,6 +500,43 @@ fn current_platform() -> &'static str {
     }
 }
 
+/// Recover a moved GitHub release asset using its stable repository and the
+/// filename from the current index. Never rewrite third-party hosting URLs.
+fn latest_github_asset_url(download_url: &str, asset_name: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(download_url).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let segments: Vec<_> = url.path_segments()?.collect();
+    if segments.len() != 6
+        || segments[0].is_empty()
+        || segments[1].is_empty()
+        || segments[2] != "releases"
+        || !(segments[3] == "download" || (segments[3] == "latest" && segments[4] == "download"))
+        || segments[4].is_empty()
+        || segments[5].is_empty()
+        || asset_name.is_empty()
+        || asset_name.contains(['/', '\\'])
+    {
+        return None;
+    }
+    let owner = segments[0].to_string();
+    let repo = segments[1].to_string();
+    url.set_path(&format!("/{}/{}/releases/latest/download/", owner, repo));
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .push(asset_name);
+    url.set_query(None);
+    url.set_fragment(None);
+    (url.as_str() != download_url).then(|| url.to_string())
+}
+
 async fn download_package(
     app_handle: &tauri::AppHandle,
     plugin: &MarketPlugin,
@@ -507,11 +546,23 @@ async fn download_package(
         .await
         .map_err(|e| format!("Failed to create plugin download directory: {}", e))?;
     let package_path = dir.join(&plugin.asset.name);
-    let mut response = http_client()?
+    let client = http_client()?;
+    let mut response = client
         .get(&plugin.asset.download_url)
         .send()
         .await
-        .map_err(|e| format!("Failed to download plugin package: {}", e))?
+        .map_err(|e| format!("Failed to download plugin package: {}", e))?;
+    if matches!(response.status().as_u16(), 404 | 410) {
+        if let Some(url) = latest_github_asset_url(&plugin.asset.download_url, &plugin.asset.name) {
+            response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to download relocated plugin package: {}", e))?;
+        }
+    }
+    // A moved asset must still satisfy the index size, digest and manifest checks.
+    let mut response = response
         .error_for_status()
         .map_err(|e| format!("Plugin package download failed: {}", e))?;
 
@@ -726,6 +777,67 @@ pub async fn plugin_market_get_install_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_moved_release_using_current_asset_name() {
+        assert_eq!(
+            latest_github_asset_url(
+                "https://github.com/Cliporax/cliporax-plugin-market/releases/download/v0.1.0/old.zip",
+                "com.example.plugin-2.0.0.cliporax-plugin.zip",
+            ),
+            Some("https://github.com/Cliporax/cliporax-plugin-market/releases/latest/download/com.example.plugin-2.0.0.cliporax-plugin.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_renamed_latest_asset_and_encodes_filename() {
+        assert_eq!(
+            latest_github_asset_url(
+                "https://github.com/owner/repo/releases/latest/download/old.zip?raw=true#asset",
+                "new package.zip",
+            ),
+            Some(
+                "https://github.com/owner/repo/releases/latest/download/new%20package.zip"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            latest_github_asset_url(
+                "https://github.com/owner/repo/releases/download/plugins%2Fv1.0.0/old.zip",
+                "new.zip",
+            ),
+            Some("https://github.com/owner/repo/releases/latest/download/new.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_other_hosts_or_non_release_urls() {
+        for url in [
+            "https://example.com/owner/repo/releases/download/v1/old.zip",
+            "https://github.com.example.com/owner/repo/releases/download/v1/old.zip",
+            "http://github.com/owner/repo/releases/download/v1/old.zip",
+            "https://github.com/owner/repo/archive/refs/tags/v1.zip",
+            "https://github.com/owner/repo/releases/download/v1/",
+            "https://github.com/owner/repo/releases/download//old.zip",
+            "https://github.com/owner/repo/releases/latest/download/new.zip",
+            "not a URL",
+        ] {
+            assert_eq!(latest_github_asset_url(url, "new.zip"), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn does_not_resolve_asset_names_containing_paths() {
+        for name in ["", "../plugin.zip", "dir/plugin.zip", "dir\\plugin.zip"] {
+            assert_eq!(
+                latest_github_asset_url(
+                    "https://github.com/owner/repo/releases/download/v1/old.zip",
+                    name,
+                ),
+                None,
+            );
+        }
+    }
 
     #[test]
     fn rejects_unsafe_relative_paths() {

@@ -299,6 +299,12 @@ impl SyncRepository {
         .bind(profile_id)
         .execute(&mut *transaction)
         .await?;
+        for table in ["file_sync_received_events", "file_sync_pending_deletes"] {
+            sqlx::query(&format!("DELETE FROM {} WHERE profile_id = ?", table))
+                .bind(profile_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         sqlx::query("DELETE FROM file_sync_entries WHERE profile_id = ?")
             .bind(profile_id)
             .execute(&mut *transaction)

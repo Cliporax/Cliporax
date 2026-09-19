@@ -64,11 +64,3 @@ pub(super) fn source_path(entry: &EntryRow) -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .ok_or_else(|| "Local source path is unavailable".to_string())
 }
-
-pub(super) fn may_have_remote_artifacts(entry: &EntryRow, uploaded_chunk_count: i64) -> bool {
-    uploaded_chunk_count > 0
-        || matches!(entry.status.as_str(), "synced" | "ready" | "remote")
-        || entry.synced_at.is_some()
-        || (matches!(entry.status.as_str(), "failed" | "cancelled")
-            && entry.manifest_hash.is_some())
-}

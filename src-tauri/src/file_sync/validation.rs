@@ -168,6 +168,7 @@ pub(super) fn validate_remote_event(
     if event.schema_version != FILE_SYNC_SCHEMA_VERSION
         || event.device_id != expected_device
         || event.seq != expected_seq
+        || event.seq < 1
         || event.entry_id.is_empty()
         || event.revision < 1
         || (event.operation != "upsert" && event.operation != "delete")

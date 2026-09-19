@@ -1,189 +1,117 @@
 # Cliporax Agent Instructions
 
-You are working on Cliporax, a privacy-first cross-platform clipboard manager built with Tauri 2, React, TypeScript, Rust, SQLx/SQLite, Tailwind CSS v4, Zustand, and a local plugin system.
+Cliporax is a privacy-first clipboard manager for macOS, Linux, and Windows, built with Tauri 2, React, TypeScript, Rust, SQLx/SQLite, Tailwind CSS v4, Zustand, and local plugins.
 
-This file is the agent entry point. Keep detailed procedures in `agent/skills/` and deterministic checks in `scripts/agent/`.
+This file contains project-wide constraints and navigation. Read detailed procedures in `agent/skills/` only when relevant; use `scripts/agent/` for repeatable checks. Keep this entry point concise and avoid duplicating procedures here.
 
-## Operating Mode
+## Working Agreement
 
-- Read the codebase before changing it; prefer existing patterns over new abstractions.
-- Implement the requested change unless the user explicitly asks for planning or review only.
-- Keep changes scoped. Do not refactor unrelated code.
-- After completing code changes, run the post-change review flow to verify the requested behavior, diff scope, and regression risk before the final response.
-- Never revert user changes or untracked work unless explicitly asked.
-- Stage explicit paths only. Do not commit build artifacts, experimental bridge code, or unrelated untracked files.
+- Deliver the requested outcome end to end: inspect, implement, verify, and review. Stop at analysis or planning only when requested.
+- Inspect the relevant code, callers, tests, and Git status before editing. Prefer existing patterns and the smallest coherent change; avoid unrelated refactors or speculative abstractions.
+- Make routine, reversible implementation decisions autonomously. Ask only when missing information materially changes the outcome, or an action requires authorization that has not already been given. Continue independent work while clarification is pending.
+- Scale planning to uncertainty and risk. Small changes need no formal plan; cross-subsystem or high-risk work needs a short plan with observable completion criteria. Update it when evidence changes the approach.
+- Preserve existing staged, unstaged, and untracked work. Do not revert, overwrite, or stage others' changes without authorization, or claim them as your own. A dirty worktree alone is not a blocker.
+- Treat source, logs, test output, and measurements as evidence. Check assumptions that affect correctness; distinguish verified behavior from inference and unavailable checks.
+- Finish with a concise account of what changed, what was verified, and any remaining limitation. Do not claim a test passed unless it ran successfully; avoid template reports for small tasks.
 
-## Skill Routing
+## Read on Demand
 
-Use the smallest relevant skill set. Skills are grouped by task phase:
+Paths below are relative to the repository root. Load the smallest relevant set, before the corresponding work.
 
-- Workflow:
-  - `agent/skills/workflow/auto-plan.md`: medium/large work, cross frontend/backend changes, schema/data-flow changes.
-  - `agent/skills/workflow/post-change-review.md`: after implementing any requested code change; verify logic correctness and unchanged behavior outside the intended scope.
-- Quality gates:
-  - `agent/skills/quality/targeted-test.md`: choose fast verification after changes.
-  - `agent/skills/quality/cross-platform-check.md`: system APIs, windowing, clipboard, files, shortcuts, CSS/WebView/browser API changes, and before commits.
-  - `agent/skills/quality/code-review.md`: review requests, risky changes, or pre-commit review.
-  - `agent/skills/quality/git-hygiene.md`: staging, committing, pushing, artifact/lockfile checks.
-- Domain contracts:
-  - `agent/skills/domain/tauri-ipc-contract.md`: adding/changing Tauri commands, events, invoke wrappers, or shared TS/Rust contracts.
-  - `agent/skills/domain/sync-engine.md`: cloud sync, profiles, cursors, item maps, tombstones, conflicts, encryption, scheduler.
-- Debugging:
-  - `agent/skills/debug/dev-log.md`: debugging runtime logs, IPC traces, lock contention, clipboard/window behavior.
+| Trigger | Procedure |
+| --- | --- |
+| Medium/large work, schema or cross-layer data flow | `agent/skills/workflow/auto-plan.md` |
+| After any code change, before the final response | `agent/skills/workflow/post-change-review.md` |
+| Choosing verification for changed behavior | `agent/skills/quality/targeted-test.md` |
+| System APIs, windowing, clipboard, files, shortcuts, CSS/WebView/browser APIs; before commits | `agent/skills/quality/cross-platform-check.md` |
+| Requested review, risky changes, pre-commit review | `agent/skills/quality/code-review.md` |
+| Staging, committing, pushing, release hygiene | `agent/skills/quality/git-hygiene.md` |
+| Tauri commands, events, invoke wrappers, shared TS/Rust contracts | `agent/skills/domain/tauri-ipc-contract.md` |
+| Cloud sync, profiles, cursors, identity maps, tombstones, conflicts, encryption, scheduler | `agent/skills/domain/sync-engine.md` |
+| Runtime logs, IPC traces, lock contention, clipboard/window debugging | `agent/skills/debug/dev-log.md` |
 
-Do not produce long template reports for small tasks. Use compact plans and targeted verification.
+## Code Map
 
-## Architecture Map
-
-- `src-tauri/`: Rust backend.
 - `src-tauri/src/main.rs`: app setup, command registration, managed state.
-- `src-tauri/src/commands/`: Tauri IPC command handlers.
-- `src-tauri/src/clipboard.rs`: clipboard monitoring and clipboard writes.
-- `src-tauri/src/db/`: SQLx/SQLite database layer.
-- `src-tauri/src/sync/`: cloud sync models, repository, service, engine, providers, crypto, secrets.
-- `src-tauri/src/plugin/`: plugin registry, lifecycle, sandbox, permissions.
-- `src/`: React frontend.
-- `src/lib/tauri-api.ts`: typed frontend IPC wrappers. Use this instead of raw invoke calls in components.
-- `src/components/`, `src/stores/`, `src/contexts/`, `src/plugin/`: UI, state, context, plugin frontend.
-- `plugins/`: plugin packages. Existing cloud-sync plugin uses `yarn.lock`; do not add `package-lock.json` unless intentionally migrating.
+- `src-tauri/src/commands/`, `src-tauri/src/clipboard.rs`, `src-tauri/src/window_utils.rs`: IPC, clipboard monitoring/writes, window behavior.
+- `src-tauri/src/db/`: SQLx/SQLite persistence.
+- `src-tauri/src/sync/`, `src-tauri/src/file_sync/`: cloud sync and file sync.
+- `src-tauri/src/plugin/`, `plugins/`: backend plugin system and plugin packages.
+- `src/lib/tauri-api.ts`: typed frontend IPC wrappers; use these instead of raw component-level `invoke` calls.
+- `src/components/`, `src/stores/`, `src/contexts/`, `src/plugin/`: React UI, state, context, plugin frontend.
 
-## Hard Rules
+## Project Constraints
 
-### Cross-Platform
+### Platform and UI
 
-- Cliporax must support macOS, Linux, and Windows.
-- Platform-specific behavior must be guarded with `#[cfg(...)]`, a shared helper, or a clear fallback.
-- Frontend must not use `confirm()`, `alert()`, `prompt()`, `navigator.clipboard`, Service Workers, or WebGPU.
-- Linux window/focus/clipboard behavior is fragile: do not assume `set_focus()` succeeds; avoid hiding a window before clipboard writes complete.
-- Rust paths should use `PathBuf` / `.join()` instead of string separator assembly.
-- WebKit-prefixed CSS must have a standard property when applicable.
+- All three desktop platforms must remain supported. Guard platform-specific code with `#[cfg(...)]`, a shared helper, or an explicit fallback.
+- Do not use `confirm()`, `alert()`, `prompt()`, `navigator.clipboard`, Service Workers, or WebGPU in the frontend. Use React dialogs and the existing Tauri clipboard path.
+- On Linux, do not assume `set_focus()` succeeds, and do not hide a window before clipboard writes complete.
+- Use `PathBuf` / `.join()` for Rust paths. Pair WebKit-prefixed CSS with standard properties where applicable.
+- Keep the desktop UI dense, quiet, and task-focused. Reuse components, Tailwind v4 styles, and available Lucide icons; prevent overflow and overlap at narrow widths.
 
-Run before commits or platform-sensitive changes:
+### Privacy and Boundaries
 
-```bash
-scripts/agent/cross-platform-check.sh
-```
+- No telemetry or data collection by default. Never log secrets, credentials, tokens, decrypted payloads, or full clipboard content.
+- Detect/flag sensitive clipboard items; do not store them in plaintext when a secure path exists.
+- Validate IPC inputs at the backend boundary: empty values, lengths, numeric ranges, collection sizes, and supported enum values as applicable. Keep plugin permissions least-privilege.
+- Keep Rust commands, `invoke_handler` registration, typed wrappers, and shared types consistent. Handle frontend failures through state-level error handling or `try/catch`; test important success and failure behavior.
+- Use contextual logs following `[Component/Module] Level: Message`. Development logs live under app data at `logs/dev-YYYY-MM-DD.log`; use the debug procedure for platform paths.
 
-### Privacy and Security
+### Concurrency and Persistence
 
-- No telemetry or data collection by default.
-- Do not log secrets, credentials, tokens, decrypted payloads, or full clipboard content.
-- Sensitive clipboard items must be detected/flagged and must not be stored in plain text when a secure path exists.
-- IPC command inputs must be validated for empty strings, length, numeric ranges, list sizes, and unsupported enum values.
-- Plugin permissions must stay least-privilege.
+- Keep locks narrowly scoped. Do not hold them across blocking work, external processes, long database loops, or unrelated `.await` operations. If an async operation requires a lock, make the scope and ordering rationale explicit.
+- Prefer `Arc<T>` with fine-grained internal locks. Clone owned managed-state handles early in Tauri commands and background loops; avoid mechanically cloning the service itself.
+- Ensure SQLite foreign keys are enabled on every pooled connection, using connection options or per-connection initialization. A single `PRAGMA foreign_keys = ON` executed through a pool does not configure all connections.
+- When deleting parent rows, defensively delete child rows first; do not rely only on cascade behavior.
 
-### Concurrency
+### Sync Invariants
 
-- Do not hold locks across long-running operations, blocking calls, infinite loops, external processes, database-heavy loops, or `.await` chains unless the lock scope is intentionally tiny.
-- Prefer `Arc<T>` with fine-grained internal locks over wrapping whole services in one outer mutex.
-- In Tauri commands, clone managed state quickly (`state.as_ref().clone()`) and perform work on the clone.
-- Long-running background loops should own cloned handles and lock only the fields they need.
+- `sync_item_map.item_key` is the durable remote/local identity bridge. Apply tombstones through the mapped `item_key`, never a content-hash fallback.
+- Do not advance a remote cursor past a change that failed to download, decode, or apply.
+- Preserve partial-failure details in run reports/status. Conflict resolution must be explicit and auditable.
 
-### SQLite
+### Production and Development Isolation
 
-SQLite foreign keys are off by default. Enable them after pool creation:
+- Production: `src-tauri/tauri.conf.json`, identifier `com.cliporax.app`, Linux data at `~/.local/share/com.cliporax.app/`.
+- Development: `src-tauri/tauri.dev.conf.json`, identifier `com.cliporax.app.dev`, Linux data at `~/.local/share/com.cliporax.app.dev/`.
+- Treat these as separate applications and data stores. Never replace production with a dev build or put a dev binary at a path that shadows the production command, including `~/.local/bin/cliporax`.
+- “Install locally” means a production-identifier build unless the user requests development. Report unavailable privileges; do not silently substitute a dev build.
+- Before installing or restarting, verify the build identifier, package name, target executable, command resolution (`command -v cliporax` on Unix or `Get-Command cliporax` on PowerShell), and running Cliporax executables. After launch, verify the process opened the intended data directory.
+- Do not copy, move, merge, rename, or redirect one build's database directory into the other without explicit migration authorization covering the exact source and destination.
+- Before an authorized database migration/recovery, stop every Cliporax process, preserve `cliporax.db`, `cliporax.db-wal`, and `cliporax.db-shm` together, and validate the snapshot with a read-only SQLite integrity check before modifying data.
+- Installing plugins into the dev app authorizes development verification only; it does not authorize modifying or replacing production.
 
-```rust
-sqlx::query("PRAGMA foreign_keys = ON").execute(&pool).await?;
-```
+## Verification and Commands
 
-When deleting parent rows, defensively delete child rows first instead of relying only on cascade behavior.
+Completion means the requested behavior is implemented, relevant checks have run (or their blockers are stated), and the final diff has been reviewed for correctness, scope, and regressions.
 
-### Production and Development Data Isolation
+- Choose checks by affected behavior and risk. Cover meaningful failure paths and regressions; do not add tests that merely repeat implementation details.
+- After code changes, follow the post-change review procedure and use `scripts/agent/targeted-test.sh` when practical. It inspects all changes against HEAD, including pre-existing work; use explicit scoped checks when that would select unrelated work.
+- Run `scripts/agent/cross-platform-check.sh` for platform-sensitive changes and before commits. A local static check is not evidence that all operating systems were tested.
+- For documentation-only changes, inspect the diff, referenced paths, and instruction consistency; application builds/tests are unnecessary unless the documentation change affects executable behavior.
+- Run `.sh` scripts through an available Bash environment. If unavailable, run applicable underlying checks directly and report what could not be checked. Do not present a missing tool as a passing check.
 
-- Treat the production and development builds as separate applications with separate data:
-  - Production: `src-tauri/tauri.conf.json`, identifier `com.cliporax.app`, Linux data directory `~/.local/share/com.cliporax.app/`.
-  - Development: `src-tauri/tauri.dev.conf.json`, identifier `com.cliporax.app.dev`, Linux data directory `~/.local/share/com.cliporax.app.dev/`.
-- Never install or launch a development build as a replacement for the production app. In particular, do not place a dev binary at `~/.local/bin/cliporax` or another path that shadows the production `cliporax` command.
-- A request to "install locally" means install the production-identifier build unless the user explicitly requests a development build. If production installation needs privileges that are unavailable, report the blocker; do not silently substitute a dev build.
-- Before installing or restarting Cliporax, verify the build identifier, package name, target executable, `command -v cliporax`, and the executable of any running Cliporax process. After launch, verify the process has opened the intended data directory.
-- Never copy, move, merge, rename, or point one build at the other build's database directory unless the user explicitly authorizes a data migration after seeing the exact source and destination.
-- Before an authorized database migration or recovery, stop every Cliporax process and preserve `cliporax.db`, `cliporax.db-wal`, and `cliporax.db-shm` together. Validate the snapshot with a read-only SQLite integrity check before modifying data.
-- Plugin installation into `com.cliporax.app.dev` is a development verification step only. It does not authorize launching the dev app as the user's production app or modifying `com.cliporax.app`.
+| Purpose | Command |
+| --- | --- |
+| Install dependencies, when needed | `npm install` |
+| Frontend dev server | `npm run dev` |
+| Tauri development app (dev identifier) | `npm run tauri:dev` |
+| Frontend type check and build | `npm run build` |
+| Frontend tests | `npm run test:run` |
+| Browser end-to-end tests | `npm run test:e2e` |
+| Rust tests (from repository root) | `cargo test --manifest-path src-tauri/Cargo.toml` |
+| Infer checks from changed paths | `bash scripts/agent/targeted-test.sh` |
+| Cross-platform static checks | `bash scripts/agent/cross-platform-check.sh` |
+| Pre-commit hygiene | `bash scripts/agent/git-hygiene-check.sh` |
 
-## Development Commands
+## Git and Releases
 
-```bash
-npm install
-npm run dev
-npm run tauri:dev
-npm run build
-npm run test:run
-cd src-tauri && cargo test
-```
-
-Fast verification:
-
-```bash
-scripts/agent/targeted-test.sh
-```
-
-Pre-commit hygiene:
-
-```bash
-scripts/agent/git-hygiene-check.sh
-git status --short
-git diff --cached --stat
-```
-
-## Logging
-
-Use structured, contextual logs. Avoid clipboard content and secrets.
-
-- Format convention: `[Component/Module] Level: Message`
-- Development log files are date-rotated under app data: `logs/dev-YYYY-MM-DD.log`
-- See `agent/skills/debug/dev-log.md` for exact platform paths and grep/jq commands.
-
-## IPC Contract
-
-When adding or changing commands:
-
-- Add/modify Rust command and register it in `invoke_handler`.
-- Add/update typed wrapper and types in `src/lib/tauri-api.ts`.
-- Handle frontend errors with state-level error handling or `try/catch`.
-- Add focused tests for important success/failure behavior.
-- Use `agent/skills/domain/tauri-ipc-contract.md` for the full checklist.
-
-## Sync Engine Invariants
-
-For `src-tauri/src/sync/` changes:
-
-- `sync_item_map.item_key` is the durable remote/local identity bridge.
-- Tombstones must delete by mapped `item_key`, not content hash fallback.
-- Do not advance a remote cursor when a remote change failed to download, decode, or apply.
-- Partial success must preserve error details in run report/status.
-- Conflict resolution must be explicit and auditable.
-- Use `agent/skills/domain/sync-engine.md` before editing sync behavior.
-
-## Frontend Guidance
-
-- Build the actual tool UI, not marketing pages.
-- Keep the desktop app dense, quiet, and task-focused.
-- Use Tailwind v4 and existing components/styles.
-- Use Lucide icons where available.
-- Avoid native browser dialogs; use React UI or direct action for non-critical operations.
-- Ensure text does not overflow or overlap on narrow app widths.
-
-## Git Hygiene
-
-- Check status before staging.
-- Stage explicit paths, not broad `git add .`, unless the change is intentionally repository-wide.
-- Do not commit package/build artifacts (`*.zip`, `*.dmg`, `*.msi`, `*.AppImage`, `dist/`, `target/`).
-- Do not mix `package-lock.json` into a plugin package that already uses `yarn.lock` unless migrating package managers.
-- If push fails due to auth, report the local commit hash and exact error.
-
-### Release Tag Rules
-
-- When pushing a release tag, default to semantic version tags in the `vX.X.X` format, for example `v1.2.3`.
-- Do not push a release tag unless the project version has already been updated to match that tag in the relevant version files.
-- Treat tag creation and version bumping as one release operation: update versions, commit the version bump, then create and push the matching `vX.X.X` tag.
-- If the user asks to push a tag without specifying a version format, use `vX.X.X` by default and confirm the current project version matches before pushing.
-
-### Commit Message and Changelog Rules
-
-- Commit messages must be written in English.
-- GitHub release changelogs are generated from commit prefixes. Only `feat:` and `fix:` commits are listed; commits without these prefixes are intentionally omitted from release notes.
-- Use `feat:` only for substantial user-visible features. If the feature change is under 100 changed lines and does not add a meaningful new workflow or capability, do not use `feat:`.
-- Use `fix:` only for severe or clearly user-visible bugs. For small/non-severe bug fixes, do not use `fix:`; use an unprefixed concise message instead.
-- Ordinary `fix:` entries may be summarized in release notes as `修复一下bug`. Serious fixes can use `fix!:` or include clear severity words in the subject so release notes can show the specific fix.
-- Use unprefixed or non-release prefixes such as `chore:`, `test:`, `refactor:`, or plain concise messages for maintenance, small fixes, tests, docs, and internal cleanup that should not appear in release notes.
+- Commit, push, and release only within the user's authorized scope. Check status before staging, stage explicit paths, and review `git diff --cached --stat` and the staged diff before committing.
+- Do not commit build/package artifacts (`*.zip`, `*.dmg`, `*.msi`, `*.AppImage`, `dist/`, `target/`), experimental bridge code, or unrelated untracked files.
+- Respect each package's package manager. In particular, plugins using `yarn.lock` must not gain `package-lock.json` unless intentionally migrating.
+- If push authentication fails, report the local commit hash and exact error, with credentials redacted.
+- Release tags default to `vX.X.X`. Update all relevant version files, commit the version bump, then create and push the matching tag. Never push a release tag whose version does not match the project.
+- Write commit messages in English. Release notes derive from `feat:` / `fix:` prefixes; reserve them for substantial user-visible features and severe or clearly user-visible bugs.
+- A feature under 100 changed lines without a meaningful new workflow/capability must not use `feat:`. Use an unprefixed message or `chore:`, `test:`, `refactor:` for maintenance, docs, internal cleanup, and small/non-severe fixes.
+- Ordinary `fix:` entries may appear as `修复一下bug`; serious fixes can use `fix!:` or clear severity words to retain a specific release-note description.

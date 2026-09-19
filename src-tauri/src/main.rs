@@ -374,6 +374,7 @@ fn main() {
                 tokio::spawn(sync_service.run_scheduler_loop());
                 tokio::spawn(async move {
                     file_sync_service.resume_pending().await;
+                    file_sync_service.run_background_loop().await;
                 });
                 log::info!("Plugin system initialized");
 

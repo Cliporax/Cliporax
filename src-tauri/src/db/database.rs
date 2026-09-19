@@ -622,7 +622,14 @@ async fn create_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-async fn create_file_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
+pub(crate) async fn create_file_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS file_sync_received_events (profile_id TEXT NOT NULL, device_id TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY(profile_id, device_id, seq), FOREIGN KEY(profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE)",
+        "CREATE TABLE IF NOT EXISTS file_sync_pending_deletes (profile_id TEXT NOT NULL, entry_id TEXT NOT NULL, event_json TEXT NOT NULL, error TEXT, PRIMARY KEY(profile_id, entry_id), FOREIGN KEY(profile_id) REFERENCES sync_profiles(id) ON DELETE CASCADE)",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS file_sync_settings (
@@ -769,6 +776,42 @@ async fn create_file_sync_tables(pool: &Db) -> Result<(), sqlx::Error> {
 #[cfg(test)]
 mod file_sync_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_sync_delivery_state_survives_migration_and_is_removed_with_profile(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await?;
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+        run_migrations(&pool).await?;
+        sqlx::query("INSERT INTO sync_profiles (id, name, provider, remote_root, config_json) VALUES ('delivery', 'Delivery', 'webdav', '/', '{}')")
+            .execute(&pool).await?;
+        sqlx::query("INSERT INTO file_sync_received_events VALUES ('delivery', 'device', 2)")
+            .execute(&pool)
+            .await?;
+        sqlx::query("INSERT INTO file_sync_pending_deletes (profile_id, entry_id, event_json) VALUES ('delivery', 'entry', '{}')").execute(&pool).await?;
+        run_migrations(&pool).await?;
+        for table in ["file_sync_received_events", "file_sync_pending_deletes"] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", table))
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!(count, 1);
+        }
+        crate::sync::repository::SyncRepository::new(pool.clone())
+            .delete_profile("delivery")
+            .await?;
+        for table in ["file_sync_received_events", "file_sync_pending_deletes"] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", table))
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!(count, 0);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn migrations_are_idempotent_with_existing_trash() -> Result<(), sqlx::Error> {
