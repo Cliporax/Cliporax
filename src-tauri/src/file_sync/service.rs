@@ -476,9 +476,6 @@ impl FileSyncService {
             .get_profile(profile_id)
             .await
             .map_err(safe_sync_error)?;
-        if profile.schedule.paused {
-            return Err("The selected sync profile is paused".to_string());
-        }
         let provider = self
             .provider_factory
             .build(&profile)
@@ -486,8 +483,19 @@ impl FileSyncService {
             .map_err(safe_sync_error)?;
         let key = self.crypto_key(&profile).await?;
         // Delete work survives app restarts and remains queued until remote cleanup succeeds.
-        let delete_result =
-            flush_pending_deletes(&self.db, profile_id, provider.as_ref(), key.as_ref()).await;
+        // Opening File Sync may inspect remote files while clipboard sync is
+        // paused. Do not publish queued deletions until the profile resumes.
+        let delete_result = if profile.schedule.paused {
+            Ok(())
+        } else {
+            flush_pending_deletes(&self.db, profile_id, provider.as_ref(), key.as_ref()).await
+        };
+        if !profile.schedule.paused {
+            provider
+                .mkdir_all(&format!("{}/changes", REMOTE_ROOT))
+                .await
+                .map_err(safe_sync_error)?;
+        }
         let pull_result =
             pull_file_events(&self.db, profile_id, provider.as_ref(), key.as_ref()).await;
         // A partial pull may already have applied some events. Always refresh the view.
@@ -1630,10 +1638,6 @@ async fn pull_file_events(
     key: Option<&SecretVec<u8>>,
 ) -> Result<(), String> {
     let directory = format!("{}/changes", REMOTE_ROOT);
-    provider
-        .mkdir_all(&directory)
-        .await
-        .map_err(safe_sync_error)?;
     let mut changes: Vec<_> = provider
         .list(&directory)
         .await
@@ -1653,12 +1657,29 @@ async fn pull_file_events(
         if received {
             continue;
         }
+        let mut manifest_failed = false;
         let result = async {
             let bytes = provider.get(&path).await.map_err(safe_sync_error)?;
             let decoded = decode_remote_bytes(bytes, key, &path)?;
             let event: FileSyncRemoteEvent = serde_json::from_slice(&decoded)
                 .map_err(|_| "Remote file sync event is invalid".to_string())?;
             validate_remote_event(&event, &device, seq)?;
+            if let Some(summary) = &event.entry {
+                let tombstone_revision = sqlx::query_scalar::<_, i64>(
+                    "SELECT revision FROM file_sync_tombstones WHERE profile_id = ? AND entry_id = ?",
+                )
+                .bind(profile_id)
+                .bind(&event.entry_id)
+                .fetch_optional(db)
+                .await
+                .map_err(db_error)?;
+                if !tombstone_revision.is_some_and(|revision| revision >= event.revision) {
+                    if let Err(error) = verify_remote_manifest(provider, key, summary).await {
+                        manifest_failed = true;
+                        return Err(error);
+                    }
+                }
+            }
             apply_remote_event_to_db(db, profile_id, &event).await?;
             // If the process stops between apply and receipt, replay is idempotent.
             sqlx::query("INSERT OR IGNORE INTO file_sync_received_events (profile_id, device_id, seq) VALUES (?, ?, ?)")
@@ -1670,7 +1691,11 @@ async fn pull_file_events(
                 "File Sync event {} from {} failed: {}",
                 seq, device, error
             ));
-            blocked.insert(device);
+            // A later event from the same device may delete this entry.
+            // Receipts track each event independently, so it can still apply.
+            if !manifest_failed {
+                blocked.insert(device);
+            }
         }
     }
     if errors.is_empty() {
@@ -1678,6 +1703,47 @@ async fn pull_file_events(
     } else {
         Err(errors.join("; "))
     }
+}
+
+async fn verify_remote_manifest(
+    provider: &dyn SyncProvider,
+    key: Option<&SecretVec<u8>>,
+    summary: &RemoteEntrySummary,
+) -> Result<(), String> {
+    validate_remote_summary(summary)?;
+    let expected_path = format!(
+        "{}/entries/{}/{}/manifest.json{}",
+        REMOTE_ROOT,
+        summary.id,
+        summary.revision,
+        if key.is_some() { ".enc" } else { "" }
+    );
+    if summary.manifest_path != expected_path {
+        return Err("Remote file manifest path is invalid".to_string());
+    }
+    let encoded = provider.get(&expected_path).await.map_err(|_| {
+        format!(
+            "Remote file data for {} is unavailable",
+            summary.display_name
+        )
+    })?;
+    let decoded = decode_remote_bytes(encoded, key, &expected_path)?;
+    if sha256_hex(&decoded) != summary.manifest_hash {
+        return Err("Remote file manifest failed its integrity check".to_string());
+    }
+    let manifest: FileSyncManifest = serde_json::from_slice(&decoded)
+        .map_err(|_| "Remote file manifest is invalid".to_string())?;
+    if manifest.schema_version != FILE_SYNC_SCHEMA_VERSION
+        || manifest.entry_id != summary.id
+        || manifest.revision != summary.revision
+        || manifest.kind != summary.kind
+        || manifest.display_name != summary.display_name
+        || manifest.total_size != summary.total_size
+        || manifest.file_count != summary.file_count
+    {
+        return Err("Remote file manifest does not match its event".to_string());
+    }
+    Ok(())
 }
 
 async fn queue_entry_deletion(
@@ -2005,6 +2071,45 @@ mod tests {
         }
     }
 
+    async fn publish_test_upsert(
+        provider: &TestProvider,
+        mut event: FileSyncRemoteEvent,
+    ) -> Result<String, String> {
+        let summary = event.entry.as_mut().ok_or("Missing test entry")?;
+        let manifest = FileSyncManifest {
+            schema_version: FILE_SYNC_SCHEMA_VERSION,
+            entry_id: summary.id.clone(),
+            revision: summary.revision,
+            kind: summary.kind.clone(),
+            display_name: summary.display_name.clone(),
+            total_size: summary.total_size,
+            file_count: summary.file_count,
+            created_at: summary.synced_at.clone(),
+            nodes: vec![ManifestNode {
+                path: summary.display_name.clone(),
+                kind: "file".to_string(),
+                size: 4,
+                modified_unix_ms: None,
+                chunks: vec![ManifestChunk {
+                    index: 0,
+                    size: 4,
+                    sha256: "0".repeat(64),
+                    remote_path: format!(
+                        "{}/entries/{}/1/objects/0/0.bin",
+                        REMOTE_ROOT, summary.id
+                    ),
+                }],
+            }],
+        };
+        let bytes = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
+        summary.manifest_hash = sha256_hex(&bytes);
+        provider
+            .put(&summary.manifest_path, bytes)
+            .await
+            .map_err(safe_sync_error)?;
+        publish_file_event(provider, &event, None).await
+    }
+
     #[tokio::test]
     async fn gaps_and_late_events_do_not_stall_or_lose_entries(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2012,9 +2117,9 @@ mod tests {
         let provider = TestProvider::default();
         // Old high-water cursors may have skipped events. Receipts safely replay them.
         sqlx::query("INSERT INTO file_sync_remote_cursors (profile_id, remote_device_id, last_seq) VALUES ('profile123', 'device123', 99)").execute(&db).await?;
-        publish_file_event(&provider, &upsert_event(2, "second"), None).await?;
+        publish_test_upsert(&provider, upsert_event(2, "second")).await?;
         pull_file_events(&db, "profile123", &provider, None).await?;
-        publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
+        publish_test_upsert(&provider, upsert_event(1, "first")).await?;
         pull_file_events(&db, "profile123", &provider, None).await?;
         pull_file_events(&db, "profile123", &provider, None).await?;
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM file_sync_entries ORDER BY id")
@@ -2033,8 +2138,8 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let db = replication_db().await?;
         let provider = TestProvider::default();
-        let first = publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
-        publish_file_event(&provider, &upsert_event(2, "second"), None).await?;
+        let first = publish_test_upsert(&provider, upsert_event(1, "first")).await?;
+        publish_test_upsert(&provider, upsert_event(2, "second")).await?;
         provider.fail_get.lock().await.insert(first.clone());
         assert!(pull_file_events(&db, "profile123", &provider, None)
             .await
@@ -2052,12 +2157,68 @@ mod tests {
             .fetch_one(&db)
             .await?;
         assert_eq!(count, 0);
-        publish_file_event(&provider, &upsert_event(1, "first"), None).await?;
+        publish_test_upsert(&provider, upsert_event(1, "first")).await?;
         pull_file_events(&db, "profile123", &provider, None).await?;
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
             .fetch_one(&db)
             .await?;
         assert_eq!(count, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn orphaned_upsert_does_not_create_an_unusable_file_entry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = replication_db().await?;
+        let provider = TestProvider::default();
+        publish_file_event(&provider, &upsert_event(1, "missing"), None).await?;
+
+        let error = pull_file_events(&db, "profile123", &provider, None)
+            .await
+            .expect_err("missing manifest must reject the event");
+        assert!(error.contains("Remote file data for file.txt is unavailable"));
+        let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_entries")
+            .fetch_one(&db)
+            .await?;
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!((entries, receipts), (0, 0));
+
+        publish_test_upsert(&provider, upsert_event(1, "missing")).await?;
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_entries")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(entries, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_manifest_does_not_block_a_later_delete_from_the_same_device(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = replication_db().await?;
+        let provider = TestProvider::default();
+        publish_file_event(&provider, &upsert_event(1, "missing"), None).await?;
+        let mut deletion = upsert_event(2, "missing");
+        deletion.operation = "delete".to_string();
+        deletion.entry = None;
+        publish_file_event(&provider, &deletion, None).await?;
+
+        assert!(pull_file_events(&db, "profile123", &provider, None)
+            .await
+            .is_err());
+        let tombstone: i64 = sqlx::query_scalar(
+            "SELECT revision FROM file_sync_tombstones WHERE profile_id = 'profile123' AND entry_id = 'missing'",
+        )
+        .fetch_one(&db)
+        .await?;
+        assert_eq!(tombstone, 1);
+        pull_file_events(&db, "profile123", &provider, None).await?;
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_sync_received_events")
+            .fetch_one(&db)
+            .await?;
+        assert_eq!(receipts, 2);
         Ok(())
     }
 
@@ -2069,7 +2230,7 @@ mod tests {
         let other = replication_db().await?;
         let provider = TestProvider::default();
         let upsert = upsert_event(1, "entry123");
-        publish_file_event(&provider, &upsert, None).await?;
+        publish_test_upsert(&provider, upsert.clone()).await?;
         let object = "file-sync/v1/entries/entry123/1/objects/0/0.bin";
         provider.put(object, vec![1, 2, 3, 4]).await?;
         pull_file_events(&db, "profile123", &provider, None).await?;
