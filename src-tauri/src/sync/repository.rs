@@ -1240,6 +1240,26 @@ impl SyncRepository {
                 return Ok(ApplyItemResult::Conflict { conflict_id });
             }
 
+            // A device can publish an older snapshot after another run has
+            // completed. Preserve a newer local version even if its outbox
+            // entry was already marked synced by the completed run.
+            let local_is_newer: (i64,) = sqlx::query_as(
+                "SELECT CASE WHEN julianday(updated_at) > julianday(?) THEN 1 ELSE 0 END FROM clipboard_items WHERE id = ?",
+            )
+            .bind(&item.updated_at)
+            .bind(local_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if local_is_newer.0 != 0 {
+                self.record_clipboard_change(local_id, "update", "local", Some(&item.item_key))
+                    .await?;
+                log::warn!(
+                    "[Sync::Repository] Preserved newer local item for remote key {}",
+                    item.item_key
+                );
+                return Ok(ApplyItemResult::Skipped);
+            }
+
             // Item exists, update it
             let tags_str = if item.tags.is_empty() {
                 None
@@ -2321,6 +2341,38 @@ mod tests {
 
         assert_eq!(stored.0, "new content");
         assert_eq!(stored.1.as_deref(), Some("new-hash"));
+    }
+
+    #[tokio::test]
+    async fn stale_remote_version_preserves_newer_local_item() -> Result<(), SyncError> {
+        let pool = setup_sync_test_db().await;
+        let repository = SyncRepository::new(pool.clone());
+        let profile = test_profile();
+        let mut item = remote_item("shared-key", "older remote", "old-hash");
+        let local_id = match repository
+            .apply_remote_item(&profile, item.clone(), None)
+            .await?
+        {
+            ApplyItemResult::Created { local_id } => local_id,
+            other => panic!("unexpected apply result: {:?}", other),
+        };
+        sqlx::query("UPDATE clipboard_items SET content = 'newer local', updated_at = '2026-09-24T12:00:00Z' WHERE id = ?")
+            .bind(local_id)
+            .execute(&pool)
+            .await?;
+        item.content = Some("older remote".to_string());
+
+        assert!(matches!(
+            repository.apply_remote_item(&profile, item, None).await?,
+            ApplyItemResult::Skipped
+        ));
+        let content: (String,) = sqlx::query_as("SELECT content FROM clipboard_items WHERE id = ?")
+            .bind(local_id)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(content.0, "newer local");
+        assert!(repository.local_has_pending_change(local_id).await?);
+        Ok(())
     }
 
     #[tokio::test]

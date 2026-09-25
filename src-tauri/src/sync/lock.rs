@@ -98,6 +98,41 @@ pub async fn read_remote_lock(
     }
 }
 
+/// Extend an active run's lease. A long sync must not let another device
+/// acquire its lock while it is still publishing snapshot files.
+pub async fn renew_remote_lock(
+    provider: &dyn SyncProvider,
+    lock_path: &str,
+    owner_run_id: &str,
+) -> Result<(), SyncError> {
+    let Some(mut lock) = read_remote_lock(provider, lock_path).await? else {
+        return Err(SyncError::Lock("Remote sync lock disappeared".to_string()));
+    };
+    if lock.owner_run_id != owner_run_id {
+        return Err(SyncError::Lock(
+            "Remote sync lock changed owner".to_string(),
+        ));
+    }
+    lock.expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+    provider
+        .put(
+            lock_path,
+            serde_json::to_vec(&lock).map_err(SyncError::Serialization)?,
+        )
+        .await?;
+    let Some(verified) = read_remote_lock(provider, lock_path).await? else {
+        return Err(SyncError::Lock(
+            "Remote sync lock renewal was not visible".to_string(),
+        ));
+    };
+    if verified.owner_run_id != owner_run_id {
+        return Err(SyncError::Lock(
+            "Remote sync lock changed owner".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Release remote lock (only if we own it)
 pub async fn release_remote_lock(
     provider: &dyn SyncProvider,

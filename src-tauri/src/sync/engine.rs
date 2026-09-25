@@ -1,7 +1,7 @@
 /// Sync Engine - orchestrates the sync process
 use crate::sync::crypto::{decrypt, derive_key, encrypt};
 use crate::sync::error::SyncError;
-use crate::sync::lock::{acquire_remote_lock, release_remote_lock};
+use crate::sync::lock::{acquire_remote_lock, release_remote_lock, renew_remote_lock};
 use crate::sync::manifest::{read_manifest, write_manifest, APP_NAME, SNAPSHOT_SCHEMA_VERSION};
 use crate::sync::models::*;
 use crate::sync::providers::{join_remote_path, SyncProvider};
@@ -274,7 +274,7 @@ impl SyncEngine {
         let lock_guard = self
             .acquire_run_lock(provider.as_ref(), "", &prepared.device_id, &run_id)
             .await?;
-        let sync_result = async {
+        let sync_work = async {
             log::info!("[Sync::Engine] Step 4: Cleaning up stale .tmp runs");
             self.set_status(
                 profile_id,
@@ -324,8 +324,19 @@ impl SyncEngine {
             .await;
             self.finalize_run(profile_id, &run_id, started_at, report)
                 .await
-        }
-        .await;
+        };
+        let keep_lock_alive = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                renew_remote_lock(provider.as_ref(), lock_guard.path(), &run_id).await?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), SyncError>(())
+        };
+        let sync_result = tokio::select! {
+            result = sync_work => result,
+            result = keep_lock_alive => result.and_then(|_| Err(SyncError::Lock("Remote lock renewal ended unexpectedly".to_string()))),
+        };
 
         if let Err(e) = release_remote_lock(provider.as_ref(), lock_guard.path(), &run_id).await {
             log::warn!("[Sync::Engine] Failed to release remote lock: {}", e);
@@ -408,12 +419,10 @@ impl SyncEngine {
                 decode_snapshot_file(&order_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != order_ref.hash {
-                log::warn!(
-                    "[Sync::Engine] Order hash mismatch for {}; expected {}, got {}. Attempting to parse order payload.",
-                    order_ref.path,
-                    order_ref.hash,
-                    actual_hash
-                );
+                return Err(SyncError::validation(format!(
+                    "Order snapshot hash mismatch for {}",
+                    order_ref.path
+                )));
             }
             let order: SnapshotOrder = serde_json::from_slice(&decoded)?;
             if is_same_device_snapshot {
@@ -449,6 +458,12 @@ impl SyncEngine {
                 SyncError::provider(format!("Failed to download plugin data: {}", e))
             })?;
             let decoded = decode_snapshot_file(&bytes, &prepared.profile, crypto_key.as_ref())?;
+            if sha256_hex(&decoded) != plugin_ref.hash {
+                return Err(SyncError::validation(format!(
+                    "Plugin snapshot hash mismatch for {}",
+                    plugin_ref.path
+                )));
+            }
             remote_plugin_data = serde_json::from_slice(&decoded)?;
         }
 
@@ -464,12 +479,10 @@ impl SyncEngine {
                 decode_snapshot_file(&shard_bytes, &prepared.profile, crypto_key.as_ref())?;
             let actual_hash = sha256_hex(&decoded);
             if actual_hash != shard_ref.hash {
-                log::warn!(
-                    "[Sync::Engine] Shard hash mismatch for {}; expected {}, got {}. Attempting to parse shard payload.",
-                    shard_ref.path,
-                    shard_ref.hash,
-                    actual_hash
-                );
+                return Err(SyncError::validation(format!(
+                    "Item snapshot hash mismatch for {}",
+                    shard_ref.path
+                )));
             }
             let mut shard: SnapshotItemShard = serde_json::from_slice(&decoded)?;
             for item in &mut shard.items {
@@ -504,11 +517,10 @@ impl SyncEngine {
             });
         }
 
-        let prune_missing = !is_same_device_snapshot
-            && !self
-                .repository
-                .has_unsynced_changes(&prepared.profile)
-                .await?;
+        // A missing item in a snapshot is not an explicit deletion. Another
+        // device may still hold a newer item while waiting for the remote lock.
+        // Preserve local data until deletion is represented by a tombstone.
+        let prune_missing = false;
         report.items_downloaded = self
             .repository
             .apply_snapshot_items(&prepared.profile, remote_items, prune_missing)
@@ -1721,6 +1733,173 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         assert_eq!(stored.0, "research note");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_snapshot_missing_a_local_item_does_not_delete_it() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        sqlx::query("INSERT INTO clipboard_items (id, type, content, tab_id) VALUES (1, 'text', 'newer local note', 1)")
+            .execute(&pool).await?;
+        sqlx::query("INSERT INTO sync_item_map (local_id, item_key, stable_seq) VALUES (1, 'local-note', 1)")
+            .execute(&pool).await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool.clone())));
+        let provider = MemoryProvider::default();
+        let order = SnapshotOrder {
+            schema_version: 1,
+            updated_at: "2026-09-24T00:00:00Z".to_string(),
+            tabs: Vec::new(),
+        };
+        let order_json = serde_json::to_vec(&order)?;
+        provider
+            .put("order/default.json", order_json.clone())
+            .await?;
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "other-device".to_string(),
+                    updated_at: "2026-09-24T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: Vec::new(),
+                    order: Some(SnapshotFileRef {
+                        path: "order/default.json".to_string(),
+                        hash: sha256_hex(&order_json),
+                    }),
+                    plugin_data: None,
+                })?,
+            )
+            .await?;
+        let prepared = PreparedSyncRun {
+            profile: test_profile(),
+            device_id: "local-device".to_string(),
+        };
+
+        engine
+            .pull_remote_changes("profile", &provider, &prepared)
+            .await?;
+
+        let content: (String,) = sqlx::query_as("SELECT content FROM clipboard_items WHERE id = 1")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(content.0, "newer local note");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mismatched_snapshot_shard_is_rejected_before_local_apply() -> Result<(), SyncError> {
+        let pool = setup_order_test_pool().await?;
+        let repository = Arc::new(SyncRepository::new(pool.clone()));
+        let engine = SyncEngine::new(repository, Arc::new(SecretStore::new(pool.clone())));
+        let provider = MemoryProvider::default();
+        let shard = SnapshotItemShard {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            start: 1,
+            end: 100,
+            items: Vec::new(),
+        };
+        provider
+            .put("items/00000001-00000100.json", serde_json::to_vec(&shard)?)
+            .await?;
+        provider
+            .put(
+                "manifest.json",
+                serde_json::to_vec(&SnapshotManifest {
+                    schema_version: SNAPSHOT_SCHEMA_VERSION,
+                    app: APP_NAME.to_string(),
+                    generation: 1,
+                    device_id: "other-device".to_string(),
+                    updated_at: "2026-09-24T00:00:00Z".to_string(),
+                    item_shard_size: SNAPSHOT_SHARD_SIZE,
+                    item_shards: vec![SnapshotShardRef {
+                        path: "items/00000001-00000100.json".to_string(),
+                        start: 1,
+                        end: 100,
+                        count: 0,
+                        hash: "wrong-hash".to_string(),
+                    }],
+                    order: None,
+                    plugin_data: None,
+                })?,
+            )
+            .await?;
+        let prepared = PreparedSyncRun {
+            profile: test_profile(),
+            device_id: "local-device".to_string(),
+        };
+
+        let result = engine
+            .pull_remote_changes("profile", &provider, &prepared)
+            .await;
+        assert!(matches!(result, Err(SyncError::Validation(_))));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM clipboard_items")
+                .fetch_one(&pool)
+                .await?,
+            0
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lock_renewal_rejects_a_different_owner() -> Result<(), SyncError> {
+        let provider = MemoryProvider::default();
+        provider
+            .put(
+                "sync.lock",
+                serde_json::to_vec(&RemoteLock {
+                    schema_version: 1,
+                    owner_device_id: "other-device".to_string(),
+                    owner_run_id: "other-run".to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+                })?,
+            )
+            .await?;
+        assert!(matches!(
+            renew_remote_lock(&provider, "sync.lock", "our-run").await,
+            Err(SyncError::Lock(_))
+        ));
+        assert_eq!(
+            crate::sync::lock::read_remote_lock(&provider, "sync.lock")
+                .await?
+                .map(|lock| lock.owner_run_id)
+                .as_deref(),
+            Some("other-run")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lock_renewal_extends_the_current_run() -> Result<(), SyncError> {
+        let provider = MemoryProvider::default();
+        let old_expiry = chrono::Utc::now() + chrono::Duration::minutes(1);
+        provider
+            .put(
+                "sync.lock",
+                serde_json::to_vec(&RemoteLock {
+                    schema_version: 1,
+                    owner_device_id: "local-device".to_string(),
+                    owner_run_id: "our-run".to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    expires_at: old_expiry.to_rfc3339(),
+                })?,
+            )
+            .await?;
+
+        renew_remote_lock(&provider, "sync.lock", "our-run").await?;
+
+        let renewed = crate::sync::lock::read_remote_lock(&provider, "sync.lock")
+            .await?
+            .ok_or_else(|| SyncError::validation("Renewed lock is missing"))?;
+        let renewed_expiry = chrono::DateTime::parse_from_rfc3339(&renewed.expires_at)
+            .map_err(|error| SyncError::validation(error.to_string()))?;
+        assert!(renewed_expiry > old_expiry);
+        assert_eq!(renewed.owner_run_id, "our-run");
         Ok(())
     }
 }
