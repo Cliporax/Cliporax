@@ -148,6 +148,30 @@ describe("TabBar", () => {
     expect(workTab.classList.contains("cursor-grab")).toBe(false);
   });
 
+  it("changes the tab cursor only after dragging starts", () => {
+    render(<TabBar />);
+
+    const workTab = screen.getByRole("tab", { name: "Work" });
+    fireEvent.pointerDown(workTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 10,
+      clientY: 10,
+    });
+
+    expect(workTab.classList.contains("cursor-default")).toBe(true);
+    expect(workTab.classList.contains("cursor-grabbing")).toBe(false);
+
+    fireEvent.pointerMove(workTab, {
+      pointerId: 1,
+      clientX: 16,
+      clientY: 10,
+    });
+
+    expect(workTab.classList.contains("cursor-default")).toBe(false);
+    expect(workTab.classList.contains("cursor-grabbing")).toBe(true);
+  });
+
   it("offers deletion from a custom tab context menu", () => {
     render(<TabBar />);
 

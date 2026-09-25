@@ -121,6 +121,13 @@ fn calculate_image_hash(rgba_bytes: &[u8], width: u32, height: u32) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+// A Windows clipboard sequence change represents a separate capture even when the
+// pixels match an earlier screenshot. Other platforms, and Windows without a
+// sequence number, retain hash deduplication.
+fn should_check_image_duplicate(windows_sequence: u32) -> bool {
+    windows_sequence == 0
+}
+
 fn read_clipboard_text(clipboard: &mut Clipboard) -> String {
     #[cfg(target_os = "windows")]
     {
@@ -575,8 +582,13 @@ impl ClipboardMonitor {
             }
 
             #[cfg(target_os = "windows")]
+            let windows_clipboard_sequence = get_windows_clipboard_sequence_number();
+            #[cfg(not(target_os = "windows"))]
+            let windows_clipboard_sequence = 0;
+
+            #[cfg(target_os = "windows")]
             let windows_clipboard_changed = {
-                let current_sequence = get_windows_clipboard_sequence_number();
+                let current_sequence = windows_clipboard_sequence;
                 let mut last_sequence = last_windows_clipboard_sequence.lock().await;
 
                 if current_sequence == 0 {
@@ -856,11 +868,14 @@ impl ClipboardMonitor {
 
                     // Check if this image already exists in database (fast hash check)
                     let hash_clone = current_image_hash.clone();
-                    let existing_id =
+                    let existing_id = if should_check_image_duplicate(windows_clipboard_sequence) {
                         ClipboardRepository::check_duplicate_image(&db, &hash_clone, 10)
                             .await
                             .ok()
-                            .flatten();
+                            .flatten()
+                    } else {
+                        None
+                    };
 
                     if let Some(existing_id) = existing_id {
                         // Duplicate found, move to top
@@ -1644,7 +1659,9 @@ impl ClipboardMonitor {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::{file_uri_from_path, linux_file_clipboard_payload};
-    use super::{looks_like_file_uri_list, text_matches_exclusion_pattern};
+    use super::{
+        looks_like_file_uri_list, should_check_image_duplicate, text_matches_exclusion_pattern,
+    };
     #[cfg(target_os = "linux")]
     use std::path::{Path, PathBuf};
 
@@ -1666,6 +1683,13 @@ mod tests {
         ));
         assert!(text_matches_exclusion_pattern("中", &patterns));
         assert!(!text_matches_exclusion_pattern("clipboard text", &patterns));
+    }
+
+    #[test]
+    fn distinct_windows_clipboard_writes_keep_matching_screenshots() {
+        assert!(!should_check_image_duplicate(42));
+        assert!(!should_check_image_duplicate(43));
+        assert!(should_check_image_duplicate(0));
     }
 
     #[cfg(target_os = "linux")]

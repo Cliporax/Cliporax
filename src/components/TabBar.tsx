@@ -563,9 +563,9 @@ export function ClipboardTabSidebar({
             }}
             onContextMenu={(e) => handleTabContextMenu(e, tab.id!)}
             className={`
-              group relative flex min-h-8 w-full touch-none items-center px-2.5 py-1 rounded-md cursor-default active:cursor-grabbing transition-colors
+              group relative flex min-h-8 w-full touch-none items-center px-2.5 py-1 rounded-md transition-colors
               text-xs font-medium select-none
-              ${draggedTabId === tab.id ? "opacity-50" : ""}
+              ${draggedTabId === tab.id ? "cursor-grabbing opacity-50" : "cursor-default"}
               ${
                 tab.id === activeTabId
                   ? "bg-indigo-500 dark:bg-indigo-600 text-white"
