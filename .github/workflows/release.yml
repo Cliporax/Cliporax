@@ -23,8 +23,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    name: Verify release tag and versions
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Test release version guard
+        run: node --test scripts/check-release-version.test.mjs
+
+      - name: Verify release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          npm run version:check -- --require-tag
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: verify
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -51,6 +79,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -58,11 +87,6 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
-
-      - name: Verify release version
-        env:
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-        run: npm run version:check
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -94,13 +118,9 @@ jobs:
         id: release-notes
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         run: |
           $tag = $env:RELEASE_TAG
-          if ([string]::IsNullOrWhiteSpace($tag)) {
-            $package = Get-Content package.json -Raw | ConvertFrom-Json
-            $tag = "v$($package.version)"
-          }
 
           $tagExists = -not [string]::IsNullOrWhiteSpace((git tag --list $tag))
           if ($tagExists) {
@@ -207,10 +227,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
           Copy-Item "src-tauri/target/release/cliporax.exe" "$portableDir/Cliporax.exe"
           Copy-Item "src-tauri/bin/cliporax-cli-x86_64-pc-windows-msvc.exe" "$portableDir/cliporax-cli-x86_64-pc-windows-msvc.exe"
-          Compress-Archive -Path "$portableDir/*" -DestinationPath "src-tauri/target/release/Cliporax_${{ github.ref_name }}_windows_x64_portable.zip" -Force
+          Compress-Archive -Path "$portableDir/*" -DestinationPath "src-tauri/target/release/Cliporax_${{ needs.verify.outputs.tag }}_windows_x64_portable.zip" -Force
 
       - name: Upload Windows portable app
         if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/release/Cliporax_${{ github.ref_name }}_windows_x64_portable.zip
+          files: src-tauri/target/release/Cliporax_${{ needs.verify.outputs.tag }}_windows_x64_portable.zip

@@ -21,11 +21,32 @@ const versions = {
   "src-tauri/Cargo.lock": cargoLockVersion,
 };
 const expected = packageJson.version;
+if (typeof expected !== "string" || !expected.trim()) {
+  console.error("package.json: missing release version");
+  process.exit(1);
+}
 const mismatches = Object.entries(versions).filter(([, version]) => version !== expected);
 
-const tag = process.argv[2] || process.env.RELEASE_TAG || "";
-if (tag && tag !== `v${expected}`) {
-  mismatches.push(["release tag", tag]);
+const args = process.argv.slice(2);
+const requireTag = args.includes("--require-tag");
+const positionalArgs = args.filter((arg) => arg !== "--require-tag");
+if (positionalArgs.length > 1 || positionalArgs.some((arg) => arg.startsWith("--"))) {
+  console.error("Usage: node scripts/check-release-version.mjs [vX.Y.Z] [--require-tag]");
+  process.exit(1);
+}
+const githubTag = process.env.GITHUB_REF?.startsWith("refs/tags/")
+  ? process.env.GITHUB_REF.slice("refs/tags/".length)
+  : "";
+// Check every supplied tag: an argument or env override must never hide a
+// mismatched tag from the actual GitHub workflow run.
+const tags = [positionalArgs[0], process.env.RELEASE_TAG, githubTag].filter(Boolean);
+const tag = tags[0] || "";
+if (requireTag && !tag) {
+  console.error(`Release tag is required; run this workflow on tag v${expected}. Branch builds cannot publish a release.`);
+  process.exit(1);
+}
+for (const candidate of new Set(tags)) {
+  if (candidate !== `v${expected}`) mismatches.push(["release tag", candidate]);
 }
 
 if (mismatches.length > 0) {
