@@ -1,4 +1,4 @@
-import type { ConflictResolutionInput, SyncProfile } from "../../lib/tauri-api";
+import type { ConflictPolicy, ConflictResolutionInput, SyncProfile } from "../../lib/tauri-api";
 
 export type Provider = "webdav" | "sftp" | "google_drive" | "one_drive";
 export type SyncSection = "setup" | "scope" | "security" | "status" | "conflicts" | "logs";
@@ -24,6 +24,7 @@ export interface FormState {
   syncOnLocalChange: boolean;
   intervalMinutes: number;
   paused: boolean;
+  conflictPolicy: ConflictPolicy;
 }
 
 export const DEFAULT_FORM: FormState = {
@@ -45,6 +46,7 @@ export const DEFAULT_FORM: FormState = {
   syncOnLocalChange: true,
   intervalMinutes: 15,
   paused: false,
+  conflictPolicy: "manual",
 };
 
 export const PROVIDER_DEFAULTS: Record<
@@ -228,6 +230,7 @@ export const formFromProfile = (profile: SyncProfile): FormState => {
     syncOnLocalChange: profile.schedule.sync_on_local_change,
     intervalMinutes: profile.schedule.interval_minutes,
     paused: Boolean(profile.schedule.paused),
+    conflictPolicy: profile.conflict_policy ?? "manual",
   };
 };
 

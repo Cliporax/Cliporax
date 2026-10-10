@@ -6,6 +6,19 @@ use crate::sync::models::*;
 use crate::sync::repository_profile::{provider_kind_from_db, provider_kind_to_db};
 use crate::sync::repository_tabs::*;
 use base64::Engine;
+use sha2::{Digest, Sha256};
+
+type LocalSnapshotState = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+    Option<i64>,
+    Option<String>,
+    bool,
+);
 
 pub struct SyncRepository {
     pool: Db,
@@ -76,19 +89,124 @@ impl SyncRepository {
             .collect())
     }
 
+    pub async fn pending_conflicts(&self) -> Result<Vec<SyncConflict>, SyncError> {
+        Ok(
+            sqlx::query_as("SELECT * FROM sync_conflicts WHERE status = 'pending' ORDER BY id")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn conflict_is_in_scope(
+        &self,
+        profile: &SyncProfile,
+        conflict: &SyncConflict,
+    ) -> Result<bool, SyncError> {
+        match conflict.entity_type.as_str() {
+            "clipboard_item" if profile.sync_tabs.mode == TabSyncMode::Selected => {
+                let tab_id: Option<i64> = sqlx::query_scalar("SELECT ci.tab_id FROM clipboard_items ci JOIN sync_item_map sim ON sim.local_id = ci.id WHERE sim.item_key = ?")
+                    .bind(&conflict.entity_key).fetch_optional(&self.pool).await?.flatten();
+                Ok(!tab_id.is_some_and(|id| profile.sync_tabs.selected_tab_ids.contains(&id)))
+            }
+            "plugin_data" => {
+                let record: RemotePluginData = serde_json::from_str(&conflict.remote_payload)?;
+                Ok(profile
+                    .sync_plugins
+                    .selected_plugin_ids
+                    .contains(&record.plugin_id))
+            }
+            "clipboard_item" => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    pub async fn resolve_conflict(
+        &self,
+        conflict_id: i64,
+        resolution: ConflictResolutionInput,
+    ) -> Result<(), SyncError> {
+        crate::sync::commands::resolve_conflict(&self.pool, conflict_id, resolution)
+            .await
+            .map_err(SyncError::validation)
+    }
+
+    async fn save_conflict(
+        &self,
+        entity_type: &str,
+        entity_key: &str,
+        local_payload: String,
+        remote_payload: String,
+        reason: &str,
+    ) -> Result<i64, SyncError> {
+        // Refresh one pending conflict, rather than adding a row on every retry.
+        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM sync_conflicts WHERE entity_type = ? AND entity_key = ? AND status = 'pending' ORDER BY id LIMIT 1")
+            .bind(entity_type).bind(entity_key).fetch_optional(&self.pool).await?;
+        if let Some((id,)) = existing {
+            sqlx::query("UPDATE sync_conflicts SET local_payload = ?, remote_payload = ?, reason = ? WHERE id = ?")
+                .bind(local_payload).bind(remote_payload).bind(reason).bind(id).execute(&self.pool).await?;
+            return Ok(id);
+        }
+        let result = sqlx::query("INSERT INTO sync_conflicts (entity_type, entity_key, local_payload, remote_payload, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')")
+            .bind(entity_type).bind(entity_key).bind(local_payload).bind(remote_payload).bind(reason).execute(&self.pool).await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    pub async fn remember_plugin_remote(&self, record: &RemotePluginData) -> Result<(), SyncError> {
+        let key = serde_json::to_string(&(&record.plugin_id, &record.storage_key))?;
+        let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&record.value)?));
+        sqlx::query("INSERT INTO sync_state (scope, scope_id, provider, cursor) VALUES ('plugin_record', ?, 'snapshot', ?) ON CONFLICT(scope, scope_id, provider) DO UPDATE SET cursor = excluded.cursor")
+            .bind(key).bind(digest).execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn apply_snapshot_plugin_data(
         &self,
         records: Vec<RemotePluginData>,
     ) -> Result<(), SyncError> {
         for record in records {
-            // Unsynced local edits win until publication; otherwise use millisecond
-            // LWW, with canonical JSON as a deterministic tie-break for old records.
             chrono::DateTime::parse_from_rfc3339(&record.updated_at)
                 .map_err(|_| SyncError::validation("Invalid plugin data timestamp"))?;
+            let local: Option<(String, String, bool)> = sqlx::query_as(
+                "SELECT value_json, updated_at, EXISTS (SELECT 1 FROM sync_changes WHERE entity_type = 'plugin_data' AND plugin_id = ? AND entity_id = ? AND synced_at IS NULL AND source IN ('local', 'sync_resolution')) FROM plugin_sync_data WHERE plugin_id = ? AND storage_key = ?")
+                .bind(&record.plugin_id).bind(&record.storage_key).bind(&record.plugin_id).bind(&record.storage_key).fetch_optional(&self.pool).await?;
+            if let Some((value, timestamp, true)) = local {
+                let local_value: serde_json::Value = serde_json::from_str(&value)?;
+                if local_value != record.value {
+                    let key = serde_json::to_string(&(&record.plugin_id, &record.storage_key))?;
+                    let digest =
+                        format!("{:x}", Sha256::digest(serde_json::to_vec(&record.value)?));
+                    let baseline: Option<(String,)> = sqlx::query_as("SELECT cursor FROM sync_state WHERE scope = 'plugin_record' AND scope_id = ? AND provider = 'snapshot'")
+                        .bind(&key).fetch_optional(&self.pool).await?;
+                    let pending: (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM sync_conflicts WHERE entity_type = 'plugin_data' AND entity_key = ? AND status = 'pending')")
+                        .bind(&key).fetch_one(&self.pool).await?;
+                    if baseline.map(|(hash,)| hash == digest).unwrap_or(false) && !pending.0 {
+                        continue;
+                    }
+                    let local_record = RemotePluginData {
+                        plugin_id: record.plugin_id.clone(),
+                        storage_key: record.storage_key.clone(),
+                        value: local_value,
+                        updated_at: timestamp,
+                    };
+                    let key = serde_json::to_string(&(&record.plugin_id, &record.storage_key))?;
+                    self.save_conflict(
+                        "plugin_data",
+                        &key,
+                        serde_json::to_string(&local_record)?,
+                        serde_json::to_string(&record)?,
+                        "local plugin data has unsynced changes",
+                    )
+                    .await?;
+                } else {
+                    self.remember_plugin_remote(&record).await?;
+                }
+                continue;
+            }
             let value_json = serde_json::to_string(&record.value)?;
             sqlx::query(
-                "INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE (julianday(excluded.updated_at) > julianday(plugin_sync_data.updated_at) OR (julianday(excluded.updated_at) = julianday(plugin_sync_data.updated_at) AND excluded.value_json > plugin_sync_data.value_json)) AND NOT EXISTS (SELECT 1 FROM sync_changes WHERE entity_type = 'plugin_data' AND plugin_id = excluded.plugin_id AND entity_id = excluded.storage_key AND synced_at IS NULL AND source = 'local')",
-            ).bind(record.plugin_id).bind(record.storage_key).bind(value_json).bind(record.updated_at).execute(&self.pool).await?;
+                "INSERT INTO plugin_sync_data (plugin_id, storage_key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(plugin_id, storage_key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE julianday(excluded.updated_at) > julianday(plugin_sync_data.updated_at) OR (julianday(excluded.updated_at) = julianday(plugin_sync_data.updated_at) AND excluded.value_json > plugin_sync_data.value_json)",
+            ).bind(&record.plugin_id).bind(&record.storage_key).bind(value_json).bind(&record.updated_at).execute(&self.pool).await?;
+            self.remember_plugin_remote(&record).await?;
         }
         Ok(())
     }
@@ -634,15 +752,52 @@ impl SyncRepository {
         let Some(remote_content) = remote_item.content.as_deref() else {
             return Ok(false);
         };
-        let local: Option<(String, String)> =
-            sqlx::query_as("SELECT type, content FROM clipboard_items WHERE id = ?")
-                .bind(local_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let local: Option<LocalSnapshotState> = sqlx::query_as(
+            "SELECT ci.type, ci.content, ci.tags, ci.metadata, COALESCE(ci.is_pinned,0), COALESCE(ci.is_sensitive,0), ci.tab_id, t.name, COALESCE(t.is_default,0) FROM clipboard_items ci LEFT JOIN tabs t ON t.id = ci.tab_id WHERE ci.id = ?")
+            .bind(local_id).fetch_optional(&self.pool).await?;
         Ok(local
-            .map(|(item_type, content)| {
-                item_type == remote_item.item_type && content == remote_content
-            })
+            .map(
+                |(
+                    kind,
+                    content,
+                    tags,
+                    metadata,
+                    pinned,
+                    sensitive,
+                    tab_id,
+                    tab_name,
+                    is_default,
+                )| {
+                    let tags: Vec<&str> = tags
+                        .as_deref()
+                        .unwrap_or("")
+                        .split(',')
+                        .filter(|tag| !tag.is_empty())
+                        .collect();
+                    let metadata: serde_json::Value = metadata
+                        .as_deref()
+                        .and_then(|m| serde_json::from_str(m).ok())
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let local_tab = tab_key_for_snapshot(tab_id, tab_name.as_deref(), is_default);
+                    let same_tab = remote_item
+                        .tab_key
+                        .as_ref()
+                        .map(|key| key == &local_tab)
+                        .unwrap_or(true);
+                    kind == remote_item.item_type
+                        && content == remote_content
+                        && tags
+                            == remote_item
+                                .tags
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                        && metadata == remote_item.metadata
+                        && pinned == remote_item.is_pinned
+                        && sensitive == remote_item.is_sensitive
+                        && same_tab
+                },
+            )
             .unwrap_or(false))
     }
 
@@ -672,7 +827,7 @@ impl SyncRepository {
         reason: &str,
     ) -> Result<i64, SyncError> {
         let local_payload: Option<(String,)> =
-            sqlx::query_as("SELECT json_object('id', id, 'type', type, 'content', content, 'content_hash', content_hash, 'metadata', metadata, 'tags', tags, 'tab_id', tab_id, 'is_sensitive', is_sensitive, 'is_pinned', is_pinned, 'updated_at', updated_at) FROM clipboard_items WHERE id = ?")
+            sqlx::query_as("SELECT json_object('id', id, 'type', type, 'content', content, 'content_hash', content_hash, 'metadata', metadata, 'tags', tags, 'tab_id', tab_id, 'tab_name', (SELECT name FROM tabs WHERE tabs.id = clipboard_items.tab_id), 'is_sensitive', is_sensitive, 'is_pinned', is_pinned, 'updated_at', updated_at) FROM clipboard_items WHERE id = ?")
                 .bind(local_id)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -685,21 +840,14 @@ impl SyncRepository {
         let remote_payload =
             serde_json::to_string(remote_item).map_err(SyncError::Serialization)?;
 
-        let result = sqlx::query(
-            r#"
-            INSERT INTO sync_conflicts
-                (entity_type, entity_key, local_payload, remote_payload, reason, status, created_at)
-            VALUES ('clipboard_item', ?, ?, ?, ?, 'pending', datetime('now'))
-            "#,
+        self.save_conflict(
+            "clipboard_item",
+            item_key,
+            local_payload,
+            remote_payload,
+            reason,
         )
-        .bind(item_key)
-        .bind(local_payload)
-        .bind(remote_payload)
-        .bind(reason)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.last_insert_rowid())
+        .await
     }
 
     /// Record a clipboard change in the sync outbox
@@ -824,6 +972,41 @@ impl SyncRepository {
 
     pub async fn has_unsynced_changes(&self, profile: &SyncProfile) -> Result<bool, SyncError> {
         Ok(!self.list_unsynced_changes(profile).await?.is_empty())
+    }
+
+    /// Manual conflicts wait for the user; automatic policies can retry them.
+    pub async fn has_publishable_changes(&self, profile: &SyncProfile) -> Result<bool, SyncError> {
+        let changes = self.list_unsynced_changes(profile).await?;
+        if changes.is_empty() {
+            return Ok(false);
+        }
+        if profile.conflict_policy != ConflictPolicy::Manual {
+            for conflict in self.pending_conflicts().await? {
+                if self.conflict_is_in_scope(profile, &conflict).await? {
+                    return Ok(true);
+                }
+            }
+        }
+        let blocked_items: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>("SELECT CAST(sim.local_id AS TEXT) FROM sync_item_map sim JOIN sync_conflicts sc ON sc.entity_key = sim.item_key WHERE sc.entity_type = 'clipboard_item' AND sc.status = 'pending'")
+            .fetch_all(&self.pool).await?.into_iter().collect();
+        let blocked_plugins: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>("SELECT entity_key FROM sync_conflicts WHERE entity_type = 'plugin_data' AND status = 'pending'")
+            .fetch_all(&self.pool).await?.into_iter().collect();
+        for change in changes {
+            if change.entity_type == "clipboard_item" && blocked_items.contains(&change.entity_id) {
+                continue;
+            }
+            if change.entity_type == "plugin_data" {
+                let key = serde_json::to_string(&(
+                    change.plugin_id.as_deref().unwrap_or(""),
+                    &change.entity_id,
+                ))?;
+                if blocked_plugins.contains(&key) {
+                    continue;
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Queue a complete local snapshot for publication. This is used when a
@@ -1136,7 +1319,7 @@ impl SyncRepository {
 
         let placeholders: Vec<String> = change_ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
-            "UPDATE sync_changes SET synced_at = datetime('now') WHERE id IN ({})",
+            "UPDATE sync_changes SET synced_at = datetime('now') WHERE id IN ({}) AND NOT EXISTS (SELECT 1 FROM sync_conflicts sc JOIN sync_item_map sim ON sim.item_key = sc.entity_key WHERE sc.entity_type = 'clipboard_item' AND sc.status = 'pending' AND sync_changes.entity_type = 'clipboard_item' AND CAST(sim.local_id AS TEXT) = sync_changes.entity_id)",
             placeholders.join(", ")
         );
 
@@ -1223,6 +1406,13 @@ impl SyncRepository {
                         item.item_key
                     );
                     return Ok(ApplyItemResult::Merged { local_id });
+                }
+                let unchanged: (bool,) = sqlx::query_as("SELECT COALESCE(julianday(last_remote_updated_at) >= julianday(?), 0) FROM sync_item_map WHERE local_id = ?")
+                    .bind(&item.updated_at).bind(local_id).fetch_one(&self.pool).await?;
+                let pending: (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM sync_conflicts WHERE entity_type = 'clipboard_item' AND entity_key = ? AND status = 'pending')")
+                    .bind(&item.item_key).fetch_one(&self.pool).await?;
+                if unchanged.0 && !pending.0 {
+                    return Ok(ApplyItemResult::Skipped);
                 }
                 let conflict_id = self
                     .create_clipboard_conflict(
@@ -1516,6 +1706,12 @@ impl SyncRepository {
                     .map(|id| profile.sync_tabs.selected_tab_ids.contains(&id))
                     .unwrap_or(false)
             {
+                continue;
+            }
+
+            let has_conflict: (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM clipboard_items ci JOIN sync_item_map sim ON sim.local_id = ci.id JOIN sync_conflicts sc ON sc.entity_key = sim.item_key WHERE ci.tab_id IS ? AND ci.type = ? AND ci.content = ? AND sc.entity_type = 'clipboard_item' AND sc.status = 'pending')")
+                .bind(tab_id).bind(&item_type).bind(&content).fetch_one(&self.pool).await?;
+            if has_conflict.0 {
                 continue;
             }
 
@@ -1935,6 +2131,7 @@ mod tests {
             encryption: EncryptionConfig::default(),
             credential_refs: CredentialRefs::default(),
             schedule: SyncScheduleConfig::default(),
+            conflict_policy: ConflictPolicy::default(),
             created_at: None,
             updated_at: None,
         }

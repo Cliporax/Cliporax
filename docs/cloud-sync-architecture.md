@@ -66,16 +66,25 @@ Remote storage is organized as ordinary files so users can inspect and back up t
 ```text
 /Cliporax/v1/
   manifest.json
-  devices/
-  items/
-  plugins/
-  tombstones/
-  changes/
-  locks/
-  tmp/
+  sync.lock
+  items/<range>-<hash>.json
+  order/<hash>.json
+  plugins/<hash>.json
+  blobs/<hash>.bin
+  .tmp/
 ```
 
 The exact file layout can evolve with schema versions. Providers should treat remote paths as provider-specific normalized paths, while the sync engine works with logical object names.
+
+## Recovery and Conflicts
+
+A snapshot hash mismatch can mean a legacy upload updated an object without publishing its manifest. If the object can still be decrypted and parsed, sync recovers its records and reports a warning. Authenticated decryption failures and unreadable records are retained for retry; healthy records continue downloading and uploading. Partial pulls keep the original remote references and defer cleanup so unavailable data is not discarded.
+
+New snapshots use content-addressed item shards, order files, and plugin files. Changed objects are uploaded and read back before the manifest is published, so an interrupted upload leaves the previous manifest's objects intact. Existing schema-2 clients can follow these references.
+
+Concurrent clipboard and plugin edits create durable pending conflicts. The settings screen previews both versions. Clipboard conflicts support keeping local, remote, or both; plugin settings support keeping local or remote. Pending conflicts retain local outbox entries and publish the remote side until the user chooses. Successfully applied or published plugin values have a digest baseline in `sync_state` so ordinary local edits do not create conflicts against an unchanged remote version.
+
+Partial progress does not trigger profile-wide failure backoff. Manual conflicts alone do not wake the local-change scheduler, while automatic policies and new publishable changes do; unreadable remote records are retried on the configured periodic schedule.
 
 ## Credentials
 
@@ -93,7 +102,11 @@ Sensitive clipboard items should not be uploaded unless the user explicitly allo
 
 Conflicts are expected in multi-device sync. Cliporax should preserve enough local and remote context for users to choose a resolution direction, such as keeping the local version, keeping the remote version, or keeping both.
 
-Partial success should preserve error details in sync reports so a later run can retry safely.
+The default is manual selection. Each profile can explicitly save `prefer_local` or `prefer_remote` as its automatic conflict policy. Automatic processing resolves only entities successfully read from the current remote snapshot; unreadable data remains pending. Choices are recorded in `sync_conflicts` and queued as `sync_resolution` changes.
+
+The local/remote buttons save the choice and immediately run sync. Resolution waits for an active run of the same profile, then holds that profile's operation gate until publication finishes. Automatic resolution happens between pull and upload within the same remote lock. Chosen clipboard and plugin versions receive a timestamp newer than both conflicting versions so other devices accept the decision even with clock skew. The consumed remote timestamp or plugin digest is retained as the baseline, so a failed publication can retry without recreating the same conflict.
+
+The resolution IPC returns a report or a separate publication error. If publishing fails, the saved choice and outbox entries stay durable and the UI shows that a retry is needed. Partial success preserves error details in sync reports so a later run can retry safely.
 
 ## Plugin Settings Sync
 

@@ -100,6 +100,22 @@ pub struct CredentialRefs {
     pub passphrase: Option<String>,
 }
 
+/// A persisted, explicit choice; old profiles continue asking the user.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy {
+    #[default]
+    Manual,
+    PreferLocal,
+    PreferRemote,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictResolutionResult {
+    pub report: Option<SyncRunReport>,
+    pub sync_error: Option<String>,
+}
+
 /// Sync profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncProfile {
@@ -117,6 +133,8 @@ pub struct SyncProfile {
     pub credential_refs: CredentialRefs,
     #[serde(default)]
     pub schedule: SyncScheduleConfig,
+    #[serde(default)]
+    pub conflict_policy: ConflictPolicy,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -443,6 +461,8 @@ pub struct SyncRunReport {
     pub items_deleted: i64,
     pub conflicts_found: i64,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Apply item result

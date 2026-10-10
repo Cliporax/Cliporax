@@ -23,8 +23,10 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Combobox } from "../Combobox";
 import {
   sync,
+  events,
   type ConflictResolutionInput,
   type SyncConflict,
   type SyncLogEntry,
@@ -61,6 +63,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
   const [activeSection, setActiveSection] = useState<SyncSection | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [resolvingConflict, setResolvingConflict] = useState<number | null>(null);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [tabOptions, setTabOptions] = useState<SyncTabOption[]>([]);
   const [pluginOptions, setPluginOptions] = useState<SyncPluginOption[]>([]);
@@ -231,6 +234,25 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!activeProfileId) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    events.onSyncCompleted((payload) => {
+      if (!cancelled && payload?.profileId === activeProfileId) {
+        refreshRuntimeState(activeProfileId).catch((error) => {
+          if (!cancelled) setSyncMessage(`Cloud Sync data unavailable: ${error}`);
+        });
+      }
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    }).catch((error) => {
+      if (!cancelled) setSyncMessage(`Cloud Sync updates unavailable: ${error}`);
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [activeProfileId]);
+
   const toggleTab = (tabId: number) => {
     updateForm(
       "selectedTabs",
@@ -324,6 +346,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
             : form.provider === "sftp"
               ? buildSftpRemoteRoot(form.serverUrl, form.sftpPort, form.remoteRoot)
               : form.remoteRoot.trim().replace(/^\/+/, "") || PROVIDER_DEFAULTS[form.provider].remoteRoot,
+        conflict_policy: form.conflictPolicy,
         sync_tabs: {
           mode: form.selectedTabs.length === 0 ? "all" : "selected",
           selected_tab_ids: form.selectedTabs,
@@ -412,6 +435,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
   };
 
   const runSyncNow = async () => {
+    if (syncing || resolvingConflict !== null) return;
     const profileId = await saveProfile();
     if (!profileId) return;
 
@@ -497,13 +521,45 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
       return;
     }
 
+    if (resolvingConflict !== null || syncing) return;
+    setResolvingConflict(conflictId);
     try {
-      await sync.resolveConflict(activeProfileId, conflictId, resolution);
-      const nextConflicts = await sync.getConflicts(activeProfileId);
-      setConflicts(nextConflicts);
-      setSyncMessage("Conflict resolved.");
+      const result = await sync.resolveConflict(activeProfileId, conflictId, resolution);
+      setConflicts((current) => current.filter((conflict) => conflict.id !== conflictId));
+      if (result.report) setLastReport(result.report);
+      await refreshRuntimeState(activeProfileId).catch(() => {});
+      const errors = result.sync_error ?? result.report?.errors.join("; ");
+      setSyncMessage(errors
+        ? t("cloudSync.conflicts.publishPending", { error: errors })
+        : t("cloudSync.conflicts.resolved"));
     } catch (error) {
       setSyncMessage(`Resolve conflict failed: ${error}`);
+    } finally {
+      setResolvingConflict(null);
+    }
+  };
+
+  const saveConflictPolicy = async () => {
+    if (!activeProfileId || syncing || resolvingConflict !== null) return;
+    setSyncing(true);
+    let saved = false;
+    try {
+      const profile = await sync.profileGet(activeProfileId);
+      await sync.profileUpdate({ ...profile, conflict_policy: form.conflictPolicy });
+      saved = true;
+      if (form.conflictPolicy === "manual") {
+        setSyncMessage(t("cloudSync.conflicts.policySaved"));
+      } else {
+        const report = await sync.runNow(activeProfileId);
+        setSyncMessage(report.errors.length
+          ? t("cloudSync.conflicts.policyPublishPending", { error: report.errors.join("; ") })
+          : t("cloudSync.conflicts.policyApplied"));
+      }
+    } catch (error) {
+      setSyncMessage(t(saved ? "cloudSync.conflicts.policyPublishPending" : "cloudSync.conflicts.policySaveFailed", { error: String(error) }));
+    } finally {
+      await refreshRuntimeState(activeProfileId).catch(() => {});
+      setSyncing(false);
     }
   };
 
@@ -1179,6 +1235,21 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
 
   const renderStatus = () => (
     <div className="space-y-5">
+      {Boolean(lastReport?.warnings?.length) && (
+        <p role="status" className="rounded-lg p-3 text-xs" style={{ backgroundColor: palette.panelStrong, color: palette.text }}>
+          {t("cloudSync.status.recovered")}
+        </p>
+      )}
+      {Boolean(lastReport?.errors.length) && (
+        <p role="status" className="rounded-lg p-3 text-xs" style={{ backgroundColor: palette.panelSoft, color: palette.amber }}>
+          {t("cloudSync.status.partial")}
+        </p>
+      )}
+      {conflicts.length > 0 && (
+        <button type="button" onClick={() => setActiveSection("conflicts")} className="rounded-lg p-3 text-left text-xs" style={{ backgroundColor: palette.panelSoft, color: palette.amber }}>
+          {t("cloudSync.status.reviewConflicts", { count: conflicts.length })}
+        </button>
+      )}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         {[
           {
@@ -1300,6 +1371,23 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
     </div>
   );
 
+  const conflictPreview = (payload: string) => {
+    try {
+      const value = JSON.parse(payload);
+      const preview = value.value ?? {
+        [t("cloudSync.conflicts.content")]: value.content,
+        [t("cloudSync.conflicts.tags")]: value.tags,
+        [t("cloudSync.conflicts.pinned")]: Boolean(value.is_pinned),
+        [t("cloudSync.conflicts.tab")]: value.tab_name ?? t("cloudSync.conflicts.defaultTab"),
+        [t("cloudSync.conflicts.metadata")]: value.metadata,
+      };
+      const text = JSON.stringify(preview, null, 2) ?? "";
+      return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+    } catch {
+      return t("cloudSync.conflicts.previewUnavailable");
+    }
+  };
+
   const renderConflicts = () => (
     <div className="space-y-4">
       <div>
@@ -1311,6 +1399,30 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
         </p>
       </div>
 
+      <div className="rounded-xl border p-4 space-y-3" style={{ borderColor: palette.border, backgroundColor: palette.panel }}>
+        <p className="text-sm font-medium" style={{ color: palette.text }}>
+          {t("cloudSync.conflicts.defaultPolicy")}
+        </p>
+        <p className="text-xs" style={{ color: palette.muted }}>{t("cloudSync.conflicts.policyDescription")}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Combobox className="min-w-0 w-full sm:w-64" ariaLabel={t("cloudSync.conflicts.defaultPolicy")}
+            value={form.conflictPolicy} theme={isDark ? "dark" : "light"}
+            disabled={!activeProfileId || syncing || resolvingConflict !== null}
+            onChange={(value) => setForm((current) => ({ ...current, conflictPolicy: value as FormState["conflictPolicy"] }))}
+            options={[
+              { value: "manual", label: t("cloudSync.conflicts.policyManual") },
+              { value: "prefer_local", label: t("cloudSync.conflicts.policyLocal") },
+              { value: "prefer_remote", label: t("cloudSync.conflicts.policyRemote") },
+            ]} />
+          <button type="button" onClick={saveConflictPolicy} disabled={!activeProfileId || syncing || resolvingConflict !== null}
+            className="rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-50"
+            style={{ backgroundColor: palette.blue, color: "#fff" }}>
+            {syncing && <Loader2 size={12} className="mr-1 inline animate-spin" aria-hidden="true" />}
+            {t("cloudSync.conflicts.savePolicy")}
+          </button>
+        </div>
+      </div>
+
       {conflicts.length === 0 && (
         <div
           className="rounded-lg p-4 text-sm"
@@ -1320,7 +1432,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
             color: palette.muted,
           }}
         >
-          No pending conflicts
+          {t("cloudSync.conflicts.empty")}
         </div>
       )}
 
@@ -1347,24 +1459,39 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
                 { key: "keepLocal", label: t("cloudSync.conflicts.keepLocal") },
                 { key: "keepRemote", label: t("cloudSync.conflicts.keepRemote") },
                 { key: "keepBoth", label: t("cloudSync.conflicts.keepBoth") },
-              ].map((action) => (
+              ].filter((action) => conflict.entity_type === "clipboard_item" || action.key !== "keepBoth").map((action) => (
                 <button
                   key={action.key}
                   type="button"
                   onClick={() =>
                     resolveConflict(conflict.id, resolutionByLabelKey[action.key])
                   }
-                  className="h-8 rounded-lg px-3 text-xs"
+                  disabled={syncing || resolvingConflict !== null}
+                  className="h-8 rounded-lg px-3 text-xs disabled:opacity-50"
                   style={{
                     backgroundColor: palette.panel,
                     border: `1px solid ${palette.border}`,
                     color: palette.text,
                   }}
                 >
+                  {resolvingConflict === conflict.id && <Loader2 size={12} className="mr-1 inline animate-spin" aria-hidden="true" />}
                   {action.label}
                 </button>
               ))}
             </div>
+          </div>
+          <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+            {[
+              { label: t("cloudSync.conflicts.local"), payload: conflict.local_payload },
+              { label: t("cloudSync.conflicts.remote"), payload: conflict.remote_payload },
+            ].map(({ label, payload }) => (
+              <div key={label} className="min-w-0">
+                <p className="mb-1 text-xs font-medium" style={{ color: palette.muted }}>{label}</p>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded p-2 text-xs" style={{ backgroundColor: palette.panel, color: palette.text }}>
+                  {conflictPreview(payload)}
+                </pre>
+              </div>
+            ))}
           </div>
         </div>
       ))}
@@ -1488,6 +1615,7 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
                 <button
                   type="button"
                   onClick={resetDraft}
+                  disabled={syncing || resolvingConflict !== null}
                   className="flex h-9 items-center gap-2 rounded-lg px-3 text-sm"
                   style={{
                     backgroundColor: palette.panelSoft,
@@ -1500,7 +1628,8 @@ const CloudSyncTab: React.FC<CloudSyncTabProps> = ({ isDark }) => {
                 </button>
                 <button
                   type="button"
-                  onClick={saveProfile}
+                  onClick={activeSection === "conflicts" ? saveConflictPolicy : saveProfile}
+                  disabled={syncing || resolvingConflict !== null}
                   className="flex h-9 items-center gap-2 rounded-lg px-3 text-sm"
                   style={{
                     backgroundColor: palette.accent,

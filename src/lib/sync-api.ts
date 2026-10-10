@@ -27,6 +27,13 @@ export interface SyncProfileSummary {
   status: string;
 }
 
+export type ConflictPolicy = "manual" | "prefer_local" | "prefer_remote";
+
+export interface ConflictResolutionResult {
+  report: SyncRunReport | null;
+  sync_error: string | null;
+}
+
 export interface SyncProfile {
   id: string;
   name: string;
@@ -37,6 +44,7 @@ export interface SyncProfile {
   encryption: EncryptionConfig;
   credential_refs: CredentialRefs;
   schedule: SyncScheduleConfig;
+  conflict_policy?: ConflictPolicy;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -92,6 +100,7 @@ export interface SyncProfileInput {
   encryption?: EncryptionConfig;
   credential_refs?: CredentialRefs;
   schedule?: SyncScheduleConfig;
+  conflict_policy?: ConflictPolicy;
 }
 
 export interface SecretRef {
@@ -124,6 +133,7 @@ export interface SyncRunReport {
   items_deleted: number;
   conflicts_found: number;
   errors: string[];
+  warnings?: string[];
 }
 
 export type SyncRunStatus =
@@ -453,15 +463,16 @@ export const sync = {
     profileId: string,
     conflictId: number,
     resolution: ConflictResolutionInput,
-  ): Promise<void> => {
+  ): Promise<ConflictResolutionResult> => {
     log("info", "API", "sync.resolveConflict() called - conflictId:", conflictId);
     try {
-      await invoke<void>("sync_resolve_conflict", {
+      const result = await invoke<ConflictResolutionResult>("sync_resolve_conflict", {
         profileId,
         conflictId,
         resolution,
       });
       log("info", "API", "sync.resolveConflict() success");
+      return result;
     } catch (error) {
       log("error", "API", "sync.resolveConflict() failed", error);
       throw error;

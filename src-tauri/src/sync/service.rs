@@ -97,6 +97,10 @@ impl SyncService {
                 .or_else(|| existing.as_ref().map(|p| p.credential_refs.clone()))
                 .unwrap_or_default(),
             schedule,
+            conflict_policy: input
+                .conflict_policy
+                .or_else(|| existing.as_ref().map(|p| p.conflict_policy))
+                .unwrap_or_default(),
             created_at: None,
             updated_at: None,
         };
@@ -185,6 +189,47 @@ impl SyncService {
         }
         self.emit_sync_completed(profile_id, &report);
         Ok(report)
+    }
+
+    pub async fn resolve_conflict(
+        &self,
+        profile_id: &str,
+        conflict_id: i64,
+        resolution: ConflictResolutionInput,
+    ) -> Result<ConflictResolutionResult, SyncError> {
+        let profile = self.repository.get_profile(profile_id).await?;
+        // Persist the choice even when publishing is temporarily unavailable.
+        let provider = if profile.schedule.paused {
+            Err(SyncError::validation(
+                "Sync profile is paused. Resume it to publish the saved choice.",
+            ))
+        } else if profile.encryption.enabled && !self.engine.is_profile_unlocked(profile_id).await {
+            Err(SyncError::validation(
+                "Unlock the encrypted profile to publish the saved choice.",
+            ))
+        } else {
+            self.provider_factory.build(&profile).await
+        };
+        let mut result = self
+            .engine
+            .resolve_conflict_and_run(profile_id, provider, conflict_id, resolution)
+            .await?;
+        if let Some(report) = result.report.take() {
+            let report = match self.file_sync_service.refresh(profile_id).await {
+                Ok(()) => report,
+                Err(error) => {
+                    self.engine
+                        .append_post_sync_error(
+                            report,
+                            format!("File Sync refresh failed: {}", error),
+                        )
+                        .await?
+                }
+            };
+            self.emit_sync_completed(profile_id, &report);
+            result.report = Some(report);
+        }
+        Ok(result)
     }
 
     fn emit_sync_completed(&self, profile_id: &str, report: &SyncRunReport) {
@@ -277,7 +322,7 @@ impl SyncService {
                 continue;
             }
 
-            match self.repository.has_unsynced_changes(&profile).await {
+            match self.repository.has_publishable_changes(&profile).await {
                 Ok(true) => {
                     if let Err(e) = self.run_now(&profile.id).await {
                         log::warn!(
@@ -381,7 +426,7 @@ impl SyncService {
                 }
 
                 if !should_run && profile.schedule.sync_on_local_change {
-                    match self.repository.has_unsynced_changes(&profile).await {
+                    match self.repository.has_publishable_changes(&profile).await {
                         Ok(true) => {
                             let first_seen = pending_since.entry(profile.id.clone()).or_insert(now);
                             let elapsed =
@@ -404,22 +449,16 @@ impl SyncService {
                 }
 
                 if should_run {
-                    let result = self.run_now(&profile.id).await.and_then(|report| {
-                        if report.errors.is_empty() {
-                            Ok(report)
-                        } else {
-                            Err(SyncError::provider(report.errors.join("; ")))
-                        }
-                    });
+                    // Partial progress and user conflicts must not put healthy
+                    // local changes behind a profile-wide failure backoff.
+                    let result = self.run_now(&profile.id).await;
                     match result {
-                        Ok(report) => {
+                        Ok(_) => {
                             startup_completed.insert(profile.id.clone());
                             last_interval_run.insert(profile.id.clone(), now);
-                            if report.errors.is_empty() {
-                                pending_since.remove(&profile.id);
-                                failure_counts.remove(&profile.id);
-                                next_retry_at.remove(&profile.id);
-                            }
+                            pending_since.remove(&profile.id);
+                            failure_counts.remove(&profile.id);
+                            next_retry_at.remove(&profile.id);
                         }
                         Err(e) => {
                             let failure_count =
@@ -514,6 +553,7 @@ pub struct SyncProfileInput {
     pub encryption: Option<EncryptionConfig>,
     pub credential_refs: Option<CredentialRefs>,
     pub schedule: Option<SyncScheduleConfig>,
+    pub conflict_policy: Option<ConflictPolicy>,
 }
 
 impl TryFrom<&str> for SyncProviderKind {
