@@ -1,3 +1,4 @@
+pub mod app_update;
 pub mod async_log_writer;
 pub mod clipboard;
 pub mod commands;

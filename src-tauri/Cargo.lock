@@ -610,6 +610,7 @@ dependencies = [
  "lazy_static",
  "log",
  "objc2-app-kit",
+ "open",
  "rand",
  "regex",
  "reqwest",

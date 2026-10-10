@@ -20,6 +20,26 @@ export { ItemType };
 export const CLIPBOARD_COUNT_CHANGED_EVENT = "clipboard:count-changed";
 export const TAB_LIST_CHANGED_EVENT = "tabs:list-changed";
 
+export interface AppUpdateStatus {
+  phase: "idle" | "checking" | "current" | "available" | "downloading" | "ready" | "installing";
+  version: string | null;
+  fileName: string | null;
+  downloaded: number;
+  total: number;
+  lastChecked: string | null;
+  error: string | null;
+  manualInstall: boolean;
+  installerOpened: boolean;
+  packagePath: string | null;
+}
+
+export const appUpdate = {
+  status: () => invoke<AppUpdateStatus>("get_app_update_status"),
+  check: () => invoke<AppUpdateStatus>("check_app_update"),
+  download: () => invoke<AppUpdateStatus>("download_app_update"),
+  install: () => invoke<AppUpdateStatus>("install_app_update"),
+};
+
 type ClipboardCountChangedDetail = {
   tabId?: number | null;
   reason: "create" | "create-batch" | "delete" | "delete-range" | "delete-batch" | "clear-sensitive";

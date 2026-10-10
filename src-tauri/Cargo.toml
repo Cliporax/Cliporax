@@ -27,6 +27,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", default-features = false, features = ["wry", "common-controls-v6", "dynamic-acl", "x11", "dbus", "macos-private-api", "protocol-asset", "tray-icon", "image-png", "webview-data-url"] }
 tauri-plugin-shell = "2"
+# Observe installer launcher failures instead of detaching before the result.
+open = "5"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-window-state = "2"

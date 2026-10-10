@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use cliporax_lib::{
+    app_update::*,
     commands::*,
     db::init_database,
     dev_log::{install_logger, DevLogFileBackend},
@@ -224,6 +225,7 @@ fn main() {
     env_logger::init();
 
     tauri::Builder::default()
+        .manage(AppUpdateState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(
@@ -621,6 +623,10 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_app_update_status,
+            check_app_update,
+            download_app_update,
+            install_app_update,
             // Dev log commands (only in debug mode)
             #[cfg(debug_assertions)]
             dev_log_write,
